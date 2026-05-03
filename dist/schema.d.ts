@@ -1,4 +1,5 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+export type EnvStatus = "set" | "set-redacted" | "present-in-parent-stripped" | "unset";
 export interface ClaudeStatusInput {
     cwd: string;
 }
@@ -58,6 +59,21 @@ export interface ClaudeResult {
     claude_report: Record<string, unknown>;
     server_observed: ServerObserved;
 }
+export interface EnvironmentDiagnostics {
+    proxy_env_present: boolean;
+    http_proxy: EnvStatus;
+    https_proxy: EnvStatus;
+    no_proxy: EnvStatus;
+    anthropic_base_url: EnvStatus;
+    anthropic_auth_token: EnvStatus;
+    anthropic_api_key: EnvStatus;
+    local_proxy_host?: string;
+    local_proxy_port?: number;
+    local_proxy_reachable?: boolean;
+    local_proxy_error?: string;
+    likely_sandbox_blocked: boolean;
+    recommendation?: string;
+}
 export interface ClaudeStatusResult {
     claude_available: boolean;
     claude_version: string | null;
@@ -70,6 +86,7 @@ export interface ClaudeStatusResult {
     delegated_worktrees: string[];
     stale_worktrees_count: number;
     errors: string[];
+    environment_diagnostics?: EnvironmentDiagnostics;
 }
 export interface SessionLog {
     requested_session_id: string | null;

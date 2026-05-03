@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "claude_delegate": {
+      "command": "node",
+      "args": ["../../dist/server.js"],
+      "cwd": "."
+    }
+  }
+}

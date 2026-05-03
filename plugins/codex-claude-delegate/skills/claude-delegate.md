@@ -1,4 +1,4 @@
-# Claude Code Delegation
+# Claude Code Delegate
 
 ## When to use claude_implement
 
@@ -24,15 +24,19 @@ Call the MCP tool with:
 - `cwd`: project root
 - `constraints`: list of things Claude must NOT do
 - `files`: optional list of relevant files for context
+- `max_cost_usd`: optional budget limit
+- `max_changed_files`: optional file count alert
 
-After Claude finishes, review `server_observed.changed_files` and `claude_report.tests` before deciding to apply the diff.
+## After implement
 
-## Apply and cleanup
+1. Review `server_observed.changed_files` and `claude_report.tests`
+2. If `resource_limits.changed_files_exceeded`, consider splitting the task
+3. Call `claude_apply` to land changes, then `claude_cleanup` for worktree
 
-Use `claude_apply` only after reviewing `server_observed.worktree_path`.
+## Apply rules
 
-- `claude_apply` lands only `src/` A/M/D changes from delegated worktrees.
-- Untracked new `src/` files are supported.
-- Docs, `dist/`, and root-level files are intentionally ignored.
-- If the main workspace has local changes to affected files, apply is refused.
-- Prefer `cleanup: true`; otherwise run `claude_cleanup` after review.
+- Apply only delegated worktrees reported by `server_observed.worktree_path`
+- `claude_apply` lands only `src/` A/M/D changes
+- Untracked new `src/` files are supported
+- Docs, `dist/`, and root files are ignored by design
+- Main workspace conflicts cause full refusal; do not force partial apply

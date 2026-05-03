@@ -15,6 +15,8 @@ import type {
   ClaudeResult,
   ClaudeStatusResult,
   CleanupEntry,
+  EnvironmentDiagnostics,
+  EnvStatus,
   ServerObserved,
   SessionLog,
 } from "./schema.js";
@@ -59,6 +61,48 @@ async function logRun(runId: string, data: Record<string, unknown>): Promise<voi
   } catch {
     // best-effort logging
   }
+}
+
+// ---- Sensitive data redaction for stderr ----
+
+function redactSensitive(input: string): string {
+  return input
+    .replace(/(ANTHROPIC_AUTH_TOKEN=)[^\s]+/gi, "$1***")
+    .replace(/(ANTHROPIC_API_KEY=)[^\s]+/gi, "$1***")
+    .replace(/(Authorization:\s*Bearer\s+)[^\s]+/gi, "$1***")
+    .replace(/\b(sk-ant-[a-zA-Z0-9]{20,})\b/g, "sk-ant-***")
+    .replace(/\b(sk-[a-zA-Z0-9]{20,})\b/g, "sk-***");
+}
+
+// ---- Git status/diff parsing helpers ----
+
+function parseStatusShortLine(line: string): { status: string; file: string } | null {
+  if (!line.trim()) return null;
+
+  // git status --short / --porcelain=v1 format:
+  // XY <path>
+  // ?? <path>
+  const xy = line.slice(0, 2);
+  const file = line.slice(3).trim();
+  if (!file) return null;
+
+  if (xy === "??") return { status: "A", file };
+  if (xy.includes("D")) return { status: "D", file };
+  if (xy.includes("A")) return { status: "A", file };
+  if (xy.includes("M")) return { status: "M", file };
+
+  return { status: xy.trim() || "?", file };
+}
+
+function parseNameStatusLine(line: string): { status: string; file: string } | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+
+  const [status, ...rest] = trimmed.split(/\s+/);
+  const file = rest.join(" ");
+  if (!status || !file) return null;
+
+  return { status, file };
 }
 
 // ---- Spawn Claude with structured output ----
@@ -169,8 +213,8 @@ function spawnClaude(opts: ClaudeRunOptions): Promise<ClaudeSpawnResult> {
       }
     });
 
-    child.on("close", (code) => {
-      if (stderr) log(`claude stderr: ${stderr.slice(0, 2000)}`);
+    child.on("close", async (code, signal) => {
+      if (stderr) log(`claude stderr: ${redactSensitive(stderr.slice(0, 2000))}`);
 
       // Try to parse stdout even when exit code is non-zero.
       // Claude may exit with code 1 on max_turns but still produce
@@ -178,7 +222,16 @@ function spawnClaude(opts: ClaudeRunOptions): Promise<ClaudeSpawnResult> {
       try {
         const trimmed = stdout.trim();
         if (!trimmed) {
-          reject(new Error(`Claude produced no output (exit ${code})`));
+          const stderrTail = redactSensitive(stderr.slice(-1000));
+          let diagStr = "";
+          try {
+            const diags = await getEnvironmentDiagnostics(safeEnv);
+            diagStr = ` environment_diagnostics=${JSON.stringify(diags)}`;
+          } catch {}
+          reject(new Error(
+            `Claude produced no output (exit ${code}, signal ${signal ?? "none"}, timeout_sec=${opts.timeoutSec}, stdoutLen=${stdout.length}, stderrLen=${stderr.length}, stderrTail=${JSON.stringify(stderrTail)})` +
+            diagStr
+          ));
           return;
         }
 
@@ -209,11 +262,96 @@ function spawnClaude(opts: ClaudeRunOptions): Promise<ClaudeSpawnResult> {
 
         resolve({ report, session_id: sessionId });
       } catch (err) {
-        const diag = `exit=${code}, stdoutLen=${stdout.length}, stderr=${stderr.slice(0, 200)}`;
+        const diag = `exit=${code}, signal=${signal ?? "none"}, timeout_sec=${opts.timeoutSec}, stdoutLen=${stdout.length}, stderrLen=${stderr.length}, stderr=${redactSensitive(stderr.slice(0, 200))}`;
         reject(new Error(`Failed to parse Claude output. ${diag}\n${(err as Error).message}`));
       }
     });
   });
+}
+
+// ---- Environment diagnostics ----
+
+function redactEnvStatus(key: string, safeEnv: Record<string, string>): EnvStatus {
+  if (safeEnv[key]) {
+    return key.includes("TOKEN") || key.includes("API_KEY") ? "set-redacted" : "set";
+  }
+  if (process.env[key]) {
+    return "present-in-parent-stripped";
+  }
+  return "unset";
+}
+
+function parseLocalProxy(raw?: string): { host: string; port: number } | null {
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    const host = url.hostname;
+    const port = Number.parseInt(url.port, 10);
+    if (!host || !Number.isFinite(port)) return null;
+    if (host !== "127.0.0.1" && host !== "localhost" && host !== "::1") return null;
+    return { host, port };
+  } catch {
+    return null;
+  }
+}
+
+async function probeLocalPort(host: string, port: number, timeoutMs = 1000): Promise<{ reachable: boolean; error?: string }> {
+  const net = await import("node:net");
+  return await new Promise((resolve) => {
+    const socket = net.createConnection({ host, port });
+    const timer = setTimeout(() => {
+      socket.destroy();
+      resolve({ reachable: false, error: "timeout" });
+    }, timeoutMs);
+
+    socket.once("connect", () => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve({ reachable: true });
+    });
+
+    socket.once("error", (err: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      resolve({ reachable: false, error: err.code ?? err.message });
+    });
+  });
+}
+
+async function getEnvironmentDiagnostics(safeEnv: Record<string, string> = sanitizeEnv()): Promise<EnvironmentDiagnostics> {
+  const proxyRaw = safeEnv.HTTPS_PROXY ?? safeEnv.HTTP_PROXY ?? process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY;
+  const localProxy = parseLocalProxy(proxyRaw);
+
+  let reachable: boolean | undefined;
+  let proxyError: string | undefined;
+
+  if (localProxy) {
+    const probe = await probeLocalPort(localProxy.host, localProxy.port);
+    reachable = probe.reachable;
+    proxyError = probe.error;
+  }
+
+  const likelySandboxBlocked =
+    !!localProxy &&
+    reachable === false &&
+    (proxyError === "EPERM" || proxyError === "EACCES" || proxyError === "timeout");
+
+  return {
+    proxy_env_present: !!(safeEnv.HTTP_PROXY || safeEnv.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.HTTPS_PROXY),
+    http_proxy: redactEnvStatus("HTTP_PROXY", safeEnv),
+    https_proxy: redactEnvStatus("HTTPS_PROXY", safeEnv),
+    no_proxy: redactEnvStatus("NO_PROXY", safeEnv),
+    anthropic_base_url: redactEnvStatus("ANTHROPIC_BASE_URL", safeEnv),
+    anthropic_auth_token: redactEnvStatus("ANTHROPIC_AUTH_TOKEN", safeEnv),
+    anthropic_api_key: redactEnvStatus("ANTHROPIC_API_KEY", safeEnv),
+    local_proxy_host: localProxy?.host,
+    local_proxy_port: localProxy?.port,
+    local_proxy_reachable: reachable,
+    local_proxy_error: proxyError,
+    likely_sandbox_blocked: likelySandboxBlocked,
+    recommendation: likelySandboxBlocked
+      ? "Claude CLI likely cannot reach its local proxy/API from this sandbox. Run the MCP server outside the restricted sandbox or approve the outer command execution."
+      : undefined,
+  };
 }
 
 // ---- Server-side observation ----
@@ -231,13 +369,19 @@ async function observeResult(cwd: string, worktree?: string): Promise<ServerObse
       execCapture("git", ["diff", "HEAD~1", "--name-only"], { cwd: obsCwd }).catch(() => ""),
     ]);
 
-    // Collect unique changed files from all sources
+    // Collect unique changed files from all sources.
+    // diffNameOnly and headDiffName are plain file paths (name-only).
+    // statusShort needs proper parsing of the XY <path> format.
     const fileSet = new Set<string>();
-    for (const source of [diffNameOnly, headDiffName, statusShort]) {
+    for (const source of [diffNameOnly, headDiffName]) {
       for (const line of source.split("\n")) {
-        const cleaned = line.replace(/^[MADRC? ]{1,3}/, "").trim();
-        if (cleaned) fileSet.add(cleaned);
+        const file = line.trim();
+        if (file) fileSet.add(file);
       }
+    }
+    for (const line of statusShort.split("\n")) {
+      const parsed = parseStatusShortLine(line);
+      if (parsed?.file) fileSet.add(parsed.file);
     }
 
     return {
@@ -360,6 +504,13 @@ export async function checkClaudeStatus(cwd: string): Promise<ClaudeStatusResult
     // best-effort worktree scan
   }
 
+  // Environment diagnostics (best-effort)
+  try {
+    result.environment_diagnostics = await getEnvironmentDiagnostics();
+  } catch {
+    // best-effort only
+  }
+
   return result;
 }
 
@@ -388,6 +539,13 @@ export async function runClaudeQuery(
       "Bash(git log *)",
       "Bash(git status)",
       "Bash(git show *)",
+      "Bash(find *)",
+      "Bash(rg *)",
+      "Bash(wc *)",
+      "Bash(ls *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(cat *)",
     ],
     disallowedTools: [
       "Bash(rm *)",
@@ -400,7 +558,7 @@ export async function runClaudeQuery(
       "Bash(ssh *)",
       "Bash(scp *)",
     ],
-    maxTurns: 4,
+    maxTurns: 8,
     timeoutSec: input.timeout_sec ?? 120,
     jsonSchema: QUERY_SCHEMA,
     resumeSessionId: requestedSessionId ?? undefined,
@@ -700,25 +858,32 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
     } catch {}
   }
 
-  // Collect changed files with status (M=modified, A=added, D=deleted)
-  let statusOutput = "";
-  try {
-    statusOutput = await execCapture("git", ["diff", "--name-status", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 });
-  } catch {}
-  if (!statusOutput.trim()) {
-    try {
-      statusOutput = await execCapture("git", ["diff", "HEAD~1", "--name-status", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => "");
-    } catch {}
+  // Collect changed files with status (M=modified, A=added, D=deleted).
+  // Use three sources to capture tracked (staged/unstaged/committed) AND untracked files.
+  const [diffStatus, headStatus, shortStatus] = await Promise.all([
+    execCapture("git", ["diff", "--name-status", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
+    execCapture("git", ["diff", "HEAD~1", "--name-status", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
+    execCapture("git", ["status", "--short", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
+  ]);
+
+  const changesByFile = new Map<string, { status: string; file: string }>();
+
+  function addChange(change: { status: string; file: string } | null): void {
+    if (!change) return;
+    if (!change.file.startsWith("src/")) return;
+    changesByFile.set(change.file, change);
   }
 
-  const changes: Array<{ status: string; file: string }> = statusOutput
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .map((l) => {
-      const [status, ...rest] = l.split(/\s+/);
-      return { status, file: rest.join(" ") };
-    });
+  for (const line of diffStatus.split("\n")) addChange(parseNameStatusLine(line));
+  for (const line of headStatus.split("\n")) addChange(parseNameStatusLine(line));
+  for (const line of shortStatus.split("\n")) addChange(parseStatusShortLine(line));
+
+  const changes = [...changesByFile.values()];
+
+  // Provide fallback diffStat when git diff shows nothing (e.g. all untracked)
+  if (!diffStat.trim() && changes.length > 0) {
+    diffStat = changes.map((c) => `${c.status}\t${c.file}`).join("\n");
+  }
 
   if (changes.length === 0) {
     return { applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts: [], error: "No changed source files found in worktree" };

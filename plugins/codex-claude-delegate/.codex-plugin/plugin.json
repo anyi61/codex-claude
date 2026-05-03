@@ -1,0 +1,36 @@
+{
+  "name": "codex-claude-delegate",
+  "version": "0.1.0",
+  "description": "Delegate implementation tasks to Claude Code from Codex CLI. Claude runs in an isolated git worktree, returns structured results, and Codex reviews before applying.",
+  "author": {
+    "name": "codex-claude-delegate",
+    "url": "https://github.com/anyi/codex-claude"
+  },
+  "homepage": "https://github.com/anyi/codex-claude",
+  "license": "MIT",
+  "keywords": [
+    "claude",
+    "codex",
+    "delegation",
+    "mcp",
+    "ai-agents"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Claude Code Delegate",
+    "shortDescription": "Run tasks via Claude Code in isolated worktrees",
+    "longDescription": "Codex CLI plans the task, then delegates execution to Claude Code through MCP tools. Claude works in an isolated git worktree with security constraints, runs tests, and returns structured results. Codex reviews the diff before applying changes to the main workspace.\n\nTools: claude_status, claude_query, claude_review, claude_implement, claude_apply, claude_cleanup",
+    "developerName": "anyi",
+    "category": "Coding",
+    "capabilities": [
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Delegate this refactor to Claude Code using claude_implement",
+      "Ask Claude to review the current diff with claude_review"
+    ],
+    "brandColor": "#6446A3"
+  }
+}
