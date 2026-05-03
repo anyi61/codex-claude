@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MCP server that lets Codex CLI delegate tasks to Claude Code. Codex calls MCP tools exposed by this server; the server spawns `claude -p` with security constraints and returns structured results.
 
-Phase 1: one-shot delegation only. No session reuse, no real-time bidirectional comms, no Codex Plugin packaging yet.
+Phase 1 complete. One-shot delegation with worktree isolation. Codex config at `~/.codex/config.toml` (section `[mcp_servers.claude_delegate]`). Codex skill at `.agents/skills/claude-delegate.md`. Full spec at `SPEC.md`.
 
 ## Commands
 
@@ -21,9 +21,18 @@ npm start              # Run compiled output (node dist/server.js)
 Four modules in `src/`:
 
 - **server.ts** — MCP stdio entry point. Registers 4 tools (`claude_status`, `claude_query`, `claude_review`, `claude_implement`), routes incoming `CallToolRequest` to `claude-cli.ts`, rejects on `BRIDGE_DEPTH >= 2`.
-- **claude-cli.ts** — Spawns `claude -p` with mode-specific args. Three run functions: `runClaudeQuery` (read-only, maxTurns=4), `runClaudeReview` (read-only, maxTurns=6), `runClaudeImplement` (worktree, Edit/Write, maxTurns=8). After Claude exits, `observeResult()` runs `git diff --name-only` + `git diff --stat` to ground-truth Claude's self-report.
-- **guard.ts** — Security functions: `validateCwd` (realpath + allowRoots + git check), `sanitizeEnv` (strips secrets, sets BRIDGE_DEPTH=1), `checkRecursion`, `execCapture` / `execStream` (safe spawn helpers).
-- **schema.ts** — TypeScript interfaces (`ClaudeReport`, `ServerObserved`, tool inputs), the `RESULT_SCHEMA` JSON Schema constant passed to `--json-schema`, and prompt builders that inject anti-delegation constraints.
+- **claude-cli.ts** — Spawns `claude -p` with mode-specific args and schemas: `runClaudeQuery` (QUERY_SCHEMA, maxTurns=4), `runClaudeReview` (REVIEW_SCHEMA, maxTurns=6), `runClaudeImplement` (IMPLEMENT_SCHEMA, worktree, maxTurns=15). After Claude exits, `observeResult()` runs `git diff` + `git diff HEAD~1` + `git status --short` to ground-truth. Non-zero exit codes that produce valid stdout JSON are still resolved (handles `error_max_turns`).
+- **guard.ts** — Security functions: `validateCwd` (realpath + allowRoots + git check), `sanitizeEnv` (strips secrets, sets BRIDGE_DEPTH=1), `checkRecursion`, `execCapture` / `execStream` (safe spawn helpers). ALLOW_ROOTS is hardcoded to `~/projects`, `~/work`, `~/codex-claude`.
+- **schema.ts** — Three JSON Schemas (`QUERY_SCHEMA`, `REVIEW_SCHEMA`, `IMPLEMENT_SCHEMA`) passed to `--json-schema`, TypeScript interfaces, and prompt builders that inject anti-delegation constraints.
+
+## Debug harness
+
+```bash
+npx tsx debug/mcp-test.ts        # Full MCP protocol test: init → status → query
+npx tsx debug/test-implement.ts  # Isolated implement test with worktree
+```
+
+Run logs appear in `.codex-claude-delegate/runs/<uuid>.json`.
 
 ## Critical rules when editing this codebase
 

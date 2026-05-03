@@ -111,4 +111,13 @@ export function errorResult(message) {
         isError: true,
     };
 }
+export function formatDuration(ms) {
+    const totalSeconds = ms / 1000;
+    if (totalSeconds < 60) {
+        return `${totalSeconds.toFixed(1)}s`;
+    }
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = Math.floor(totalSeconds % 60);
+    return `${minutes}m ${seconds}s`;
+}
 //# sourceMappingURL=schema.js.map

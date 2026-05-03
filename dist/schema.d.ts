@@ -200,3 +200,4 @@ export declare function buildReviewPrompt(input: ClaudeReviewInput): string;
 export declare function buildQueryPrompt(input: ClaudeQueryInput): string;
 export declare function jsonResult(data: unknown): CallToolResult;
 export declare function errorResult(message: string): CallToolResult;
+export declare function formatDuration(ms: number): string;
