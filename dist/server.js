@@ -68,6 +68,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
                     files: { type: "array", items: { type: "string" }, description: "Relevant files for context" },
                     constraints: { type: "array", items: { type: "string" }, description: "Constraints (e.g. 'do not modify tests')" },
                     timeout_sec: { type: "number", description: "Timeout in seconds (default 600)" },
+                    session_key: { type: "string", description: "Resume an existing Claude session by ID (implement does NOT auto-resume)" },
+                    fork_session: { type: "boolean", description: "When used with session_key, fork the session instead of continuing it" },
                 },
             },
         },
@@ -109,7 +111,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 return jsonResult(report);
             }
             case "claude_implement": {
-                const { task, cwd, files, constraints, timeout_sec } = args;
+                const { task, cwd, files, constraints, timeout_sec, session_key, fork_session } = args;
                 if (!task?.trim())
                     return errorResult("task is required");
                 const check = await validateCwd(cwd);
@@ -121,7 +123,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 if (!wtCapable) {
                     return errorResult("claude_implement requires a git repository with worktree support");
                 }
-                const result = await runClaudeImplement({ task, cwd: check.resolved, files, constraints, timeout_sec }, runId);
+                const result = await runClaudeImplement({ task, cwd: check.resolved, files, constraints, timeout_sec, session_key, fork_session }, runId);
                 return jsonResult(result);
             }
             default:

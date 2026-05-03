@@ -2,9 +2,20 @@ import { spawn } from "node:child_process";
 import { writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { execCapture, sanitizeEnv } from "./guard.js";
+import { SessionStore, computeRepoKey, RECENT_WINDOW_MINUTES } from "./session.js";
 import { QUERY_SCHEMA, REVIEW_SCHEMA, IMPLEMENT_SCHEMA, buildImplementPrompt, buildQueryPrompt, buildReviewPrompt, } from "./schema.js";
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
 const LOG_DIR = path.join(process.cwd(), ".codex-claude-delegate", "runs");
+const SESSION_DIR = path.join(process.cwd(), ".codex-claude-delegate");
+// ---- Session store (lazy init) ----
+let store = null;
+async function getStore() {
+    if (!store) {
+        store = new SessionStore(SESSION_DIR);
+        await store.init();
+    }
+    return store;
+}
 // ---- Logging (stderr only, never stdout) ----
 function log(msg) {
     process.stderr.write(`[claude-delegate] ${msg}\n`);
@@ -22,6 +33,15 @@ function spawnClaude(opts) {
     const args = ["-p"];
     if (opts.worktree) {
         args.push("-w", opts.worktree);
+    }
+    if (opts.resumeSessionId) {
+        args.push("-r", opts.resumeSessionId);
+    }
+    if (opts.forkSession) {
+        args.push("--fork-session");
+    }
+    if (opts.noSessionPersistence) {
+        args.push("--no-session-persistence");
     }
     args.push("--permission-mode", "dontAsk", "--tools", opts.tools, "--max-turns", String(opts.maxTurns), "--output-format", "json");
     // --allowedTools / --disallowedTools must come before --json-schema.
@@ -94,12 +114,14 @@ function spawnClaude(opts) {
                 }
                 // Extract structured_output if present, otherwise use the whole result
                 const report = (parsed.structured_output ?? parsed);
+                // Extract session_id for session management
+                const sessionId = parsed.session_id ?? null;
                 // If Claude hit max_turns with partial results, still return what we have.
                 // The subtype field signals whether this was a clean completion or an early exit.
                 if (code !== 0 && code !== null) {
                     log(`Claude exited ${code} (subtype=${parsed.subtype ?? "unknown"}), returning partial result`);
                 }
-                resolve(report);
+                resolve({ report, session_id: sessionId });
             }
             catch (err) {
                 const diag = `exit=${code}, stdoutLen=${stdout.length}, stderr=${stderr.slice(0, 200)}`;
@@ -224,9 +246,15 @@ export async function checkClaudeStatus(cwd) {
     return result;
 }
 export async function runClaudeQuery(input, runId) {
-    const prompt = buildQueryPrompt(input);
+    const store = await getStore();
+    const repoKey = await computeRepoKey(input.cwd);
+    // Auto-resume: find recent query session for the same repo
+    const recent = store.getRecent(repoKey, "query", RECENT_WINDOW_MINUTES);
+    const requestedSessionId = recent?.session_id ?? null;
+    let resumed = false;
+    let forked = false;
     const opts = {
-        prompt,
+        prompt: buildQueryPrompt(input),
         cwd: input.cwd,
         tools: "Read,Glob,Grep,Bash",
         allowedTools: [
@@ -252,21 +280,57 @@ export async function runClaudeQuery(input, runId) {
         maxTurns: 4,
         timeoutSec: input.timeout_sec ?? 120,
         jsonSchema: QUERY_SCHEMA,
+        resumeSessionId: requestedSessionId ?? undefined,
     };
+    let returnedSessionId = null;
     try {
-        const report = await spawnClaude(opts);
-        await logRun(runId, { type: "query", input, report });
+        const { report, session_id } = await spawnClaude(opts);
+        returnedSessionId = session_id;
+        resumed = !!requestedSessionId;
+        // Persist session
+        if (session_id) {
+            store.upsert(session_id, "query", repoKey, input.cwd, report.summary ?? "");
+        }
+        const sessionLog = { requested_session_id: requestedSessionId, resumed, forked, returned_session_id: session_id };
+        await logRun(runId, { type: "query", input, report, session: sessionLog });
+        store.prune();
         return report;
     }
     catch (err) {
-        await logRun(runId, { type: "query", input, error: err.message });
+        const errorMsg = err.message;
+        // If resume failed (session not found / expired), mark expired and retry without resume
+        if (requestedSessionId && isSessionNotFoundError(errorMsg)) {
+            store.markExpired(requestedSessionId);
+            log(`Session ${requestedSessionId} not found, falling back to new session`);
+            // Retry without resume
+            const retryOpts = { ...opts, resumeSessionId: undefined };
+            try {
+                const { report, session_id } = await spawnClaude(retryOpts);
+                returnedSessionId = session_id;
+                if (session_id) {
+                    store.upsert(session_id, "query", repoKey, input.cwd, report.summary ?? "");
+                }
+                const sessionLog = { requested_session_id: requestedSessionId, resumed: false, forked: false, returned_session_id: session_id };
+                await logRun(runId, { type: "query", input, report, session: sessionLog, retried_after_session_expired: true });
+                return report;
+            }
+            catch (retryErr) {
+                await logRun(runId, { type: "query", input, error: retryErr.message, retried_after_session_expired: true });
+                throw retryErr;
+            }
+        }
+        await logRun(runId, { type: "query", input, error: errorMsg });
         throw err;
     }
 }
+// ---- Session failure detection ----
+function isSessionNotFoundError(msg) {
+    const patterns = ["session not found", "not found", "session.*expired", "invalid session"];
+    return patterns.some((p) => new RegExp(p, "i").test(msg));
+}
 export async function runClaudeReview(input, runId) {
-    const prompt = buildReviewPrompt(input);
     const opts = {
-        prompt,
+        prompt: buildReviewPrompt(input),
         cwd: input.cwd,
         tools: "Read,Glob,Grep,Bash",
         allowedTools: [
@@ -293,9 +357,10 @@ export async function runClaudeReview(input, runId) {
         maxTurns: 6,
         timeoutSec: input.timeout_sec ?? 180,
         jsonSchema: REVIEW_SCHEMA,
+        noSessionPersistence: true,
     };
     try {
-        const report = await spawnClaude(opts);
+        const { report } = await spawnClaude(opts);
         await logRun(runId, { type: "review", input, report });
         return report;
     }
@@ -305,10 +370,14 @@ export async function runClaudeReview(input, runId) {
     }
 }
 export async function runClaudeImplement(input, runId) {
+    const store = await getStore();
+    const repoKey = await computeRepoKey(input.cwd);
     const worktreeName = `codex-delegated-${runId.slice(0, 8)}`;
-    const prompt = buildImplementPrompt(input);
+    // implement only resumes when session_key is explicitly provided
+    const resumeSessionId = input.session_key ?? undefined;
+    const forked = input.fork_session ?? false;
     const opts = {
-        prompt,
+        prompt: buildImplementPrompt(input),
         cwd: input.cwd,
         worktree: worktreeName,
         tools: "Read,Glob,Grep,Edit,Write,Bash",
@@ -388,26 +457,48 @@ export async function runClaudeImplement(input, runId) {
         maxTurns: 15,
         timeoutSec: input.timeout_sec ?? 600,
         jsonSchema: IMPLEMENT_SCHEMA,
+        resumeSessionId,
+        forkSession: forked,
     };
     let report;
+    let returnedSessionId = null;
     const startTime = Date.now();
     try {
-        report = await spawnClaude(opts);
+        const result = await spawnClaude(opts);
+        report = result.report;
+        returnedSessionId = result.session_id;
     }
     catch (err) {
         const errorMsg = err.message;
+        // If explicit resume failed, mark session expired
+        if (resumeSessionId && isSessionNotFoundError(errorMsg)) {
+            store.markExpired(resumeSessionId);
+            log(`Session ${resumeSessionId} not found, marked expired`);
+        }
         await logRun(runId, { type: "implement", input, error: errorMsg, duration_ms: Date.now() - startTime });
         throw err;
     }
+    // Persist session (record only, never auto-resume implement)
+    if (returnedSessionId) {
+        store.upsert(returnedSessionId, "implement", repoKey, input.cwd, report.summary ?? "");
+    }
     // Observe actual changes (don't trust Claude's self-report alone)
     const observed = await observeResult(input.cwd, worktreeName);
+    const sessionLog = {
+        requested_session_id: resumeSessionId ?? null,
+        resumed: !!resumeSessionId,
+        forked,
+        returned_session_id: returnedSessionId,
+    };
     await logRun(runId, {
         type: "implement",
         input,
         report,
         observed,
+        session: sessionLog,
         duration_ms: Date.now() - startTime,
     });
+    store.prune();
     return { claude_report: report, server_observed: observed };
 }
 //# sourceMappingURL=claude-cli.js.map

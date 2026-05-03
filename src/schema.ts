@@ -26,6 +26,8 @@ export interface ClaudeImplementInput {
   files?: string[];
   constraints?: string[];
   timeout_sec?: number;
+  session_key?: string;
+  fork_session?: boolean;
 }
 
 // ---- Structured output types ----
@@ -68,6 +70,13 @@ export interface ClaudeStatusResult {
   cwd_valid: boolean;
   cwd_is_git_repo: boolean;
   errors: string[];
+}
+
+export interface SessionLog {
+  requested_session_id: string | null;
+  resumed: boolean;
+  forked: boolean;
+  returned_session_id: string | null;
 }
 
 // ---- JSON Schemas for --json-schema flag ----

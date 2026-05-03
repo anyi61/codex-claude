@@ -92,6 +92,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           files: { type: "array", items: { type: "string" }, description: "Relevant files for context" },
           constraints: { type: "array", items: { type: "string" }, description: "Constraints (e.g. 'do not modify tests')" },
           timeout_sec: { type: "number", description: "Timeout in seconds (default 600)" },
+          session_key: { type: "string", description: "Resume an existing Claude session by ID (implement does NOT auto-resume)" },
+          fork_session: { type: "boolean", description: "When used with session_key, fork the session instead of continuing it" },
         },
       },
     },
@@ -151,12 +153,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "claude_implement": {
-        const { task, cwd, files, constraints, timeout_sec } = args as {
+        const { task, cwd, files, constraints, timeout_sec, session_key, fork_session } = args as {
           task: string;
           cwd: string;
           files?: string[];
           constraints?: string[];
           timeout_sec?: number;
+          session_key?: string;
+          fork_session?: boolean;
         };
         if (!task?.trim()) return errorResult("task is required");
 
@@ -171,7 +175,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         const result = await runClaudeImplement(
-          { task, cwd: check.resolved, files, constraints, timeout_sec },
+          { task, cwd: check.resolved, files, constraints, timeout_sec, session_key, fork_session },
           runId
         );
         return jsonResult(result);
