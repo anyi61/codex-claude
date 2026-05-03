@@ -354,7 +354,7 @@ export async function runClaudeReview(input, runId) {
             "Bash(ssh *)",
             "Bash(scp *)",
         ],
-        maxTurns: 6,
+        maxTurns: 10,
         timeoutSec: input.timeout_sec ?? 180,
         jsonSchema: REVIEW_SCHEMA,
         noSessionPersistence: true,
