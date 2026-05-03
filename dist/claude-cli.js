@@ -580,23 +580,29 @@ export async function runClaudeApply(input, runId) {
     if (changes.length === 0) {
         return { applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts: [], error: "No changed source files found in worktree" };
     }
-    // Check main workspace for local modifications on affected files
+    // Preflight: check for uncommitted changes in main workspace and
+    // unsupported status codes. If any issues found, refuse the entire apply.
     const conflicts = [];
-    const toCopy = [];
+    const validStatuses = new Set(["A", "M", "D"]);
     for (const c of changes) {
+        if (!validStatuses.has(c.status)) {
+            conflicts.push(`${c.file}: unsupported status "${c.status}" (only A/M/D supported)`);
+            continue;
+        }
         try {
             const shortStat = await execCapture("git", ["status", "--short", "--", c.file], { cwd: input.cwd, timeoutMs: 10000 });
             if (shortStat.trim()) {
                 conflicts.push(`${c.file}: main workspace has uncommitted changes (${shortStat.trim().slice(0, 80)})`);
-                continue;
             }
         }
         catch { }
-        toCopy.push(c);
+    }
+    if (conflicts.length > 0) {
+        return { applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts, error: "Main workspace has uncommitted or unsupported changes; apply refused" };
     }
     // Apply changes
     const copied = [];
-    for (const c of toCopy) {
+    for (const c of changes) {
         const dest = path.join(input.cwd, c.file);
         const src = path.join(wtReal, c.file);
         try {

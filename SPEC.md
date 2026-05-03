@@ -372,11 +372,12 @@ class SessionStore {
 
 核心闭环：implement → review diff → apply → cleanup。implement 不自动清理 worktree，Codex 验收后再走 apply/cleanup。
 
-- [x] `claude_apply` — worktree diff → git apply --check → git apply → 可选 cleanup
-- [x] `claude_cleanup` — 扫描残留 worktree，dry-run 模式，`git worktree remove`
+- [x] `claude_apply` — 直接复制 src/ 文件（非 git apply），区分 M/A/D 状态
+- [x] `claude_cleanup` — 扫描残留 worktree，dry-run 模式，`git worktree remove --force`
 - [x] `claude_status` 扩展 — `delegated_worktrees_count`, `delegated_worktrees[]`, `stale_worktrees_count`
 - [x] apply 路径校验限定在 `.claude/worktrees/codex-delegated-*`
-- [x] patch 文件临时写入 `.claude/apply-<runId>.patch`，apply 后清理
+- [x] apply 前检查主工作区未提交变更，有冲突全量拒绝（不部分 apply）
+- [x] cleanup 使用完整相对路径 `.claude/worktrees/<name>`
 - [x] `npm run build` + `debug/mcp-test.ts` 通过
 
 #### claude_apply
