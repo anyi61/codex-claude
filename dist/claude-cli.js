@@ -545,76 +545,60 @@ export async function runClaudeApply(input, runId) {
     if (!existsSync(wtReal)) {
         return { applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: `worktree directory not found: ${wtReal}` };
     }
-    // Generate patch from worktree (uncommitted + committed changes)
-    let patch = "";
-    try {
-        patch += await execCapture("git", ["diff"], { cwd: wtReal }).catch(() => "");
-    }
-    catch { }
-    try {
-        patch += "\n" + await execCapture("git", ["diff", "HEAD~1"], { cwd: wtReal }).catch(() => "");
-    }
-    catch { }
-    patch = patch.trim();
-    if (!patch) {
-        return { applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: "No diff found in worktree" };
-    }
-    // Check worktree diff stat for reporting
+    // Check worktree diff stat for reporting (src/ only)
     let diffStat = "";
     try {
-        diffStat = await execCapture("git", ["diff", "--stat"], { cwd: wtReal }).catch(() => "");
+        diffStat = await execCapture("git", ["diff", "--stat", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => "");
     }
     catch { }
-    // git apply --check on main workspace
-    const patchFile = path.join(input.cwd, ".claude", `apply-${runId.slice(0, 8)}.patch`);
-    try {
-        await writeFile(patchFile, patch, "utf-8");
-        await execCapture("git", ["apply", "--check", patchFile], { cwd: input.cwd, timeoutMs: 30000 });
-    }
-    catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+    if (!diffStat.trim()) {
         try {
-            await import("node:fs/promises").then((m) => m.rm(patchFile).catch(() => { }));
+            diffStat = await execCapture("git", ["diff", "HEAD~1", "--stat", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => "");
         }
         catch { }
-        return { applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts: [msg], error: "git apply --check failed" };
     }
-    // Collect list of changed files from worktree
-    const appliedFiles = [];
+    // Collect list of changed source files from worktree
+    let appliedFilesList = "";
     try {
-        const out = await execCapture("git", ["diff", "--name-only"], { cwd: wtReal, timeoutMs: 30000 });
-        appliedFiles.push(...out.split("\n").map((l) => l.trim()).filter(Boolean));
+        appliedFilesList = await execCapture("git", ["diff", "--name-only", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 });
     }
     catch { }
-    try {
-        const out = await execCapture("git", ["diff", "HEAD~1", "--name-only"], { cwd: wtReal, timeoutMs: 30000 }).catch(() => "");
-        appliedFiles.push(...out.split("\n").map((l) => l.trim()).filter(Boolean));
-    }
-    catch { }
-    const uniqueFiles = [...new Set(appliedFiles)];
-    // git apply
-    try {
-        await execCapture("git", ["apply", patchFile], { cwd: input.cwd, timeoutMs: 30000 });
-    }
-    catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+    if (!appliedFilesList.trim()) {
         try {
-            await import("node:fs/promises").then((m) => m.rm(patchFile).catch(() => { }));
+            appliedFilesList = await execCapture("git", ["diff", "HEAD~1", "--name-only", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 });
         }
         catch { }
-        return { applied_files: uniqueFiles, diff_stat: diffStat, cleanup_performed: false, conflicts: [msg], error: `git apply failed: ${msg}` };
     }
-    // Cleanup patch file
-    try {
-        await import("node:fs/promises").then((m) => m.rm(patchFile).catch(() => { }));
+    const uniqueFiles = appliedFilesList.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (uniqueFiles.length === 0) {
+        return { applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts: [], error: "No changed source files found in worktree" };
     }
-    catch { }
+    // Copy each changed file from worktree to main workspace.
+    // Direct copy avoids git apply issues with trailing whitespace, source maps, etc.
+    const conflicts = [];
+    const copied = [];
+    for (const relPath of uniqueFiles) {
+        const src = path.join(wtReal, relPath);
+        const dest = path.join(input.cwd, relPath);
+        try {
+            const content = await import("node:fs/promises").then((m) => m.readFile(src));
+            await mkdir(path.dirname(dest), { recursive: true });
+            await writeFile(dest, content);
+            copied.push(relPath);
+        }
+        catch (err) {
+            conflicts.push(`${relPath}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
+    if (copied.length === 0) {
+        return { applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts, error: "Failed to copy any files from worktree" };
+    }
     // Optional: cleanup worktree
     let cleanupPerformed = false;
     if (input.cleanup) {
         try {
             const wtName = path.basename(wtReal);
-            await execCapture("git", ["worktree", "remove", wtName], { cwd: input.cwd, timeoutMs: 30000 });
+            await execCapture("git", ["worktree", "remove", "--force", wtName], { cwd: input.cwd, timeoutMs: 30000 });
             await execCapture("git", ["worktree", "prune"], { cwd: input.cwd, timeoutMs: 10000 });
             cleanupPerformed = true;
         }
