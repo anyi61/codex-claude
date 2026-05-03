@@ -114,6 +114,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 const { task, cwd, files, constraints, timeout_sec, session_key, fork_session } = args;
                 if (!task?.trim())
                     return errorResult("task is required");
+                if (fork_session && !session_key)
+                    return errorResult("fork_session requires session_key");
                 const check = await validateCwd(cwd);
                 if (!check.ok)
                     return errorResult(check.error);

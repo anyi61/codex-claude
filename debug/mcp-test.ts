@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { readFileSync, existsSync, writeFileSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, readdirSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -90,10 +90,27 @@ async function main() {
   const sessionsAfter2 = readSessions();
   process.stderr.write(`Sessions stored: ${sessionsAfter2} (still 1 if resumed, 2 if new)\n`);
 
-  if (sessionsAfter2 === 1) {
-    process.stderr.write("✓ Session reuse working: query #2 used same session as #1\n");
+  // Read the most recent run log and verify session.resumed === true
+  const runDir = path.join(PROJECT_ROOT, ".codex-claude-delegate", "runs");
+  const runFiles = readdirSync(runDir)
+    .filter((f) => f.endsWith(".json"))
+    .map((f) => ({ name: f, mtime: existsSync(path.join(runDir, f)) ? Date.now() : 0 }))
+    .sort((a, b) => b.mtime - a.mtime);
+
+  if (runFiles.length >= 2) {
+    const lastRun = JSON.parse(readFileSync(path.join(runDir, runFiles[0].name), "utf-8"));
+    const session = lastRun.session;
+    if (session && session.resumed === true) {
+      process.stderr.write(`✓ Session reuse working: query #2 resumed session ${session.returned_session_id?.slice(0, 8)}...\n`);
+      process.stderr.write(`  requested=${session.requested_session_id?.slice(0, 8)}... returned=${session.returned_session_id?.slice(0, 8)}...\n`);
+      if (session.requested_session_id === session.returned_session_id) {
+        process.stderr.write(`✓ Session IDs match — same session continued\n`);
+      }
+    } else {
+      process.stderr.write(`✗ Session reuse FAILED — resumed=${session?.resumed}\n`);
+    }
   } else {
-    process.stderr.write(`! Sessions: ${sessionsAfter1} → ${sessionsAfter2} (may be first-time setup)\n`);
+    process.stderr.write(`! Not enough run logs to verify (found ${runFiles.length})\n`);
   }
 
   child.stdin!.end();

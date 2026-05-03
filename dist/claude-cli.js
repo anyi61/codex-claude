@@ -289,7 +289,7 @@ export async function runClaudeQuery(input, runId) {
         resumed = !!requestedSessionId;
         // Persist session
         if (session_id) {
-            store.upsert(session_id, "query", repoKey, input.cwd, report.summary ?? "");
+            store.upsert(session_id, "query", repoKey, input.cwd, String(report.answer ?? "").slice(0, 200));
         }
         const sessionLog = { requested_session_id: requestedSessionId, resumed, forked, returned_session_id: session_id };
         await logRun(runId, { type: "query", input, report, session: sessionLog });
@@ -308,7 +308,7 @@ export async function runClaudeQuery(input, runId) {
                 const { report, session_id } = await spawnClaude(retryOpts);
                 returnedSessionId = session_id;
                 if (session_id) {
-                    store.upsert(session_id, "query", repoKey, input.cwd, report.summary ?? "");
+                    store.upsert(session_id, "query", repoKey, input.cwd, String(report.answer ?? "").slice(0, 200));
                 }
                 const sessionLog = { requested_session_id: requestedSessionId, resumed: false, forked: false, returned_session_id: session_id };
                 await logRun(runId, { type: "query", input, report, session: sessionLog, retried_after_session_expired: true });
