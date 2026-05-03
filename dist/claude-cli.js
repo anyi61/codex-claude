@@ -548,7 +548,7 @@ export async function runClaudeApply(input, runId) {
     // Check worktree diff stat for reporting (src/ only)
     let diffStat = "";
     try {
-        diffStat = await execCapture("git", ["diff", "--stat", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => "");
+        diffStat = await execCapture("git", ["diff", "--stat", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 });
     }
     catch { }
     if (!diffStat.trim()) {
@@ -557,48 +557,77 @@ export async function runClaudeApply(input, runId) {
         }
         catch { }
     }
-    // Collect list of changed source files from worktree
-    let appliedFilesList = "";
+    // Collect changed files with status (M=modified, A=added, D=deleted)
+    let statusOutput = "";
     try {
-        appliedFilesList = await execCapture("git", ["diff", "--name-only", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 });
+        statusOutput = await execCapture("git", ["diff", "--name-status", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 });
     }
     catch { }
-    if (!appliedFilesList.trim()) {
+    if (!statusOutput.trim()) {
         try {
-            appliedFilesList = await execCapture("git", ["diff", "HEAD~1", "--name-only", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 });
+            statusOutput = await execCapture("git", ["diff", "HEAD~1", "--name-status", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => "");
         }
         catch { }
     }
-    const uniqueFiles = appliedFilesList.split("\n").map((l) => l.trim()).filter(Boolean);
-    if (uniqueFiles.length === 0) {
+    const changes = statusOutput
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((l) => {
+        const [status, ...rest] = l.split(/\s+/);
+        return { status, file: rest.join(" ") };
+    });
+    if (changes.length === 0) {
         return { applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts: [], error: "No changed source files found in worktree" };
     }
-    // Copy each changed file from worktree to main workspace.
-    // Direct copy avoids git apply issues with trailing whitespace, source maps, etc.
+    // Check main workspace for local modifications on affected files
     const conflicts = [];
-    const copied = [];
-    for (const relPath of uniqueFiles) {
-        const src = path.join(wtReal, relPath);
-        const dest = path.join(input.cwd, relPath);
+    const toCopy = [];
+    for (const c of changes) {
         try {
-            const content = await import("node:fs/promises").then((m) => m.readFile(src));
-            await mkdir(path.dirname(dest), { recursive: true });
-            await writeFile(dest, content);
-            copied.push(relPath);
+            const shortStat = await execCapture("git", ["status", "--short", "--", c.file], { cwd: input.cwd, timeoutMs: 10000 });
+            if (shortStat.trim()) {
+                conflicts.push(`${c.file}: main workspace has uncommitted changes (${shortStat.trim().slice(0, 80)})`);
+                continue;
+            }
+        }
+        catch { }
+        toCopy.push(c);
+    }
+    // Apply changes
+    const copied = [];
+    for (const c of toCopy) {
+        const dest = path.join(input.cwd, c.file);
+        const src = path.join(wtReal, c.file);
+        try {
+            if (c.status === "D") {
+                // Deletion
+                if (existsSync(dest)) {
+                    await import("node:fs/promises").then((m) => m.rm(dest).catch(() => { }));
+                }
+                copied.push(c.file);
+            }
+            else {
+                // Modified or added — copy from worktree
+                const content = await import("node:fs/promises").then((m) => m.readFile(src));
+                await mkdir(path.dirname(dest), { recursive: true });
+                await writeFile(dest, content);
+                copied.push(c.file);
+            }
         }
         catch (err) {
-            conflicts.push(`${relPath}: ${err instanceof Error ? err.message : String(err)}`);
+            conflicts.push(`${c.file} (${c.status}): ${err instanceof Error ? err.message : String(err)}`);
         }
     }
     if (copied.length === 0) {
-        return { applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts, error: "Failed to copy any files from worktree" };
+        return { applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts, error: "No changes could be applied" };
     }
     // Optional: cleanup worktree
     let cleanupPerformed = false;
     if (input.cleanup) {
         try {
-            const wtName = path.basename(wtReal);
-            await execCapture("git", ["worktree", "remove", "--force", wtName], { cwd: input.cwd, timeoutMs: 30000 });
+            const wtRelPath = path.join(".claude", "worktrees", path.basename(wtReal));
+            await execCapture("git", ["worktree", "remove", "--force", wtRelPath], { cwd: input.cwd, timeoutMs: 30000 });
             await execCapture("git", ["worktree", "prune"], { cwd: input.cwd, timeoutMs: 10000 });
             cleanupPerformed = true;
         }
@@ -609,11 +638,11 @@ export async function runClaudeApply(input, runId) {
     await logRun(runId, {
         type: "apply",
         input,
-        applied_files: uniqueFiles,
+        applied_files: copied,
         cleanup_performed: cleanupPerformed,
         duration_ms: Date.now() - startTime,
     });
-    return { applied_files: uniqueFiles, diff_stat: diffStat, cleanup_performed: cleanupPerformed, conflicts: [] };
+    return { applied_files: copied, diff_stat: diffStat, cleanup_performed: cleanupPerformed, conflicts };
 }
 // ---- Cleanup delegated worktrees ----
 export async function runClaudeCleanup(input, runId) {
@@ -653,9 +682,10 @@ export async function runClaudeCleanup(input, runId) {
                 entries.push({ worktree_name: name, removed: false });
                 continue;
             }
-            // Actual remove
+            // Actual remove — use relative path from repo root, not just basename
             try {
-                await execCapture("git", ["worktree", "remove", "--force", name], { cwd: input.cwd, timeoutMs: 30000 });
+                const wtRelPath = path.join(".claude", "worktrees", name);
+                await execCapture("git", ["worktree", "remove", "--force", wtRelPath], { cwd: input.cwd, timeoutMs: 30000 });
                 removedCount++;
                 entries.push({ worktree_name: name, removed: true });
             }

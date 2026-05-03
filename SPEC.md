@@ -391,15 +391,13 @@ class SessionStore {
 }
 
 行为 {
-  1. 校验 cwd 和 worktree_path 必在 .claude/worktrees/codex-delegated-*
-  2. 确认主工作区干净（或被 apply 文件无本地冲突）
-  3. 在 worktree 中生成 patch:
-     - 有未提交变更 → git diff
-     - 有提交变更 → git diff <base>..HEAD
-  4. 主工作区执行 git apply --check
-  5. check 通过后 git apply
-  6. cleanup=true → git worktree remove + git worktree prune
-  7. 返回 applied_files, diff_stat, cleanup_performed, conflicts[]
+  1. 校验 cwd 和 worktree_path 必在 .claude/worktrees/codex-delegated-*; 确认目录存在
+  2. 检查主工作区被影响文件无本地未提交变更（git status --short），有冲突则拒绝
+  3. 收集变更文件列表：git diff --name-status -- src/（区分 M/A/D）
+  4. 对 M/A 文件：直接复制 worktree → 主工作区（避免 git apply patch 解析问题）
+  5. 对 D 文件：从主工作区删除对应文件
+  6. cleanup=true → git worktree remove --force .claude/worktrees/<name> + git worktree prune
+  7. 返回 applied_files（实际成功列表）、diff_stat、cleanup_performed、conflicts[]
 }
 ```
 
@@ -417,8 +415,8 @@ class SessionStore {
 行为 {
   1. 只处理 .claude/worktrees/codex-delegated-*
   2. dry_run=true 返回待清理列表但不执行
-  3. git worktree remove <path>（非 rm -rf）
-  4. 失败时报告原因不强制删除
+  3. git worktree remove --force .claude/worktrees/<name>
+  4. 失败时报告原因不 rm -rf 强制删除
 }
 ```
 
