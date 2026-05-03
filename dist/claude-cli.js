@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { execCapture, sanitizeEnv } from "./guard.js";
-import { RESULT_SCHEMA, buildImplementPrompt, buildQueryPrompt, buildReviewPrompt, } from "./schema.js";
+import { QUERY_SCHEMA, REVIEW_SCHEMA, IMPLEMENT_SCHEMA, buildImplementPrompt, buildQueryPrompt, buildReviewPrompt, } from "./schema.js";
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
 const LOG_DIR = path.join(process.cwd(), ".codex-claude-delegate", "runs");
 // ---- Logging (stderr only, never stdout) ----
@@ -43,9 +43,7 @@ function spawnClaude(opts) {
     args.push("--json-schema", JSON.stringify(opts.jsonSchema));
     args.push(opts.prompt);
     const safeEnv = sanitizeEnv();
-    log(`spawning: ${CLAUDE_BIN} ${args.slice(0, 3).join(" ")} ... (${args.length} args total, worktree=${opts.worktree ?? "none"})`);
-    log(`DEBUG full args: ${args.map((a, i) => `[${i}] ${a.length > 80 ? a.slice(0, 80) + "..." : a}`).join("\n  ")}`);
-    log(`DEBUG prompt (last arg, len=${opts.prompt.length}): ${opts.prompt.slice(0, 200)}`);
+    log(`spawning: ${CLAUDE_BIN} -p (${args.length} args, worktree=${opts.worktree ?? "none"}, maxTurns=${opts.maxTurns})`);
     return new Promise((resolve, reject) => {
         const child = spawn(CLAUDE_BIN, args, {
             cwd: opts.cwd,
@@ -72,34 +70,40 @@ function spawnClaude(opts) {
         child.on("close", (code) => {
             if (stderr)
                 log(`claude stderr: ${stderr.slice(0, 2000)}`);
-            if (code !== 0 && code !== null) {
-                reject(new Error(`Claude exited with code ${code}: ${stderr.slice(0, 500)}`));
-                return;
-            }
-            // Parse Claude's JSON output (may be JSON lines or single JSON object)
+            // Try to parse stdout even when exit code is non-zero.
+            // Claude may exit with code 1 on max_turns but still produce
+            // valid structured_output in the result payload.
             try {
                 const trimmed = stdout.trim();
                 if (!trimmed) {
-                    reject(new Error("Claude produced no output"));
+                    reject(new Error(`Claude produced no output (exit ${code})`));
                     return;
                 }
-                // Try parsing as a single JSON object first
                 let parsed;
                 try {
                     parsed = JSON.parse(trimmed);
                 }
                 catch {
-                    // Fallback: try last JSON line (stream-json case)
                     const lines = trimmed.split("\n").filter((l) => l.trim());
+                    if (lines.length === 0) {
+                        reject(new Error(`Claude produced unparseable output (exit ${code}): ${trimmed.slice(0, 500)}`));
+                        return;
+                    }
                     const lastLine = lines[lines.length - 1];
                     parsed = JSON.parse(lastLine);
                 }
-                // Extract structured_output field if present
+                // Extract structured_output if present, otherwise use the whole result
                 const report = (parsed.structured_output ?? parsed);
+                // If Claude hit max_turns with partial results, still return what we have.
+                // The subtype field signals whether this was a clean completion or an early exit.
+                if (code !== 0 && code !== null) {
+                    log(`Claude exited ${code} (subtype=${parsed.subtype ?? "unknown"}), returning partial result`);
+                }
                 resolve(report);
             }
             catch (err) {
-                reject(new Error(`Failed to parse Claude output: ${err.message}\nOutput (first 2000 chars): ${stdout.slice(0, 2000)}`));
+                const diag = `exit=${code}, stdoutLen=${stdout.length}, stderr=${stderr.slice(0, 200)}`;
+                reject(new Error(`Failed to parse Claude output. ${diag}\n${err.message}`));
             }
         });
     });
@@ -108,16 +112,25 @@ function spawnClaude(opts) {
 async function observeResult(cwd, worktree) {
     const obsCwd = worktree ? path.join(cwd, ".claude", "worktrees", worktree) : cwd;
     try {
-        const [diffNameOnly, diffStat] = await Promise.all([
+        // Capture both unstaged AND staged/committed changes.
+        // Claude may have committed in the worktree, so git diff alone misses changes.
+        const [diffNameOnly, diffStat, statusShort, headDiffName] = await Promise.all([
             execCapture("git", ["diff", "--name-only"], { cwd: obsCwd }).catch(() => ""),
             execCapture("git", ["diff", "--stat"], { cwd: obsCwd }).catch(() => ""),
+            execCapture("git", ["status", "--short"], { cwd: obsCwd }).catch(() => ""),
+            execCapture("git", ["diff", "HEAD~1", "--name-only"], { cwd: obsCwd }).catch(() => ""),
         ]);
-        const changedFiles = diffNameOnly
-            .split("\n")
-            .map((l) => l.trim())
-            .filter((l) => l.length > 0);
+        // Collect unique changed files from all sources
+        const fileSet = new Set();
+        for (const source of [diffNameOnly, headDiffName, statusShort]) {
+            for (const line of source.split("\n")) {
+                const cleaned = line.replace(/^[MADRC? ]{1,3}/, "").trim();
+                if (cleaned)
+                    fileSet.add(cleaned);
+            }
+        }
         return {
-            changed_files: changedFiles,
+            changed_files: [...fileSet],
             diff_stat: diffStat || "(no changes or unable to get diff)",
             diff_name_only: diffNameOnly || "(no changes)",
             worktree_path: worktree ? `.claude/worktrees/${worktree}` : undefined,
@@ -167,7 +180,13 @@ export async function checkClaudeStatus(cwd) {
     if (result.claude_available) {
         try {
             const authOutput = await execCapture(CLAUDE_BIN, ["auth", "status"], { cwd });
-            result.auth_status = authOutput.includes("Logged in") ? "authenticated" : "unknown";
+            try {
+                const authJson = JSON.parse(authOutput);
+                result.auth_status = authJson.loggedIn === true ? "authenticated" : "not authenticated";
+            }
+            catch {
+                result.auth_status = authOutput.includes("Logged in") || authOutput.includes("loggedIn") ? "authenticated" : "unknown";
+            }
         }
         catch {
             result.auth_status = "unauthenticated or unknown";
@@ -232,7 +251,7 @@ export async function runClaudeQuery(input, runId) {
         ],
         maxTurns: 4,
         timeoutSec: input.timeout_sec ?? 120,
-        jsonSchema: RESULT_SCHEMA,
+        jsonSchema: QUERY_SCHEMA,
     };
     try {
         const report = await spawnClaude(opts);
@@ -273,7 +292,7 @@ export async function runClaudeReview(input, runId) {
         ],
         maxTurns: 6,
         timeoutSec: input.timeout_sec ?? 180,
-        jsonSchema: RESULT_SCHEMA,
+        jsonSchema: REVIEW_SCHEMA,
     };
     try {
         const report = await spawnClaude(opts);
@@ -366,9 +385,9 @@ export async function runClaudeImplement(input, runId) {
             "Bash(pnpm add *)",
             "Bash(pnpm remove *)",
         ],
-        maxTurns: 8,
+        maxTurns: 15,
         timeoutSec: input.timeout_sec ?? 600,
-        jsonSchema: RESULT_SCHEMA,
+        jsonSchema: IMPLEMENT_SCHEMA,
     };
     let report;
     const startTime = Date.now();

@@ -60,3 +60,14 @@ Every spawn of Claude must pass `BRIDGE_DEPTH` incremented by 1 via `sanitizeEnv
 ### cwd must be validated
 
 Always call `validateCwd()` before operating on user-supplied paths. It resolves symlinks, checks allowRoots, and for `claude_implement` confirms the path is inside a git repo (required for `--worktree`).
+
+### --json-schema must be the last flag before the prompt
+
+The Claude CLI has a parsing quirk: `--json-schema` consumes all subsequent arguments as its value unless it is placed as the last flag before the positional prompt. The arg order in `spawnClaude` must be:
+
+```
+-p -w <name> --permission-mode dontAsk --tools ... --max-turns ... --output-format json
+  --allowedTools ... --disallowedTools ... --json-schema <schema> <prompt>
+```
+
+If `--json-schema` is placed before `--allowedTools` or `--disallowedTools`, the CLI reports "Input must be provided either through stdin or as a prompt argument".

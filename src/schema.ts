@@ -55,7 +55,7 @@ export interface ServerObserved {
 }
 
 export interface ClaudeResult {
-  claude_report: ClaudeReport;
+  claude_report: Record<string, unknown>;
   server_observed: ServerObserved;
 }
 
@@ -72,7 +72,28 @@ export interface ClaudeStatusResult {
 
 // ---- JSON Schemas for --json-schema flag ----
 
-export const RESULT_SCHEMA = {
+// For claude_query: answer-focused, no file/tool fields.
+export const QUERY_SCHEMA = {
+  type: "object",
+  required: ["answer"],
+  properties: {
+    answer: { type: "string", description: "The full, detailed answer to the question. Include all relevant information." },
+  },
+} as const;
+
+// For claude_review: findings-focused, read-only.
+export const REVIEW_SCHEMA = {
+  type: "object",
+  required: ["findings", "recommendations", "severity"],
+  properties: {
+    findings: { type: "string", description: "Detailed review findings: bugs, design issues, security concerns, performance problems." },
+    recommendations: { type: "string", description: "Specific, actionable recommendations for each finding." },
+    severity: { type: "string", enum: ["critical", "high", "medium", "low", "none"], description: "Overall severity of issues found." },
+  },
+} as const;
+
+// For claude_implement: full task report with file changes and test results.
+export const IMPLEMENT_SCHEMA = {
   type: "object",
   required: ["status", "summary", "changed_files", "commands_run", "tests", "risks", "next_steps"],
   properties: {
@@ -110,6 +131,9 @@ export const RESULT_SCHEMA = {
   },
 } as const;
 
+// Backwards-compatible alias
+export const RESULT_SCHEMA = IMPLEMENT_SCHEMA;
+
 // ---- Prompt templates ----
 
 export function buildImplementPrompt(input: ClaudeImplementInput): string {
@@ -130,7 +154,7 @@ export function buildImplementPrompt(input: ClaudeImplementInput): string {
   }
 
   prompt += `\n## Deliverable\n\n`;
-  prompt += `Return a structured result with: summary, changed_files list, commands you ran, test results (ran/passed/output_tail), risks, and next_steps.`;
+  prompt += `Return a structured result with: status (success/failed/partial/needs_user), summary, changed_files list, commands_run list, tests (ran, command, passed, output_tail), risks list, and next_steps list.`;
 
   return prompt;
 }
@@ -150,7 +174,7 @@ export function buildReviewPrompt(input: ClaudeReviewInput): string {
   prompt += `- You are a reviewer. Do NOT modify any files.\n`;
   prompt += `- Do NOT call Codex or any Codex-related tools.\n`;
   prompt += `- Provide a thorough code review: bugs, design issues, security concerns, performance problems.\n`;
-  prompt += `- Return your findings in the structured output format.\n`;
+  prompt += `- Return your findings in a structured result with: findings (detailed description of each issue), recommendations (specific actionable fixes), and severity (one of: critical, high, medium, low, none).\n`;
 
   return prompt;
 }
@@ -161,8 +185,8 @@ export function buildQueryPrompt(input: ClaudeQueryInput): string {
   prompt += `## Instructions\n\n`;
   prompt += `- You are in read-only mode. Do NOT modify any files.\n`;
   prompt += `- Do NOT call Codex or any Codex-related tools.\n`;
-  prompt += `- Answer concisely but thoroughly.\n`;
-  prompt += `- Return your answer in the structured output format.\n`;
+  prompt += `- Answer thoroughly with all relevant details.\n`;
+  prompt += `- Return your answer in a structured result with: answer (a single string containing your complete answer with all details).\n`;
 
   return prompt;
 }
@@ -181,3 +205,4 @@ export function errorResult(message: string): CallToolResult {
     isError: true,
   };
 }
+

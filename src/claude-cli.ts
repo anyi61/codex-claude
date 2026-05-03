@@ -12,7 +12,9 @@ import type {
   ServerObserved,
 } from "./schema.js";
 import {
-  RESULT_SCHEMA,
+  QUERY_SCHEMA,
+  REVIEW_SCHEMA,
+  IMPLEMENT_SCHEMA,
   buildImplementPrompt,
   buildQueryPrompt,
   buildReviewPrompt,
@@ -53,7 +55,7 @@ interface ClaudeRunOptions {
   jsonSchema: object;
 }
 
-function spawnClaude(opts: ClaudeRunOptions): Promise<ClaudeReport> {
+function spawnClaude(opts: ClaudeRunOptions): Promise<Record<string, unknown>> {
   const args: string[] = ["-p"];
 
   if (opts.worktree) {
@@ -121,35 +123,42 @@ function spawnClaude(opts: ClaudeRunOptions): Promise<ClaudeReport> {
     child.on("close", (code) => {
       if (stderr) log(`claude stderr: ${stderr.slice(0, 2000)}`);
 
-      if (code !== 0 && code !== null) {
-        reject(new Error(`Claude exited with code ${code}: ${stderr.slice(0, 500)}`));
-        return;
-      }
-
-      // Parse Claude's JSON output (may be JSON lines or single JSON object)
+      // Try to parse stdout even when exit code is non-zero.
+      // Claude may exit with code 1 on max_turns but still produce
+      // valid structured_output in the result payload.
       try {
         const trimmed = stdout.trim();
         if (!trimmed) {
-          reject(new Error("Claude produced no output"));
+          reject(new Error(`Claude produced no output (exit ${code})`));
           return;
         }
 
-        // Try parsing as a single JSON object first
         let parsed: Record<string, unknown>;
         try {
           parsed = JSON.parse(trimmed);
         } catch {
-          // Fallback: try last JSON line (stream-json case)
           const lines = trimmed.split("\n").filter((l) => l.trim());
+          if (lines.length === 0) {
+            reject(new Error(`Claude produced unparseable output (exit ${code}): ${trimmed.slice(0, 500)}`));
+            return;
+          }
           const lastLine = lines[lines.length - 1];
           parsed = JSON.parse(lastLine);
         }
 
-        // Extract structured_output field if present
-        const report: ClaudeReport = (parsed.structured_output ?? parsed) as ClaudeReport;
+        // Extract structured_output if present, otherwise use the whole result
+        const report = (parsed.structured_output ?? parsed) as Record<string, unknown>;
+
+        // If Claude hit max_turns with partial results, still return what we have.
+        // The subtype field signals whether this was a clean completion or an early exit.
+        if (code !== 0 && code !== null) {
+          log(`Claude exited ${code} (subtype=${parsed.subtype ?? "unknown"}), returning partial result`);
+        }
+
         resolve(report);
       } catch (err) {
-        reject(new Error(`Failed to parse Claude output: ${(err as Error).message}\nOutput (first 2000 chars): ${stdout.slice(0, 2000)}`));
+        const diag = `exit=${code}, stdoutLen=${stdout.length}, stderr=${stderr.slice(0, 200)}`;
+        reject(new Error(`Failed to parse Claude output. ${diag}\n${(err as Error).message}`));
       }
     });
   });
@@ -161,18 +170,26 @@ async function observeResult(cwd: string, worktree?: string): Promise<ServerObse
   const obsCwd = worktree ? path.join(cwd, ".claude", "worktrees", worktree) : cwd;
 
   try {
-    const [diffNameOnly, diffStat] = await Promise.all([
+    // Capture both unstaged AND staged/committed changes.
+    // Claude may have committed in the worktree, so git diff alone misses changes.
+    const [diffNameOnly, diffStat, statusShort, headDiffName] = await Promise.all([
       execCapture("git", ["diff", "--name-only"], { cwd: obsCwd }).catch(() => ""),
       execCapture("git", ["diff", "--stat"], { cwd: obsCwd }).catch(() => ""),
+      execCapture("git", ["status", "--short"], { cwd: obsCwd }).catch(() => ""),
+      execCapture("git", ["diff", "HEAD~1", "--name-only"], { cwd: obsCwd }).catch(() => ""),
     ]);
 
-    const changedFiles = diffNameOnly
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
+    // Collect unique changed files from all sources
+    const fileSet = new Set<string>();
+    for (const source of [diffNameOnly, headDiffName, statusShort]) {
+      for (const line of source.split("\n")) {
+        const cleaned = line.replace(/^[MADRC? ]{1,3}/, "").trim();
+        if (cleaned) fileSet.add(cleaned);
+      }
+    }
 
     return {
-      changed_files: changedFiles,
+      changed_files: [...fileSet],
       diff_stat: diffStat || "(no changes or unable to get diff)",
       diff_name_only: diffNameOnly || "(no changes)",
       worktree_path: worktree ? `.claude/worktrees/${worktree}` : undefined,
@@ -225,7 +242,12 @@ export async function checkClaudeStatus(cwd: string): Promise<ClaudeStatusResult
   if (result.claude_available) {
     try {
       const authOutput = await execCapture(CLAUDE_BIN, ["auth", "status"], { cwd });
-      result.auth_status = authOutput.includes("Logged in") ? "authenticated" : "unknown";
+      try {
+        const authJson = JSON.parse(authOutput);
+        result.auth_status = authJson.loggedIn === true ? "authenticated" : "not authenticated";
+      } catch {
+        result.auth_status = authOutput.includes("Logged in") || authOutput.includes("loggedIn") ? "authenticated" : "unknown";
+      }
     } catch {
       result.auth_status = "unauthenticated or unknown";
       result.errors.push("claude auth status could not be verified");
@@ -267,7 +289,7 @@ export async function checkClaudeStatus(cwd: string): Promise<ClaudeStatusResult
 export async function runClaudeQuery(
   input: ClaudeQueryInput,
   runId: string
-): Promise<ClaudeReport> {
+): Promise<Record<string, unknown>> {
   const prompt = buildQueryPrompt(input);
   const opts: ClaudeRunOptions = {
     prompt,
@@ -295,7 +317,7 @@ export async function runClaudeQuery(
     ],
     maxTurns: 4,
     timeoutSec: input.timeout_sec ?? 120,
-    jsonSchema: RESULT_SCHEMA,
+    jsonSchema: QUERY_SCHEMA,
   };
 
   try {
@@ -311,7 +333,7 @@ export async function runClaudeQuery(
 export async function runClaudeReview(
   input: ClaudeReviewInput,
   runId: string
-): Promise<ClaudeReport> {
+): Promise<Record<string, unknown>> {
   const prompt = buildReviewPrompt(input);
   const opts: ClaudeRunOptions = {
     prompt,
@@ -340,7 +362,7 @@ export async function runClaudeReview(
     ],
     maxTurns: 6,
     timeoutSec: input.timeout_sec ?? 180,
-    jsonSchema: RESULT_SCHEMA,
+    jsonSchema: REVIEW_SCHEMA,
   };
 
   try {
@@ -437,12 +459,12 @@ export async function runClaudeImplement(
       "Bash(pnpm add *)",
       "Bash(pnpm remove *)",
     ],
-    maxTurns: 8,
+    maxTurns: 15,
     timeoutSec: input.timeout_sec ?? 600,
-    jsonSchema: RESULT_SCHEMA,
+    jsonSchema: IMPLEMENT_SCHEMA,
   };
 
-  let report: ClaudeReport;
+  let report: Record<string, unknown>;
   const startTime = Date.now();
 
   try {
