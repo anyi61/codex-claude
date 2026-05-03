@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { readFileSync, existsSync, writeFileSync, readdirSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -94,24 +94,26 @@ async function main() {
   const runDir = path.join(PROJECT_ROOT, ".codex-claude-delegate", "runs");
   const runFiles = readdirSync(runDir)
     .filter((f) => f.endsWith(".json"))
-    .map((f) => ({ name: f, mtime: existsSync(path.join(runDir, f)) ? Date.now() : 0 }))
+    .map((f) => ({ name: f, mtime: statSync(path.join(runDir, f)).mtimeMs }))
     .sort((a, b) => b.mtime - a.mtime);
 
-  if (runFiles.length >= 2) {
-    const lastRun = JSON.parse(readFileSync(path.join(runDir, runFiles[0].name), "utf-8"));
-    const session = lastRun.session;
-    if (session && session.resumed === true) {
-      process.stderr.write(`✓ Session reuse working: query #2 resumed session ${session.returned_session_id?.slice(0, 8)}...\n`);
-      process.stderr.write(`  requested=${session.requested_session_id?.slice(0, 8)}... returned=${session.returned_session_id?.slice(0, 8)}...\n`);
-      if (session.requested_session_id === session.returned_session_id) {
-        process.stderr.write(`✓ Session IDs match — same session continued\n`);
-      }
-    } else {
-      process.stderr.write(`✗ Session reuse FAILED — resumed=${session?.resumed}\n`);
-    }
-  } else {
-    process.stderr.write(`! Not enough run logs to verify (found ${runFiles.length})\n`);
+  if (runFiles.length < 2) {
+    throw new Error(`Need at least 2 run logs to verify session reuse, found ${runFiles.length}`);
   }
+
+  const lastRun = JSON.parse(readFileSync(path.join(runDir, runFiles[0].name), "utf-8"));
+  const session = lastRun.session;
+  if (!session || session.resumed !== true) {
+    throw new Error(`Session reuse FAILED: resumed=${session?.resumed}, session=${JSON.stringify(session)}`);
+  }
+  if (!session.requested_session_id || !session.returned_session_id) {
+    throw new Error(`Session IDs missing: requested=${session.requested_session_id}, returned=${session.returned_session_id}`);
+  }
+  if (session.requested_session_id !== session.returned_session_id) {
+    throw new Error(`Session IDs mismatch: ${session.requested_session_id} vs ${session.returned_session_id}`);
+  }
+
+  process.stderr.write(`✓ Session reuse verified: resumed session ${session.returned_session_id.slice(0, 8)}..., IDs match\n`);
 
   child.stdin!.end();
   await new Promise((r) => setTimeout(r, 500));
