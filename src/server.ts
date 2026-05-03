@@ -100,6 +100,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           timeout_sec: { type: "number", description: "Timeout in seconds (default 600)" },
           session_key: { type: "string", description: "Resume an existing Claude session by ID (implement does NOT auto-resume)" },
           fork_session: { type: "boolean", description: "When used with session_key, fork the session instead of continuing it" },
+          max_cost_usd: { type: "number", description: "Maximum USD budget for this task (passed as --max-budget-usd to Claude). Must be > 0 and <= 10." },
+          max_changed_files: { type: "number", description: "Warn if Claude changes more than this many files. Must be a positive integer <= 100." },
         },
       },
     },
@@ -187,7 +189,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "claude_implement": {
-        const { task, cwd, files, constraints, timeout_sec, session_key, fork_session } = args as {
+        const { task, cwd, files, constraints, timeout_sec, session_key, fork_session, max_cost_usd, max_changed_files } = args as {
           task: string;
           cwd: string;
           files?: string[];
@@ -195,9 +197,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           timeout_sec?: number;
           session_key?: string;
           fork_session?: boolean;
+          max_cost_usd?: number;
+          max_changed_files?: number;
         };
         if (!task?.trim()) return errorResult("task is required");
         if (fork_session && !session_key) return errorResult("fork_session requires session_key");
+
+        // Validate max_cost_usd
+        if (max_cost_usd !== undefined) {
+          if (typeof max_cost_usd !== "number" || !Number.isFinite(max_cost_usd) || max_cost_usd <= 0 || max_cost_usd > 10) {
+            return errorResult("max_cost_usd must be a finite number > 0 and <= 10");
+          }
+        }
+
+        // Validate max_changed_files
+        if (max_changed_files !== undefined) {
+          if (!Number.isInteger(max_changed_files) || max_changed_files <= 0 || max_changed_files > 100) {
+            return errorResult("max_changed_files must be a positive integer <= 100");
+          }
+        }
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
@@ -210,7 +228,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         const result = await runClaudeImplement(
-          { task, cwd: check.resolved, files, constraints, timeout_sec, session_key, fork_session },
+          { task, cwd: check.resolved, files, constraints, timeout_sec, session_key, fork_session, max_cost_usd, max_changed_files },
           runId
         );
         return jsonResult(result);

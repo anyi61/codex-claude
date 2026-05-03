@@ -433,10 +433,14 @@ class SessionStore {
 }
 ```
 
-### Phase 3 第二阶段：资源控制
+### Phase 3.2（已完成 ✅）：资源控制
 
-- `max_cost_usd`: 通过 `--max-budget-usd` flag 传递给 Claude CLI
-- `max_changed_files`: 在 `observeResult()` 后检查，超限返回风险状态但不自动删除 worktree
+- [x] `max_cost_usd`: 通过 `--max-budget-usd` flag 传递给 Claude CLI
+- [x] `max_changed_files`: 在 `observeResult()` 后检查，超限返回 `resource_limits.warnings[]`
+- [x] server 层参数校验：`max_cost_usd` 必须 >0, <=10, finite；`max_changed_files` 必须正整数 <=100
+- [x] 结构化返回 `resource_limits: { max_cost_usd?, max_changed_files?, actual_changed_files, changed_files_exceeded, warnings[] }`
+- [x] run log 包含 `observed.resource_limits`，方便后续复盘
+- [x] `debug/test-implement.ts` 覆盖：资源限制参数传递、超限检测、无效参数校验
 - `idle_timeout_sec`: 暂缓，除非遇到真实卡死问题
 
 ### Phase 4：打包为 Codex Plugin
@@ -491,7 +495,7 @@ CLI 的 `claude auth status` 返回 `{"loggedIn": true, "authMethod": "oauth_tok
 4. **session 不复用**：Phase 1 每次 one-shot，无上下文复用
 5. **Codex Plugin 未打包**：Phase 1 需手动配置 `~/.codex/config.toml`
 6. **Codex 会绕过 claude_implement**：对于简单任务，Codex 倾向于自己编辑而非委托。需显式指令或 Skill 引导
-7. **ALLOW_ROOTS 硬编码**：目前仅允许 `~/projects`、`~/work`、`~/codex-claude`，需手动修改 `guard.ts` 扩展白名单
+7. **ALLOW_ROOTS 硬编码**：默认仅允许 `~/projects`、`~/work`、`~/codex-claude`。可通过 `CODEX_CLAUDE_ALLOW_ROOTS` 环境变量覆盖（冒号分隔的路径列表），例如 `CODEX_CLAUDE_ALLOW_ROOTS=/Users/anyi/codex-claude:/Users/anyi/my-project`。设置方式：在 `~/.codex/config.toml` 的 `[shell_environment_policy.set]` 中添加。
 
 ## 11. Codex 配置示例
 
@@ -504,6 +508,10 @@ args = ["/Users/anyi/codex-claude/dist/server.js"]
 tool_timeout_sec = 600
 startup_timeout_sec = 20
 enabled_tools = ["claude_status", "claude_query", "claude_review", "claude_implement"]
+
+# 如需扩展 ALLOW_ROOTS 白名单（默认仅 ~/projects、~/work、~/codex-claude）：
+[shell_environment_policy.set]
+CODEX_CLAUDE_ALLOW_ROOTS = "/Users/anyi/codex-claude:/Users/anyi/my-other-project"
 ```
 
 ## 12. 运行日志

@@ -44,7 +44,11 @@ function spawnClaude(opts) {
     if (opts.noSessionPersistence) {
         args.push("--no-session-persistence");
     }
-    args.push("--permission-mode", "dontAsk", "--tools", opts.tools, "--max-turns", String(opts.maxTurns), "--output-format", "json");
+    args.push("--permission-mode", "dontAsk");
+    if (opts.maxBudgetUsd !== undefined) {
+        args.push("--max-budget-usd", String(opts.maxBudgetUsd));
+    }
+    args.push("--tools", opts.tools, "--max-turns", String(opts.maxTurns), "--output-format", "json");
     // --allowedTools / --disallowedTools must come before --json-schema.
     // --json-schema must be the last flag before the positional prompt.
     // If placed before --allowedTools/--disallowedTools, the CLI incorrectly
@@ -488,6 +492,7 @@ export async function runClaudeImplement(input, runId) {
         jsonSchema: IMPLEMENT_SCHEMA,
         resumeSessionId,
         forkSession: forked,
+        maxBudgetUsd: input.max_cost_usd,
     };
     let report;
     let returnedSessionId = null;
@@ -513,6 +518,24 @@ export async function runClaudeImplement(input, runId) {
     }
     // Observe actual changes (don't trust Claude's self-report alone)
     const observed = await observeResult(input.cwd, worktreeName);
+    // Check resource limits
+    if (input.max_changed_files !== undefined || input.max_cost_usd !== undefined) {
+        const warnings = [];
+        const exceeded = input.max_changed_files !== undefined &&
+            observed.changed_files.length > input.max_changed_files;
+        if (exceeded) {
+            const msg = `Changed ${observed.changed_files.length} files, exceeds limit of ${input.max_changed_files}`;
+            warnings.push(msg);
+            log(`Resource warning: ${msg}`);
+        }
+        observed.resource_limits = {
+            max_cost_usd: input.max_cost_usd,
+            max_changed_files: input.max_changed_files,
+            actual_changed_files: observed.changed_files.length,
+            changed_files_exceeded: exceeded,
+            warnings,
+        };
+    }
     const sessionLog = {
         requested_session_id: resumeSessionId ?? null,
         resumed: !!resumeSessionId,

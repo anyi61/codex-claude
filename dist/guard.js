@@ -2,11 +2,19 @@ import { realpath, stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 // Allowlist of directories that MCP tools may operate within.
-const ALLOW_ROOTS = [
-    process.env.HOME ? `${process.env.HOME}/projects` : null,
-    process.env.HOME ? `${process.env.HOME}/work` : null,
-    process.env.HOME ? `${process.env.HOME}/codex-claude` : null,
-].filter(Boolean);
+// Override via CODEX_CLAUDE_ALLOW_ROOTS (colon-separated paths on macOS/Linux).
+const ALLOW_ROOTS = (() => {
+    const env = process.env.CODEX_CLAUDE_ALLOW_ROOTS;
+    if (env) {
+        return env.split(":").filter(Boolean).map((p) => path.resolve(p));
+    }
+    const home = process.env.HOME;
+    return [
+        home ? `${home}/projects` : null,
+        home ? `${home}/work` : null,
+        home ? `${home}/codex-claude` : null,
+    ].filter(Boolean);
+})();
 export async function validateCwd(raw) {
     // Resolve symlinks and relative paths
     let resolved;

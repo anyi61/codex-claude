@@ -28,6 +28,8 @@ export interface ClaudeImplementInput {
   timeout_sec?: number;
   session_key?: string;
   fork_session?: boolean;
+  max_cost_usd?: number;
+  max_changed_files?: number;
 }
 
 // ---- Structured output types ----
@@ -49,11 +51,20 @@ export interface ClaudeReport {
   next_steps: string[];
 }
 
+export interface ResourceLimits {
+  max_cost_usd?: number;
+  max_changed_files?: number;
+  actual_changed_files: number;
+  changed_files_exceeded: boolean;
+  warnings: string[];
+}
+
 export interface ServerObserved {
   changed_files: string[];
   diff_stat: string;
   diff_name_only: string;
   worktree_path?: string;
+  resource_limits?: ResourceLimits;
 }
 
 export interface ClaudeResult {

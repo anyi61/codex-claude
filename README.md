@@ -55,13 +55,19 @@ enabled_tools = ["claude_status", "claude_query", "claude_review", "claude_imple
 
 ### 4. Configure allowed roots
 
-Set the `ALLOW_ROOTS` env var or edit `src/guard.ts`:
+By default, only `~/projects`, `~/work`, and `~/codex-claude` are allowed. To extend:
+
+```toml
+# ~/.codex/config.toml
+[shell_environment_policy.set]
+CODEX_CLAUDE_ALLOW_ROOTS = "/Users/you/projects:/Users/you/work:/Users/you/my-repo"
+```
+
+Or run directly:
 
 ```bash
 export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 ```
-
-By default, `~/projects`, `~/work`, and the install directory are allowed.
 
 ### 5. Verify
 

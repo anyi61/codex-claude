@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MCP server that lets Codex CLI delegate tasks to Claude Code. Codex calls MCP tools exposed by this server; the server spawns `claude -p` with security constraints and returns structured results.
 
-Phase 1 (one-shot delegation + worktree isolation) and Phase 2 (session reuse) complete. Codex config at `~/.codex/config.toml` (`[mcp_servers.claude_delegate]`). Codex skill at `.agents/skills/claude-delegate.md`. Full spec at `SPEC.md`.
+Phase 1 (one-shot delegation + worktree isolation), Phase 2 (session reuse), and Phase 3.1 (apply + cleanup + status) complete. Phase 3.2 (resource control: `max_cost_usd` / `max_changed_files`) also complete. Codex config at `~/.codex/config.toml` (`[mcp_servers.claude_delegate]`). Codex skill at `.agents/skills/claude-delegate.md`. Full spec at `SPEC.md`.
 
 Session strategy: query auto-resumes recent sessions, review uses `--no-session-persistence`, implement only resumes on explicit `session_key`.
 
@@ -23,9 +23,9 @@ npm start              # Run compiled output (node dist/server.js)
 Five modules in `src/`:
 
 - **server.ts** — MCP stdio entry point. Registers 4 tools, routes calls, rejects on `BRIDGE_DEPTH >= 2`.
-- **claude-cli.ts** — Spawns `claude -p` with mode-specific args and schemas. `runClaudeQuery` (QUERY_SCHEMA, auto-resume, maxTurns=4), `runClaudeReview` (REVIEW_SCHEMA, `--no-session-persistence`, maxTurns=10), `runClaudeImplement` (IMPLEMENT_SCHEMA, worktree, explicit `session_key`, maxTurns=15). `observeResult()` ground-truths with `git diff` + `git status --short`. Non-zero exit codes that produce valid stdout JSON are still resolved (handles `error_max_turns`).
+- **claude-cli.ts** — Spawns `claude -p` with mode-specific args and schemas. `runClaudeQuery` (QUERY_SCHEMA, auto-resume, maxTurns=4), `runClaudeReview` (REVIEW_SCHEMA, `--no-session-persistence`, maxTurns=10), `runClaudeImplement` (IMPLEMENT_SCHEMA, worktree, explicit `session_key`, maxTurns=15, supports `max_cost_usd` → `--max-budget-usd` and `max_changed_files` → `resource_limits`). `observeResult()` ground-truths with `git diff` + `git status --short`. Non-zero exit codes that produce valid stdout JSON are still resolved (handles `error_max_turns`).
 - **session.ts** — `SessionStore` class with atomic `sessions.json` read/write, `getRecent` (20-min window), `upsert`, `markExpired`, `prune`.
-- **guard.ts** — Security: `validateCwd` (realpath + allowRoots + git check), `sanitizeEnv` (strips secrets, sets BRIDGE_DEPTH=1), `checkRecursion`, `execCapture` / `execStream` (safe spawn helpers). ALLOW_ROOTS is hardcoded to `~/projects`, `~/work`, `~/codex-claude`.
+- **guard.ts** — Security: `validateCwd` (realpath + allowRoots + git check), `sanitizeEnv` (strips secrets, sets BRIDGE_DEPTH=1), `checkRecursion`, `execCapture` / `execStream` (safe spawn helpers). ALLOW_ROOTS defaults to `~/projects`, `~/work`, `~/codex-claude`; override via `CODEX_CLAUDE_ALLOW_ROOTS` env var (colon-separated paths).
 - **schema.ts** — Three JSON Schemas (`QUERY_SCHEMA`, `REVIEW_SCHEMA`, `IMPLEMENT_SCHEMA`), TypeScript interfaces, `SessionLog` type, and prompt builders with anti-delegation constraints.
 
 ## Debug harness
