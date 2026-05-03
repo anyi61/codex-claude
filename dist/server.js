@@ -200,4 +200,5 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 const transport = new StdioServerTransport();
 await server.connect(transport);
 process.stderr.write("[claude-delegate] MCP server started (stdio)\n");
+// 2026年5月3日 注意：必须要使用我指定的方式修改
 //# sourceMappingURL=server.js.map

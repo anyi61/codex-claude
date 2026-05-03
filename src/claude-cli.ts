@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile, mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { execCapture, sanitizeEnv } from "./guard.js";
@@ -61,6 +61,63 @@ async function logRun(runId: string, data: Record<string, unknown>): Promise<voi
   } catch {
     // best-effort logging
   }
+}
+
+interface ImplementRunLog {
+  type?: unknown;
+  input?: {
+    files?: unknown;
+  };
+  observed?: {
+    worktree_path?: unknown;
+    resource_limits?: {
+      changed_files_exceeded?: unknown;
+      warnings?: unknown;
+    };
+  };
+}
+
+function normalizeRepoPath(cwd: string, file: string): string {
+  const repoRelative = path.isAbsolute(file) ? path.relative(cwd, file) : file;
+  return repoRelative.replaceAll(path.sep, "/").replace(/^\.\//, "");
+}
+
+function isUnderRequestedFile(file: string, requested: string): boolean {
+  return file === requested || file.startsWith(`${requested.replace(/\/$/, "")}/`);
+}
+
+async function findImplementLogForWorktree(worktreePath: string): Promise<ImplementRunLog | null> {
+  try {
+    const entries = await readdir(LOG_DIR);
+    const candidates = await Promise.all(
+      entries
+        .filter((name) => name.endsWith(".json"))
+        .map(async (name) => {
+          const file = path.join(LOG_DIR, name);
+          try {
+            return { file, mtimeMs: (await stat(file)).mtimeMs };
+          } catch {
+            return null;
+          }
+        })
+    );
+
+    for (const entry of candidates
+      .filter((item): item is { file: string; mtimeMs: number } => item !== null)
+      .sort((a, b) => b.mtimeMs - a.mtimeMs)) {
+      try {
+        const parsed = JSON.parse(await readFile(entry.file, "utf8")) as ImplementRunLog;
+        if (parsed.type === "implement" && parsed.observed?.worktree_path === worktreePath) {
+          return parsed;
+        }
+      } catch {
+        // Ignore malformed or concurrently written logs.
+      }
+    }
+  } catch {
+    // Missing logs should not block legacy/manual apply flows.
+  }
+  return null;
 }
 
 // ---- Sensitive data redaction for stderr ----
@@ -889,6 +946,40 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
     return { applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts: [], error: "No changed source files found in worktree" };
   }
 
+  const wtRelPath = path.join(".claude", "worktrees", path.basename(wtReal));
+  const implementLog = await findImplementLogForWorktree(wtRelPath);
+  const resourceLimits = implementLog?.observed?.resource_limits;
+  if (resourceLimits?.changed_files_exceeded === true) {
+    const warnings = Array.isArray(resourceLimits.warnings)
+      ? resourceLimits.warnings.filter((item): item is string => typeof item === "string")
+      : [];
+    return {
+      applied_files: [],
+      diff_stat: diffStat,
+      cleanup_performed: false,
+      conflicts: warnings,
+      error: "Worktree exceeded implement resource limits; apply refused",
+    };
+  }
+
+  if (implementLog?.input && Array.isArray(implementLog.input.files) && implementLog.input.files.length > 0) {
+    const requestedFiles = implementLog.input.files
+      .filter((item): item is string => typeof item === "string")
+      .map((file) => normalizeRepoPath(input.cwd, file));
+    const outOfScope = changes.filter(
+      (change) => !requestedFiles.some((requested) => isUnderRequestedFile(change.file, requested))
+    );
+    if (outOfScope.length > 0) {
+      return {
+        applied_files: [],
+        diff_stat: diffStat,
+        cleanup_performed: false,
+        conflicts: outOfScope.map((change) => `${change.file}: outside requested files (${requestedFiles.join(", ")})`),
+        error: "Worktree contains changes outside requested files; apply refused",
+      };
+    }
+  }
+
   // Preflight: check for uncommitted changes in main workspace and
   // unsupported status codes. If any issues found, refuse the entire apply.
   const conflicts: string[] = [];
@@ -943,7 +1034,6 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   let cleanupPerformed = false;
   if (input.cleanup) {
     try {
-      const wtRelPath = path.join(".claude", "worktrees", path.basename(wtReal));
       await execCapture("git", ["worktree", "remove", "--force", wtRelPath], { cwd: input.cwd, timeoutMs: 30000 });
       await execCapture("git", ["worktree", "prune"], { cwd: input.cwd, timeoutMs: 10000 });
       cleanupPerformed = true;
