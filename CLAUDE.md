@@ -1,0 +1,62 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project overview
+
+MCP server that lets Codex CLI delegate tasks to Claude Code. Codex calls MCP tools exposed by this server; the server spawns `claude -p` with security constraints and returns structured results.
+
+Phase 1: one-shot delegation only. No session reuse, no real-time bidirectional comms, no Codex Plugin packaging yet.
+
+## Commands
+
+```bash
+npm run build          # Compile TypeScript (tsc)
+npm run dev            # Run directly via tsx (no build step)
+npm start              # Run compiled output (node dist/server.js)
+```
+
+## Architecture
+
+Four modules in `src/`:
+
+- **server.ts** — MCP stdio entry point. Registers 4 tools (`claude_status`, `claude_query`, `claude_review`, `claude_implement`), routes incoming `CallToolRequest` to `claude-cli.ts`, rejects on `BRIDGE_DEPTH >= 2`.
+- **claude-cli.ts** — Spawns `claude -p` with mode-specific args. Three run functions: `runClaudeQuery` (read-only, maxTurns=4), `runClaudeReview` (read-only, maxTurns=6), `runClaudeImplement` (worktree, Edit/Write, maxTurns=8). After Claude exits, `observeResult()` runs `git diff --name-only` + `git diff --stat` to ground-truth Claude's self-report.
+- **guard.ts** — Security functions: `validateCwd` (realpath + allowRoots + git check), `sanitizeEnv` (strips secrets, sets BRIDGE_DEPTH=1), `checkRecursion`, `execCapture` / `execStream` (safe spawn helpers).
+- **schema.ts** — TypeScript interfaces (`ClaudeReport`, `ServerObserved`, tool inputs), the `RESULT_SCHEMA` JSON Schema constant passed to `--json-schema`, and prompt builders that inject anti-delegation constraints.
+
+## Critical rules when editing this codebase
+
+### stdout is reserved for MCP protocol
+
+This is a stdio MCP server. `console.log` / `process.stdout.write` will corrupt the JSON-RPC stream and break the Codex ↔ MCP connection. All logging MUST go to `process.stderr` or to files under `.codex-claude-delegate/runs/`.
+
+### Never use shell string concatenation to spawn claude
+
+```ts
+// WRONG — command injection risk
+exec(`claude -p -w ${name} "${prompt}"`)
+
+// CORRECT
+spawn("claude", ["-p", "-w", name, prompt])
+```
+
+### --tools vs --allowedTools vs --disallowedTools are distinct
+
+- `--tools` — hard tool allowlist (Claude can't even see tools not listed)
+- `--allowedTools` — auto-approve list (no permission prompt in non-interactive mode)
+- `--disallowedTools` — hard block (removed from context entirely)
+
+The `claude -p` non-interactive mode needs all three: `--tools` to restrict capability, `--allowedTools` so Claude can actually use them without hanging, `--disallowedTools` to hard-block dangerous patterns. Always pair with `--permission-mode dontAsk`.
+
+### Environment must be sanitized before spawning Claude
+
+`sanitizeEnv()` in guard.ts is the canonical implementation. Any new spawn path must use it. Sensitive vars (API keys, tokens, SSH agent) must never leak into the Claude subprocess.
+
+### BRIDGE_DEPTH must be propagated
+
+Every spawn of Claude must pass `BRIDGE_DEPTH` incremented by 1 via `sanitizeEnv()`. The MCP server refuses to start at depth ≥ 2. This prevents Codex → Claude → Codex → … loops.
+
+### cwd must be validated
+
+Always call `validateCwd()` before operating on user-supplied paths. It resolves symlinks, checks allowRoots, and for `claude_implement` confirms the path is inside a git repo (required for `--worktree`).

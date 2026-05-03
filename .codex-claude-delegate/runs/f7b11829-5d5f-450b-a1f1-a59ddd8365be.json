@@ -1,0 +1,19 @@
+{
+  "type": "query",
+  "input": {
+    "task": "What is the purpose of this project? Check the README.md file. Keep it to one sentence.",
+    "cwd": "/Users/anyi/codex-claude",
+    "timeout_sec": 60
+  },
+  "report": {
+    "status": "success",
+    "summary": "This project is an MCP server that lets Codex CLI delegate coding tasks (query, review, implement) to Claude Code by spawning `claude -p` with security constraints and returning structured results.",
+    "changed_files": [],
+    "commands_run": [],
+    "tests": {
+      "ran": false
+    },
+    "risks": [],
+    "next_steps": []
+  }
+}

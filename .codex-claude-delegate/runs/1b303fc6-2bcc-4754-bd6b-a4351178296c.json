@@ -1,0 +1,9 @@
+{
+  "type": "query",
+  "input": {
+    "task": "What is the purpose of this project? Check the README.md file. Keep it to one sentence.",
+    "cwd": "/Users/anyi/codex-claude",
+    "timeout_sec": 60
+  },
+  "error": "Claude exited with code 1: Error: Input must be provided either through stdin or as a prompt argument when using --print\n"
+}

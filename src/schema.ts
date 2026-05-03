@@ -1,0 +1,183 @@
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+
+// ---- Tool input types ----
+
+export interface ClaudeStatusInput {
+  cwd: string;
+}
+
+export interface ClaudeQueryInput {
+  task: string;
+  cwd: string;
+  timeout_sec?: number;
+}
+
+export interface ClaudeReviewInput {
+  task: string;
+  cwd: string;
+  diff?: string;
+  files?: string[];
+  timeout_sec?: number;
+}
+
+export interface ClaudeImplementInput {
+  task: string;
+  cwd: string;
+  files?: string[];
+  constraints?: string[];
+  timeout_sec?: number;
+}
+
+// ---- Structured output types ----
+
+export interface TestResult {
+  ran: boolean;
+  command?: string;
+  passed?: boolean;
+  output_tail?: string;
+}
+
+export interface ClaudeReport {
+  status: "success" | "failed" | "partial" | "needs_user";
+  summary: string;
+  changed_files: string[];
+  commands_run: string[];
+  tests: TestResult;
+  risks: string[];
+  next_steps: string[];
+}
+
+export interface ServerObserved {
+  changed_files: string[];
+  diff_stat: string;
+  diff_name_only: string;
+  worktree_path?: string;
+}
+
+export interface ClaudeResult {
+  claude_report: ClaudeReport;
+  server_observed: ServerObserved;
+}
+
+export interface ClaudeStatusResult {
+  claude_available: boolean;
+  claude_version: string | null;
+  auth_status: string | null;
+  git_available: boolean;
+  worktree_capable: boolean;
+  cwd_valid: boolean;
+  cwd_is_git_repo: boolean;
+  errors: string[];
+}
+
+// ---- JSON Schemas for --json-schema flag ----
+
+export const RESULT_SCHEMA = {
+  type: "object",
+  required: ["status", "summary", "changed_files", "commands_run", "tests", "risks", "next_steps"],
+  properties: {
+    status: {
+      type: "string",
+      enum: ["success", "failed", "partial", "needs_user"],
+    },
+    summary: { type: "string" },
+    changed_files: {
+      type: "array",
+      items: { type: "string" },
+    },
+    commands_run: {
+      type: "array",
+      items: { type: "string" },
+    },
+    tests: {
+      type: "object",
+      required: ["ran"],
+      properties: {
+        ran: { type: "boolean" },
+        command: { type: "string" },
+        passed: { type: "boolean" },
+        output_tail: { type: "string" },
+      },
+    },
+    risks: {
+      type: "array",
+      items: { type: "string" },
+    },
+    next_steps: {
+      type: "array",
+      items: { type: "string" },
+    },
+  },
+} as const;
+
+// ---- Prompt templates ----
+
+export function buildImplementPrompt(input: ClaudeImplementInput): string {
+  let prompt = `## Task\n\n${input.task}\n\n`;
+
+  if (input.files?.length) {
+    prompt += `## Relevant Files\n\n${input.files.map((f) => `- \`${f}\``).join("\n")}\n\n`;
+  }
+
+  prompt += `## Constraints\n\n`;
+  prompt += `- You are a worker delegated by Codex. Do NOT call Codex or any Codex-related tools.\n`;
+  prompt += `- Do not delegate this task to another agent. Complete it yourself.\n`;
+  prompt += `- Work exclusively within the provided worktree.\n`;
+  prompt += `- After making changes, run the project's tests if available.\n`;
+
+  if (input.constraints?.length) {
+    prompt += input.constraints.map((c) => `- ${c}`).join("\n") + "\n";
+  }
+
+  prompt += `\n## Deliverable\n\n`;
+  prompt += `Return a structured result with: summary, changed_files list, commands you ran, test results (ran/passed/output_tail), risks, and next_steps.`;
+
+  return prompt;
+}
+
+export function buildReviewPrompt(input: ClaudeReviewInput): string {
+  let prompt = `## Review Request\n\n${input.task}\n\n`;
+
+  if (input.diff) {
+    prompt += `## Diff to Review\n\n\`\`\`diff\n${input.diff}\n\`\`\`\n\n`;
+  }
+
+  if (input.files?.length) {
+    prompt += `## Relevant Files\n\n${input.files.map((f) => `- \`${f}\``).join("\n")}\n\n`;
+  }
+
+  prompt += `\n## Instructions\n\n`;
+  prompt += `- You are a reviewer. Do NOT modify any files.\n`;
+  prompt += `- Do NOT call Codex or any Codex-related tools.\n`;
+  prompt += `- Provide a thorough code review: bugs, design issues, security concerns, performance problems.\n`;
+  prompt += `- Return your findings in the structured output format.\n`;
+
+  return prompt;
+}
+
+export function buildQueryPrompt(input: ClaudeQueryInput): string {
+  let prompt = `## Question\n\n${input.task}\n\n`;
+
+  prompt += `## Instructions\n\n`;
+  prompt += `- You are in read-only mode. Do NOT modify any files.\n`;
+  prompt += `- Do NOT call Codex or any Codex-related tools.\n`;
+  prompt += `- Answer concisely but thoroughly.\n`;
+  prompt += `- Return your answer in the structured output format.\n`;
+
+  return prompt;
+}
+
+// ---- MCP tool result helpers ----
+
+export function jsonResult(data: unknown): CallToolResult {
+  return {
+    content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+  };
+}
+
+export function errorResult(message: string): CallToolResult {
+  return {
+    content: [{ type: "text", text: JSON.stringify({ error: message }) }],
+    isError: true,
+  };
+}
