@@ -12,7 +12,13 @@ import {
   runClaudeQuery,
   runClaudeReview,
   runClaudeImplement,
+  runClaudeApply,
+  runClaudeCleanup,
 } from "./claude-cli.js";
+import type {
+  ClaudeApplyInput,
+  ClaudeCleanupInput,
+} from "./schema.js";
 import { errorResult, jsonResult } from "./schema.js";
 
 const BRIDGE_DEPTH = checkRecursion();
@@ -97,6 +103,34 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
       },
     },
+    {
+      name: "claude_apply",
+      description:
+        "Apply a worktree's diff to the main working tree, then optionally clean up the worktree. Use after claude_implement to land changes.",
+      inputSchema: {
+        type: "object",
+        required: ["cwd", "worktree_path"],
+        properties: {
+          cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
+          worktree_path: { type: "string", description: "Path to worktree, e.g. .claude/worktrees/codex-delegated-xxx" },
+          cleanup: { type: "boolean", description: "Remove worktree after successful apply (default false)" },
+        },
+      },
+    },
+    {
+      name: "claude_cleanup",
+      description:
+        "List and remove stale delegated worktrees. Defaults to dry-run. Use after verifying apply to clean up resources.",
+      inputSchema: {
+        type: "object",
+        required: ["cwd"],
+        properties: {
+          cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
+          older_than_hours: { type: "number", description: "Only remove worktrees older than this many hours (0 = all delegated worktrees)" },
+          dry_run: { type: "boolean", description: "List worktrees without removing (default true)" },
+        },
+      },
+    },
   ],
 }));
 
@@ -177,6 +211,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         const result = await runClaudeImplement(
           { task, cwd: check.resolved, files, constraints, timeout_sec, session_key, fork_session },
+          runId
+        );
+        return jsonResult(result);
+      }
+
+      case "claude_apply": {
+        const { cwd, worktree_path, cleanup } = args as { cwd: string; worktree_path: string; cleanup?: boolean };
+        if (!worktree_path?.trim()) return errorResult("worktree_path is required");
+
+        const check = await validateCwd(cwd);
+        if (!check.ok) return errorResult(check.error!);
+
+        const result = await runClaudeApply(
+          { cwd: check.resolved, worktree_path, cleanup },
+          runId
+        );
+        return jsonResult(result);
+      }
+
+      case "claude_cleanup": {
+        const { cwd, older_than_hours, dry_run } = args as { cwd: string; older_than_hours?: number; dry_run?: boolean };
+        const check = await validateCwd(cwd);
+        if (!check.ok) return errorResult(check.error!);
+
+        const result = await runClaudeCleanup(
+          { cwd: check.resolved, older_than_hours, dry_run },
           runId
         );
         return jsonResult(result);

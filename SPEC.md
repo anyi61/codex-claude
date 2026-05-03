@@ -368,11 +368,77 @@ class SessionStore {
 - [x] `sessions.json` 创建、更新、prune 正常
 - [x] resume 失败时标记 `expired: true` 并自动 fallback
 
-### Phase 3（当前）：隔离增强 + 结果 apply
+### Phase 3 第一阶段（已完成 ✅）：apply + cleanup + 状态报告
 
-- worktree 的生命周期管理（创建 / 清理 / 垃圾回收）
-- Codex 验收 diff 后的一键 apply 流程
-- 超时和资源限制细化
+核心闭环：implement → review diff → apply → cleanup。implement 不自动清理 worktree，Codex 验收后再走 apply/cleanup。
+
+- [x] `claude_apply` — worktree diff → git apply --check → git apply → 可选 cleanup
+- [x] `claude_cleanup` — 扫描残留 worktree，dry-run 模式，`git worktree remove`
+- [x] `claude_status` 扩展 — `delegated_worktrees_count`, `delegated_worktrees[]`, `stale_worktrees_count`
+- [x] apply 路径校验限定在 `.claude/worktrees/codex-delegated-*`
+- [x] patch 文件临时写入 `.claude/apply-<runId>.patch`，apply 后清理
+- [x] `npm run build` + `debug/mcp-test.ts` 通过
+
+#### claude_apply
+
+新增工具，将 worktree 中的 diff 应用到主工作区。
+
+```ts
+入参 {
+  cwd: string;
+  worktree_path: string;           // 限定 .claude/worktrees/ 下
+  cleanup?: boolean;               // apply 成功后自动清理 worktree
+}
+
+行为 {
+  1. 校验 cwd 和 worktree_path 必在 .claude/worktrees/codex-delegated-*
+  2. 确认主工作区干净（或被 apply 文件无本地冲突）
+  3. 在 worktree 中生成 patch:
+     - 有未提交变更 → git diff
+     - 有提交变更 → git diff <base>..HEAD
+  4. 主工作区执行 git apply --check
+  5. check 通过后 git apply
+  6. cleanup=true → git worktree remove + git worktree prune
+  7. 返回 applied_files, diff_stat, cleanup_performed, conflicts[]
+}
+```
+
+#### claude_cleanup
+
+新增工具，清理残留 worktree。
+
+```ts
+入参 {
+  cwd: string;
+  older_than_hours?: number;       // 只清理超过 N 小时的 worktree
+  dry_run?: boolean;               // 默认 true，先返回待清理列表
+}
+
+行为 {
+  1. 只处理 .claude/worktrees/codex-delegated-*
+  2. dry_run=true 返回待清理列表但不执行
+  3. git worktree remove <path>（非 rm -rf）
+  4. 失败时报告原因不强制删除
+}
+```
+
+#### claude_status 扩展
+
+新增字段：
+
+```json
+{
+  "delegated_worktrees_count": 2,
+  "delegated_worktrees": ["codex-delegated-xxx", "codex-delegated-yyy"],
+  "stale_worktrees_count": 0
+}
+```
+
+### Phase 3 第二阶段：资源控制
+
+- `max_cost_usd`: 通过 `--max-budget-usd` flag 传递给 Claude CLI
+- `max_changed_files`: 在 `observeResult()` 后检查，超限返回风险状态但不自动删除 worktree
+- `idle_timeout_sec`: 暂缓，除非遇到真实卡死问题
 
 ### Phase 4：打包为 Codex Plugin
 

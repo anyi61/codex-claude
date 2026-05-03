@@ -56,6 +56,9 @@ export interface ClaudeStatusResult {
     worktree_capable: boolean;
     cwd_valid: boolean;
     cwd_is_git_repo: boolean;
+    delegated_worktrees_count: number;
+    delegated_worktrees: string[];
+    stale_worktrees_count: number;
     errors: string[];
 }
 export interface SessionLog {
@@ -63,6 +66,34 @@ export interface SessionLog {
     resumed: boolean;
     forked: boolean;
     returned_session_id: string | null;
+}
+export interface ClaudeApplyInput {
+    cwd: string;
+    worktree_path: string;
+    cleanup?: boolean;
+}
+export interface ClaudeApplyResult {
+    applied_files: string[];
+    diff_stat: string;
+    cleanup_performed: boolean;
+    conflicts: string[];
+    error?: string;
+}
+export interface ClaudeCleanupInput {
+    cwd: string;
+    older_than_hours?: number;
+    dry_run?: boolean;
+}
+export interface CleanupEntry {
+    worktree_name: string;
+    removed: boolean;
+    error?: string;
+}
+export interface ClaudeCleanupResult {
+    dry_run: boolean;
+    removed_count: number;
+    failed_count: number;
+    entries: CleanupEntry[];
 }
 export declare const QUERY_SCHEMA: {
     readonly type: "object";

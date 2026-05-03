@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { writeFile, mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { execCapture, sanitizeEnv } from "./guard.js";
 import { SessionStore, computeRepoKey, RECENT_WINDOW_MINUTES } from "./session.js";
@@ -187,6 +188,9 @@ export async function checkClaudeStatus(cwd) {
         worktree_capable: false,
         cwd_valid: false,
         cwd_is_git_repo: false,
+        delegated_worktrees_count: 0,
+        delegated_worktrees: [],
+        stale_worktrees_count: 0,
         errors: [],
     };
     // Check claude binary
@@ -243,6 +247,31 @@ export async function checkClaudeStatus(cwd) {
         result.cwd_is_git_repo = false;
     }
     result.cwd_valid = result.git_available && result.cwd_is_git_repo;
+    // Scan for delegated worktrees
+    const worktreeDir = path.join(cwd, ".claude", "worktrees");
+    try {
+        const { readdirSync, statSync } = await import("node:fs");
+        if (existsSync(worktreeDir)) {
+            const entries = readdirSync(worktreeDir, { withFileTypes: true })
+                .filter((d) => d.isDirectory())
+                .map((d) => d.name);
+            result.delegated_worktrees = entries.filter((n) => n.startsWith("codex-delegated-")).sort();
+            result.delegated_worktrees_count = result.delegated_worktrees.length;
+            // Count worktrees older than 24h as stale
+            const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+            result.stale_worktrees_count = result.delegated_worktrees.filter((n) => {
+                try {
+                    return statSync(path.join(worktreeDir, n)).mtimeMs < cutoff;
+                }
+                catch {
+                    return false;
+                }
+            }).length;
+        }
+    }
+    catch {
+        // best-effort worktree scan
+    }
     return result;
 }
 export async function runClaudeQuery(input, runId) {
@@ -500,5 +529,177 @@ export async function runClaudeImplement(input, runId) {
     });
     store.prune();
     return { claude_report: report, server_observed: observed };
+}
+// ---- Apply worktree diff to main workspace ----
+export async function runClaudeApply(input, runId) {
+    const startTime = Date.now();
+    // Validate worktree path
+    const wtReal = path.resolve(input.cwd, input.worktree_path);
+    const wtDir = path.join(input.cwd, ".claude", "worktrees");
+    if (!wtReal.startsWith(wtDir + path.sep)) {
+        return { applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: `worktree_path must be under ${wtDir}` };
+    }
+    if (!wtReal.startsWith(wtDir + path.sep + "codex-delegated-")) {
+        return { applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: "worktree_path must be a delegated worktree (codex-delegated-*)" };
+    }
+    if (!existsSync(wtReal)) {
+        return { applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: `worktree directory not found: ${wtReal}` };
+    }
+    // Generate patch from worktree (uncommitted + committed changes)
+    let patch = "";
+    try {
+        patch += await execCapture("git", ["diff"], { cwd: wtReal }).catch(() => "");
+    }
+    catch { }
+    try {
+        patch += "\n" + await execCapture("git", ["diff", "HEAD~1"], { cwd: wtReal }).catch(() => "");
+    }
+    catch { }
+    patch = patch.trim();
+    if (!patch) {
+        return { applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: "No diff found in worktree" };
+    }
+    // Check worktree diff stat for reporting
+    let diffStat = "";
+    try {
+        diffStat = await execCapture("git", ["diff", "--stat"], { cwd: wtReal }).catch(() => "");
+    }
+    catch { }
+    // git apply --check on main workspace
+    const patchFile = path.join(input.cwd, ".claude", `apply-${runId.slice(0, 8)}.patch`);
+    try {
+        await writeFile(patchFile, patch, "utf-8");
+        await execCapture("git", ["apply", "--check", patchFile], { cwd: input.cwd, timeoutMs: 30000 });
+    }
+    catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        try {
+            await import("node:fs/promises").then((m) => m.rm(patchFile).catch(() => { }));
+        }
+        catch { }
+        return { applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts: [msg], error: "git apply --check failed" };
+    }
+    // Collect list of changed files from worktree
+    const appliedFiles = [];
+    try {
+        const out = await execCapture("git", ["diff", "--name-only"], { cwd: wtReal, timeoutMs: 30000 });
+        appliedFiles.push(...out.split("\n").map((l) => l.trim()).filter(Boolean));
+    }
+    catch { }
+    try {
+        const out = await execCapture("git", ["diff", "HEAD~1", "--name-only"], { cwd: wtReal, timeoutMs: 30000 }).catch(() => "");
+        appliedFiles.push(...out.split("\n").map((l) => l.trim()).filter(Boolean));
+    }
+    catch { }
+    const uniqueFiles = [...new Set(appliedFiles)];
+    // git apply
+    try {
+        await execCapture("git", ["apply", patchFile], { cwd: input.cwd, timeoutMs: 30000 });
+    }
+    catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        try {
+            await import("node:fs/promises").then((m) => m.rm(patchFile).catch(() => { }));
+        }
+        catch { }
+        return { applied_files: uniqueFiles, diff_stat: diffStat, cleanup_performed: false, conflicts: [msg], error: `git apply failed: ${msg}` };
+    }
+    // Cleanup patch file
+    try {
+        await import("node:fs/promises").then((m) => m.rm(patchFile).catch(() => { }));
+    }
+    catch { }
+    // Optional: cleanup worktree
+    let cleanupPerformed = false;
+    if (input.cleanup) {
+        try {
+            const wtName = path.basename(wtReal);
+            await execCapture("git", ["worktree", "remove", wtName], { cwd: input.cwd, timeoutMs: 30000 });
+            await execCapture("git", ["worktree", "prune"], { cwd: input.cwd, timeoutMs: 10000 });
+            cleanupPerformed = true;
+        }
+        catch (err) {
+            log(`worktree remove failed for ${wtReal}: ${err}`);
+        }
+    }
+    await logRun(runId, {
+        type: "apply",
+        input,
+        applied_files: uniqueFiles,
+        cleanup_performed: cleanupPerformed,
+        duration_ms: Date.now() - startTime,
+    });
+    return { applied_files: uniqueFiles, diff_stat: diffStat, cleanup_performed: cleanupPerformed, conflicts: [] };
+}
+// ---- Cleanup delegated worktrees ----
+export async function runClaudeCleanup(input, runId) {
+    const startTime = Date.now();
+    const dryRun = input.dry_run !== false; // default true
+    const olderThanHours = input.older_than_hours ?? 0;
+    const worktreeDir = path.join(input.cwd, ".claude", "worktrees");
+    const entries = [];
+    let removedCount = 0;
+    let failedCount = 0;
+    try {
+        const { readdirSync } = await import("node:fs");
+        const { statSync } = await import("node:fs");
+        if (!existsSync(worktreeDir)) {
+            return { dry_run: dryRun, removed_count: 0, failed_count: 0, entries: [] };
+        }
+        const dirs = readdirSync(worktreeDir, { withFileTypes: true })
+            .filter((d) => d.isDirectory() && d.name.startsWith("codex-delegated-"))
+            .map((d) => d.name);
+        const cutoff = olderThanHours > 0 ? Date.now() - olderThanHours * 60 * 60 * 1000 : 0;
+        for (const name of dirs) {
+            const dirPath = path.join(worktreeDir, name);
+            // Check age if filter set
+            if (olderThanHours > 0) {
+                try {
+                    if (statSync(dirPath).mtimeMs > cutoff) {
+                        entries.push({ worktree_name: name, removed: false, error: "skipped (within time window)" });
+                        continue;
+                    }
+                }
+                catch {
+                    entries.push({ worktree_name: name, removed: false, error: "unable to stat" });
+                    continue;
+                }
+            }
+            if (dryRun) {
+                entries.push({ worktree_name: name, removed: false });
+                continue;
+            }
+            // Actual remove
+            try {
+                await execCapture("git", ["worktree", "remove", "--force", name], { cwd: input.cwd, timeoutMs: 30000 });
+                removedCount++;
+                entries.push({ worktree_name: name, removed: true });
+            }
+            catch (err) {
+                failedCount++;
+                entries.push({ worktree_name: name, removed: false, error: err instanceof Error ? err.message : String(err) });
+            }
+        }
+        if (!dryRun) {
+            await execCapture("git", ["worktree", "prune"], { cwd: input.cwd, timeoutMs: 10000 }).catch(() => { });
+        }
+    }
+    catch (err) {
+        log(`cleanup scan failed: ${err}`);
+        return {
+            dry_run: dryRun,
+            removed_count: 0,
+            failed_count: 1,
+            entries: [{ worktree_name: "", removed: false, error: err instanceof Error ? err.message : String(err) }],
+        };
+    }
+    await logRun(runId, {
+        type: "cleanup",
+        input,
+        removed_count: removedCount,
+        failed_count: failedCount,
+        duration_ms: Date.now() - startTime,
+    });
+    return { dry_run: dryRun, removed_count: removedCount, failed_count: failedCount, entries };
 }
 //# sourceMappingURL=claude-cli.js.map
