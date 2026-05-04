@@ -34,6 +34,11 @@ function readSessions(): number {
   } catch { return 0; }
 }
 
+function getAnswer(payload: Record<string, unknown>): string {
+  const data = payload.data as Record<string, unknown> | undefined;
+  return String(data?.answer ?? payload.answer ?? "(none)");
+}
+
 function runQuery(child: ReturnType<typeof spawn>, task: string): Promise<Record<string, unknown>> {
   return req(child, "tools/call", {
     name: "claude_query",
@@ -78,7 +83,7 @@ async function main() {
   process.stderr.write("\n=== query #1 ===\n");
   const q1Resp = await runQuery(child, "What is the purpose of this project? Check README.md. One sentence.");
   const q1 = JSON.parse(getContent(q1Resp));
-  process.stderr.write(`Answer: ${(q1.answer ?? "(none)").slice(0, 200)}\n`);
+  process.stderr.write(`Answer: ${getAnswer(q1).slice(0, 200)}\n`);
   const sessionsAfter1 = readSessions();
   process.stderr.write(`Sessions stored: ${sessionsAfter1}\n`);
 
@@ -86,7 +91,7 @@ async function main() {
   process.stderr.write("\n=== query #2 (should auto-resume) ===\n");
   const q2Resp = await runQuery(child, "What tools does this project expose? List names only.");
   const q2 = JSON.parse(getContent(q2Resp));
-  process.stderr.write(`Answer: ${(q2.answer ?? "(none)").slice(0, 200)}\n`);
+  process.stderr.write(`Answer: ${getAnswer(q2).slice(0, 200)}\n`);
   const sessionsAfter2 = readSessions();
   process.stderr.write(`Sessions stored: ${sessionsAfter2} (still 1 if resumed, 2 if new)\n`);
 
