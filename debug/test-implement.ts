@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SERVER_PATH = path.join(PROJECT_ROOT, "dist", "server.js");
@@ -20,6 +22,25 @@ function notify(child: ReturnType<typeof spawn>, method: string, params?: Record
     ? JSON.stringify({ jsonrpc: "2.0", method, params })
     : JSON.stringify({ jsonrpc: "2.0", method });
   child.stdin!.write(msg + "\n");
+}
+
+function sh(cwd: string, ...args: string[]): string {
+  return execFileSync(args[0], args.slice(1), { cwd, encoding: "utf8" }).trim();
+}
+
+async function createScopedFixtureRepo(): Promise<string> {
+  const fixtureRoot = path.join(PROJECT_ROOT, ".debug-fixtures");
+  await mkdir(fixtureRoot, { recursive: true });
+  const repo = await mkdtemp(path.join(fixtureRoot, "codex-claude-impl-"));
+  sh(repo, "git", "init");
+  sh(repo, "git", "config", "user.name", "Test User");
+  sh(repo, "git", "config", "user.email", "test@example.com");
+  await mkdir(path.join(repo, "src"), { recursive: true });
+  await writeFile(path.join(repo, "src", "server.ts"), "export const fixture = 1;\n");
+  await writeFile(path.join(repo, "package.json"), JSON.stringify({ name: "fixture", version: "1.0.0" }) + "\n");
+  sh(repo, "git", "add", ".");
+  sh(repo, "git", "commit", "-m", "init");
+  return repo;
 }
 
 async function main() {
@@ -132,6 +153,45 @@ async function main() {
   process.stderr.write(`Invalid max_changed_files error: ${parsed4?.error ?? "(no error)"}\n`);
   if (!parsed4.error?.includes("max_changed_files")) throw new Error(`expected max_changed_files validation error, got: ${parsed4.error ?? "none"}`);
   process.stderr.write("  ✓ max_changed_files validation error asserted\n");
+
+  // Implement scoped files behavior
+  process.stderr.write("\n--- claude_implement (scoped files: src/server.ts) ---\n");
+  const scopedRepo = await createScopedFixtureRepo();
+  try {
+    const result5 = await req(child, "tools/call", {
+      name: "claude_implement",
+      arguments: {
+        task: "Edit src/server.ts by appending exactly one line comment: // debug scoped implement. Do not modify any other file. Do not run build or tests.",
+        cwd: scopedRepo,
+        files: ["src/server.ts"],
+        timeout_sec: 120,
+        max_changed_files: 1,
+      },
+    });
+    const result5Text = (result5.result as Record<string, unknown>)?.content as Array<{ text: string }>;
+    const parsed5 = JSON.parse(result5Text[0].text);
+    if (parsed5.error) throw new Error(`scoped implement returned error: ${parsed5.error}`);
+    const observed5 = parsed5.server_observed;
+    const limits5 = observed5?.resource_limits;
+    const scope5 = observed5?.scope;
+    process.stderr.write(`scoped observed: ${JSON.stringify(observed5, null, 2)}\n`);
+
+    if (JSON.stringify(observed5?.changed_files) !== JSON.stringify(["src/server.ts"])) {
+      throw new Error(`expected changed_files=[\"src/server.ts\"], got ${JSON.stringify(observed5?.changed_files)}`);
+    }
+    if (limits5?.actual_changed_files !== 1) {
+      throw new Error(`expected actual_changed_files=1, got ${limits5?.actual_changed_files}`);
+    }
+    if (limits5?.changed_files_exceeded !== false) {
+      throw new Error(`expected changed_files_exceeded=false, got ${limits5?.changed_files_exceeded}`);
+    }
+    if (scope5?.scope_exceeded !== false) {
+      throw new Error(`expected scope_exceeded=false, got ${scope5?.scope_exceeded}`);
+    }
+    process.stderr.write("  ✓ scoped implement assertions passed\n");
+  } finally {
+    await rm(scopedRepo, { recursive: true, force: true });
+  }
 
   child.stdin!.end();
   await new Promise((r) => setTimeout(r, 500));
