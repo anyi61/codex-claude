@@ -15,6 +15,8 @@ Codex CLI
   -> Codex reviews, applies, or cleans up worktrees
 ```
 
+返回结果现在统一包含 `status`、`execution` 和 `warnings`。`execution` 记录 Claude CLI 的 `exit_code`、`duration_ms`、`timed_out`、截断后的 `stdout_tail` 和脱敏后的 `stderr_tail`，避免把完整日志塞进 MCP 响应。
+
 ## 工具
 
 | 工具 | 模式 | 作用 |
@@ -42,6 +44,16 @@ cd /path/to/codex-claude-delegate-mcp
 npm install
 npm run build
 ```
+
+工程验收命令：
+
+```bash
+npm run build
+npm test
+npm run typecheck
+```
+
+`npm test` 使用 Vitest。若本机尚未安装依赖，先运行 `npm install`。
 
 ### 3. 直接配置 MCP
 
@@ -155,8 +167,14 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 返回结果包含：
 
 - `claude_report`: Claude 自述的状态、摘要、测试和风险。
-- `server_observed`: 服务端实际观测到的 changed files、diff stat、worktree path。
+- `server_observed`: 服务端基于 worktree 创建基线（`base_commit`）观测到的 changed files、diff stat、worktree path。
 - `server_observed.resource_limits`: 文件数超限或预算参数记录。
+- `server_observed.scope`: 当传入 `files` 时，服务端会记录越界变更（`out_of_scope_files` / `scope_exceeded` / `warnings`）。
+
+`files` 行为补充：
+
+- `claude_implement` 在创建 worktree 前会检查 `files` 对应路径在主工作区是否 dirty（`git status --porcelain=v1 -z`）。
+- 若存在未提交改动，会直接拒绝任务，避免“主工作区改动在新 worktree 丢失”的静默偏差。
 
 `claude_implement` 默认不复用 implement session。如需显式续接：
 
@@ -186,6 +204,8 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 重要限制：
 
 - `claude_apply` 只应用 worktree 中 `src/` 下的 `A/M/D` 文件变更，包括未跟踪的新增 `src/` 文件。
+- `claude_apply` 会读取 implement run log；若 `scope_exceeded=true` 或 `changed_files_exceeded=true`，会拒绝 apply。
+- `claude_apply` 变更识别优先使用 implement 记录的 `base_commit`，统一按 `base_commit..HEAD` + 未提交 + untracked 观测；缺少 `base_commit` 时才回退 legacy 路径。
 - 如果主工作区相关文件有未提交改动，会全量拒绝，不做部分 apply。
 - `cleanup: true` 只在 apply 成功后移除对应 worktree。
 - `dist/`、文档或其他目录不会被 apply；需要时请手动审查处理或重新设计任务。
@@ -214,6 +234,16 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 
 `claude_cleanup` 只处理 `.claude/worktrees/codex-delegated-*`，不会删除其他 worktree。
 
+默认 `dry_run=true` 且 `older_than_hours=24`。建议先 dry run，确认结果已通过 `claude_apply` 落地或不再需要，再设置 `dry_run=false`。
+
+运行日志默认写入：
+
+```text
+.codex-claude-delegate/runs/
+```
+
+可以通过 `CODEX_CLAUDE_RUN_LOG_DIR` 改到其他目录。日志写文件或 stderr，普通日志不会写 stdout，以免破坏 MCP stdio 协议。
+
 ## 典型闭环
 
 ```text
@@ -230,10 +260,26 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 
 ## 故障处理
 
+- `claude command not found`: 安装 Claude Code CLI，或设置 `CLAUDE_BIN`。
+- Codex 找不到 MCP server: 确认 `args` 使用构建后的绝对路径 `dist/server.js`，并已运行 `npm run build`。
+- `permission denied`: 检查仓库、worktree 和日志目录权限。
+- `cwd outside allowRoots`: 设置 `CODEX_CLAUDE_ALLOW_ROOTS`，不要硬编码危险根目录。
+- JSON schema parse failed: 检查 Claude CLI 版本，并确认 `--json-schema` 仍是 prompt 前最后一个 flag。
+- worktree remains after failed run: 先调用 `claude_cleanup` dry run，再选择是否清理。
+
+## 已知限制
+
+- 不做实时双向聊天。
+- 不依赖 Claude Code Channels。
+- 不自动清理所有 worktree。
+- 不默认允许网络命令。
+- 不默认透传 token 或完整 `process.env`。
+
 - `cwd outside allowed roots`：设置 `CODEX_CLAUDE_ALLOW_ROOTS`，并重启 Codex/MCP server。
 - `claude CLI not found`：确认 `claude --version` 在同一 shell 环境可运行，或设置 `CLAUDE_BIN`。
 - `fork_session requires session_key`：`fork_session` 只能配合显式 `session_key` 使用。
 - `apply refused`：主工作区有本地改动。先提交、stash 或还原相关文件，再重试。
+- `Requested files contain uncommitted changes`：`claude_implement` 检测到 `files` 对应路径在主工作区 dirty。先提交/暂存/清理这些文件，再重试。
 - `No changed source files found`：worktree 没有 `src/` 下的 A/M/D 变更；`claude_apply` 不处理文档、dist 或根目录文件。
 - 残留 worktree：先 `claude_cleanup` dry-run，再 `dry_run: false` 清理。
 
@@ -246,7 +292,8 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 - `BRIDGE_DEPTH` 防止 Codex -> Claude -> Codex 递归委托。
 - `validateCwd()` 使用 realpath 和 allow roots 校验路径。
 - `claude_apply` 遇到主工作区本地改动会全量拒绝，不做部分 apply。
-- `claude_apply` 从 `git diff --name-status`、`git diff HEAD~1 --name-status` 和 `git status --short -- src/` 合并变更，避免漏掉未跟踪新增文件。
+- `claude_apply` 使用 `git diff --name-status -z` + `git status --porcelain=v1 -z` 解析变更，避免 `--short` 字符串切片误判路径。
+- 可通过 `CODEX_CLAUDE_RUN_LOG_DIR` 覆盖 run log 目录（默认 `.codex-claude-delegate/runs`），便于隔离测试日志。
 
 ## 架构
 

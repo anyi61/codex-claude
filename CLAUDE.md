@@ -23,7 +23,7 @@ npm start              # Run compiled output (node dist/server.js)
 Five modules in `src/`:
 
 - **server.ts** — MCP stdio entry point. Registers 4 tools, routes calls, rejects on `BRIDGE_DEPTH >= 2`.
-- **claude-cli.ts** — Spawns `claude -p` with mode-specific args and schemas. `runClaudeQuery` (QUERY_SCHEMA, auto-resume, maxTurns=4), `runClaudeReview` (REVIEW_SCHEMA, `--no-session-persistence`, maxTurns=10), `runClaudeImplement` (IMPLEMENT_SCHEMA, worktree, explicit `session_key`, maxTurns=15, supports `max_cost_usd` → `--max-budget-usd` and `max_changed_files` → `resource_limits`). `observeResult()` ground-truths with `git diff` + `git status --short`. Non-zero exit codes that produce valid stdout JSON are still resolved (handles `error_max_turns`).
+- **claude-cli.ts** — Spawns `claude -p` with mode-specific args and schemas. `runClaudeQuery` (QUERY_SCHEMA, auto-resume, maxTurns=4), `runClaudeReview` (REVIEW_SCHEMA, `--no-session-persistence`, maxTurns=10), `runClaudeImplement` (IMPLEMENT_SCHEMA, worktree, explicit `session_key`, maxTurns=15, supports `max_cost_usd` → `--max-budget-usd` and `max_changed_files` → `resource_limits`). `runClaudeImplement` now rejects when requested `files` are dirty in main workspace. `observeResult()` uses `git status --porcelain=v1 -z` plus base-commit diff (`base_commit..HEAD`) to ground-truth both committed and uncommitted changes, and emits scope warnings when `files` is exceeded. `runClaudeApply` also consumes the same base-commit/scope signals from implement run logs and refuses out-of-scope or limit-exceeded worktrees. Non-zero exit codes that produce valid stdout JSON are still resolved (handles `error_max_turns`).
 - **session.ts** — `SessionStore` class with atomic `sessions.json` read/write, `getRecent` (20-min window), `upsert`, `markExpired`, `prune`.
 - **guard.ts** — Security: `validateCwd` (realpath + allowRoots + git check), `sanitizeEnv` (strips secrets, sets BRIDGE_DEPTH=1), `checkRecursion`, `execCapture` / `execStream` (safe spawn helpers). ALLOW_ROOTS defaults to `~/projects`, `~/work`, `~/codex-claude`; override via `CODEX_CLAUDE_ALLOW_ROOTS` env var (colon-separated paths).
 - **schema.ts** — Three JSON Schemas (`QUERY_SCHEMA`, `REVIEW_SCHEMA`, `IMPLEMENT_SCHEMA`), TypeScript interfaces, `SessionLog` type, and prompt builders with anti-delegation constraints.
@@ -35,7 +35,7 @@ npx tsx debug/mcp-test.ts        # Full MCP protocol test: init → status → q
 npx tsx debug/test-implement.ts  # Isolated implement test with worktree
 ```
 
-Run logs appear in `.codex-claude-delegate/runs/<uuid>.json`.
+Run logs appear in `.codex-claude-delegate/runs/<uuid>.json` by default, or under `CODEX_CLAUDE_RUN_LOG_DIR` when set (used by isolated debug tests).
 
 ## Critical rules when editing this codebase
 
