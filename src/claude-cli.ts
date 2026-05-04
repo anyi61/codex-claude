@@ -17,8 +17,10 @@ import type {
   CleanupEntry,
   EnvironmentDiagnostics,
   EnvStatus,
+  ExecutionMetadata,
   ServerObserved,
   SessionLog,
+  ToolEnvelope,
 } from "./schema.js";
 import {
   QUERY_SCHEMA,
@@ -30,7 +32,9 @@ import {
 } from "./schema.js";
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
-const LOG_DIR = path.join(process.cwd(), ".codex-claude-delegate", "runs");
+const LOG_DIR = process.env.CODEX_CLAUDE_RUN_LOG_DIR
+  ? path.resolve(process.env.CODEX_CLAUDE_RUN_LOG_DIR)
+  : path.join(process.cwd(), ".codex-claude-delegate", "runs");
 const SESSION_DIR = path.join(process.cwd(), ".codex-claude-delegate");
 
 // ---- Session store (lazy init) ----
@@ -70,8 +74,13 @@ interface ImplementRunLog {
   };
   observed?: {
     worktree_path?: unknown;
+    base_commit?: unknown;
     resource_limits?: {
       changed_files_exceeded?: unknown;
+      warnings?: unknown;
+    };
+    scope?: {
+      scope_exceeded?: unknown;
       warnings?: unknown;
     };
   };
@@ -84,6 +93,16 @@ function normalizeRepoPath(cwd: string, file: string): string {
 
 function isUnderRequestedFile(file: string, requested: string): boolean {
   return file === requested || file.startsWith(`${requested.replace(/\/$/, "")}/`);
+}
+
+function normalizeRequestedFiles(cwd: string, files?: string[]): string[] {
+  if (!files?.length) return [];
+  const normalized = new Set<string>();
+  for (const file of files) {
+    const repoPath = normalizeRepoPath(cwd, file).replace(/\/+$/g, "");
+    if (repoPath) normalized.add(repoPath);
+  }
+  return [...normalized].sort();
 }
 
 async function findImplementLogForWorktree(worktreePath: string): Promise<ImplementRunLog | null> {
@@ -120,6 +139,20 @@ async function findImplementLogForWorktree(worktreePath: string): Promise<Implem
   return null;
 }
 
+async function findDirtyFiles(cwd: string, requestedFiles: string[]): Promise<string[]> {
+  if (requestedFiles.length === 0) return [];
+  const output = await execCapture(
+    "git",
+    ["status", "--porcelain=v1", "-z", "--", ...requestedFiles],
+    { cwd }
+  ).catch(() => "");
+  const dirty = new Set<string>();
+  for (const entry of parseStatusPorcelainZ(output)) {
+    if (entry.file) dirty.add(entry.file);
+  }
+  return [...dirty].sort();
+}
+
 // ---- Sensitive data redaction for stderr ----
 
 function redactSensitive(input: string): string {
@@ -133,38 +166,95 @@ function redactSensitive(input: string): string {
 
 // ---- Git status/diff parsing helpers ----
 
-function parseStatusShortLine(line: string): { status: string; file: string } | null {
-  if (!line.trim()) return null;
+export function parseStatusPorcelainZ(output: string): Array<{ status: string; file: string }> {
+  const entries = output.split("\0");
+  const parsed: Array<{ status: string; file: string }> = [];
 
-  // git status --short / --porcelain=v1 format:
-  // XY <path>
-  // ?? <path>
-  const xy = line.slice(0, 2);
-  const file = line.slice(3).trim();
-  if (!file) return null;
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (!entry) continue;
+    const match = entry.match(/^(.{2}) (.+)$/s);
+    if (!match) continue;
+    const xy = match[1];
+    const firstPath = match[2];
+    if (!firstPath) continue;
 
-  if (xy === "??") return { status: "A", file };
-  if (xy.includes("D")) return { status: "D", file };
-  if (xy.includes("A")) return { status: "A", file };
-  if (xy.includes("M")) return { status: "M", file };
+    let status = "?";
+    if (xy === "??") {
+      status = "A";
+    } else if (xy.includes("R") || xy.includes("C")) {
+      status = "unsupported";
+      const nextPath = entries[i + 1];
+      const file = nextPath || firstPath;
+      if (nextPath) i++;
+      parsed.push({ status, file });
+      continue;
+    } else if (xy.includes("D")) {
+      status = "D";
+    } else if (xy.includes("A")) {
+      status = "A";
+    } else if (xy.includes("M")) {
+      status = "M";
+    } else {
+      status = xy.trim() || "?";
+    }
 
-  return { status: xy.trim() || "?", file };
+    parsed.push({ status, file: firstPath });
+  }
+
+  return parsed;
 }
 
-function parseNameStatusLine(line: string): { status: string; file: string } | null {
-  const trimmed = line.trim();
-  if (!trimmed) return null;
+export function parseNameStatusPorcelainZ(output: string): Array<{ status: string; file: string }> {
+  const entries = output.split("\0");
+  const parsed: Array<{ status: string; file: string }> = [];
 
-  const [status, ...rest] = trimmed.split(/\s+/);
-  const file = rest.join(" ");
-  if (!status || !file) return null;
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (!entry) continue;
+    let rawStatus = "";
+    let firstPath = "";
+    let consumedExtraPath = false;
 
-  return { status, file };
+    const tabIndex = entry.indexOf("\t");
+    if (tabIndex > 0) {
+      rawStatus = entry.slice(0, tabIndex);
+      firstPath = entry.slice(tabIndex + 1);
+    } else if (/^[A-Z?][0-9]*$/.test(entry)) {
+      rawStatus = entry;
+      firstPath = entries[i + 1] ?? "";
+      consumedExtraPath = true;
+    } else {
+      continue;
+    }
+    if (!firstPath) continue;
+
+    const statusCode = rawStatus[0] ?? "?";
+    if (statusCode === "R" || statusCode === "C") {
+      const nextPath = entries[i + (consumedExtraPath ? 2 : 1)];
+      const file = nextPath || firstPath;
+      i += consumedExtraPath ? 1 : 0;
+      if (nextPath) i++;
+      parsed.push({ status: "unsupported", file });
+      continue;
+    }
+
+    if (statusCode === "A" || statusCode === "M" || statusCode === "D") {
+      if (consumedExtraPath) i++;
+      parsed.push({ status: statusCode, file: firstPath });
+      continue;
+    }
+
+    if (consumedExtraPath) i++;
+    parsed.push({ status: statusCode, file: firstPath });
+  }
+
+  return parsed;
 }
 
 // ---- Spawn Claude with structured output ----
 
-interface ClaudeRunOptions {
+export interface ClaudeRunOptions {
   prompt: string;
   cwd: string;
   worktree?: string;
@@ -184,9 +274,34 @@ interface ClaudeRunOptions {
 interface ClaudeSpawnResult {
   report: Record<string, unknown>;
   session_id: string | null;
+  execution: ExecutionMetadata;
 }
 
-function spawnClaude(opts: ClaudeRunOptions): Promise<ClaudeSpawnResult> {
+export const DANGEROUS_DISALLOWED_TOOLS = [
+  "Bash(rm *)",
+  "Bash(rm -rf *)",
+  "Bash(rm -r *)",
+  "Bash(sudo *)",
+  "Bash(curl *)",
+  "Bash(wget *)",
+  "Bash(chmod *)",
+  "Bash(chown *)",
+  "Bash(git push *)",
+  "Bash(ssh *)",
+  "Bash(scp *)",
+  "Bash(nc *)",
+  "Bash(netcat *)",
+];
+
+export function truncateTail(input: string, maxChars = 4000): string {
+  return input.length <= maxChars ? input : input.slice(-maxChars);
+}
+
+export function buildSafeEnv(): Record<string, string> {
+  return sanitizeEnv();
+}
+
+export function buildClaudeArgs(opts: ClaudeRunOptions): string[] {
   const args: string[] = ["-p"];
 
   if (opts.worktree) {
@@ -239,8 +354,39 @@ function spawnClaude(opts: ClaudeRunOptions): Promise<ClaudeSpawnResult> {
 
   args.push("--json-schema", JSON.stringify(opts.jsonSchema));
   args.push(opts.prompt);
+  return args;
+}
 
+export function buildQueryArgs(input: ClaudeQueryInput): string[] {
+  return buildClaudeArgs(createQueryOptions(input));
+}
+
+export function buildReviewArgs(input: ClaudeReviewInput): string[] {
+  return buildClaudeArgs(createReviewOptions(input));
+}
+
+export function buildImplementArgs(input: ClaudeImplementInput, worktreeName = "codex-delegated-test"): string[] {
+  return buildClaudeArgs(createImplementOptions(input, worktreeName));
+}
+
+function successExecution(durationMs = 0): ExecutionMetadata {
+  return { exit_code: 0, duration_ms: durationMs, timed_out: false, stdout_tail: "", stderr_tail: "" };
+}
+
+function makeEnvelope<T>(
+  status: ToolEnvelope<T>["status"],
+  data: T | undefined,
+  execution: ExecutionMetadata,
+  warnings: string[] = [],
+  extra: Pick<ToolEnvelope<T>, "claude_report" | "server_observed"> = {}
+): ToolEnvelope<T> {
+  return { status, data, execution, warnings, ...extra };
+}
+
+function spawnClaude(opts: ClaudeRunOptions): Promise<ClaudeSpawnResult> {
+  const args = buildClaudeArgs(opts);
   const safeEnv = sanitizeEnv();
+  const startTime = Date.now();
 
   log(`spawning: ${CLAUDE_BIN} -p (${args.length} args, worktree=${opts.worktree ?? "none"}, maxTurns=${opts.maxTurns})`);
 
@@ -317,7 +463,17 @@ function spawnClaude(opts: ClaudeRunOptions): Promise<ClaudeSpawnResult> {
           log(`Claude exited ${code} (subtype=${parsed.subtype ?? "unknown"}), returning partial result`);
         }
 
-        resolve({ report, session_id: sessionId });
+        resolve({
+          report,
+          session_id: sessionId,
+          execution: {
+            exit_code: code,
+            duration_ms: Date.now() - startTime,
+            timed_out: signal === "SIGTERM",
+            stdout_tail: truncateTail(stdout),
+            stderr_tail: redactSensitive(truncateTail(stderr)),
+          },
+        });
       } catch (err) {
         const diag = `exit=${code}, signal=${signal ?? "none"}, timeout_sec=${opts.timeoutSec}, stdoutLen=${stdout.length}, stderrLen=${stderr.length}, stderr=${redactSensitive(stderr.slice(0, 200))}`;
         reject(new Error(`Failed to parse Claude output. ${diag}\n${(err as Error).message}`));
@@ -413,46 +569,117 @@ async function getEnvironmentDiagnostics(safeEnv: Record<string, string> = sanit
 
 // ---- Server-side observation ----
 
-async function observeResult(cwd: string, worktree?: string): Promise<ServerObserved> {
+async function observeResult(
+  cwd: string,
+  worktree?: string,
+  baseCommit?: string,
+  requestedFiles?: string[]
+): Promise<ServerObserved> {
   const obsCwd = worktree ? path.join(cwd, ".claude", "worktrees", worktree) : cwd;
+  const warnings: string[] = [];
+  const gitStatusShort = await execCapture("git", ["status", "--short"], { cwd: obsCwd }).catch((err) => {
+    warnings.push(`Unable to read git status: ${err instanceof Error ? err.message : String(err)}`);
+    return "";
+  });
+  const headCommit = await execCapture("git", ["rev-parse", "HEAD"], { cwd: obsCwd }).catch((err) => {
+    warnings.push(`Unable to read HEAD commit: ${err instanceof Error ? err.message : String(err)}`);
+    return "";
+  });
 
   try {
-    // Capture both unstaged AND staged/committed changes.
-    // Claude may have committed in the worktree, so git diff alone misses changes.
-    const [diffNameOnly, diffStat, statusShort, headDiffName] = await Promise.all([
+    const trackedCommittedNameOnly = baseCommit
+      ? await execCapture("git", ["diff", "--name-only", baseCommit, "HEAD"], { cwd: obsCwd }).catch(() => "")
+      : "";
+    const trackedCommittedStat = baseCommit
+      ? await execCapture("git", ["diff", "--stat", baseCommit, "HEAD"], { cwd: obsCwd }).catch(() => "")
+      : "";
+
+    const [trackedUncommittedNameOnly, untrackedStatusPorcelainZ] = await Promise.all([
       execCapture("git", ["diff", "--name-only"], { cwd: obsCwd }).catch(() => ""),
-      execCapture("git", ["diff", "--stat"], { cwd: obsCwd }).catch(() => ""),
-      execCapture("git", ["status", "--short"], { cwd: obsCwd }).catch(() => ""),
-      execCapture("git", ["diff", "HEAD~1", "--name-only"], { cwd: obsCwd }).catch(() => ""),
+      execCapture("git", ["status", "--porcelain=v1", "-z"], { cwd: obsCwd }).catch(() => ""),
     ]);
 
-    // Collect unique changed files from all sources.
-    // diffNameOnly and headDiffName are plain file paths (name-only).
-    // statusShort needs proper parsing of the XY <path> format.
     const fileSet = new Set<string>();
-    for (const source of [diffNameOnly, headDiffName]) {
+    for (const source of [trackedCommittedNameOnly, trackedUncommittedNameOnly]) {
       for (const line of source.split("\n")) {
         const file = line.trim();
         if (file) fileSet.add(file);
       }
     }
-    for (const line of statusShort.split("\n")) {
-      const parsed = parseStatusShortLine(line);
-      if (parsed?.file) fileSet.add(parsed.file);
+    for (const entry of parseStatusPorcelainZ(untrackedStatusPorcelainZ)) {
+      if (entry.file) fileSet.add(entry.file);
     }
 
+    const changedFiles = [...fileSet].sort();
+    const normalizedRequestedFiles = normalizeRequestedFiles(cwd, requestedFiles);
+    const outOfScopeFiles = normalizedRequestedFiles.length === 0
+      ? []
+      : changedFiles.filter((file) => !normalizedRequestedFiles.some((requested) => isUnderRequestedFile(file, requested)));
+    const scopeWarnings = outOfScopeFiles.map((file) =>
+      `Changed ${file} outside requested files: ${normalizedRequestedFiles.join(", ")}`
+    );
+
+    const diffNameOnlySegments: string[] = [];
+    if (trackedCommittedNameOnly.trim()) {
+      diffNameOnlySegments.push(`[tracked_since_base ${baseCommit ?? "unknown"}..HEAD]\n${trackedCommittedNameOnly.trimEnd()}`);
+    }
+    if (trackedUncommittedNameOnly.trim()) {
+      diffNameOnlySegments.push(`[uncommitted_tracked]\n${trackedUncommittedNameOnly.trimEnd()}`);
+    }
+    if (untrackedStatusPorcelainZ.trim()) {
+      const untrackedLines = parseStatusPorcelainZ(untrackedStatusPorcelainZ)
+        .map((entry) => `${entry.status}\t${entry.file}`)
+        .join("\n");
+      if (untrackedLines) {
+        diffNameOnlySegments.push(`[status_porcelain_z]\n${untrackedLines}`);
+      }
+    }
+
+    const diffStatSegments: string[] = [];
+    if (trackedCommittedStat.trim()) {
+      diffStatSegments.push(`[tracked_since_base ${baseCommit ?? "unknown"}..HEAD]\n${trackedCommittedStat.trimEnd()}`);
+    }
+    const fallbackStat = changedFiles.length > 0
+      ? changedFiles.map((file) => `*\t${file}`).join("\n")
+      : "(no changes)";
+    const diffStat = diffStatSegments.join("\n\n") || fallbackStat;
+    const diffNameOnly = diffNameOnlySegments.join("\n\n") || "(no changes)";
+
     return {
-      changed_files: [...fileSet],
-      diff_stat: diffStat || "(no changes or unable to get diff)",
-      diff_name_only: diffNameOnly || "(no changes)",
+      repo_root: cwd,
+      worktree_name: worktree,
+      changed_files: changedFiles,
+      diff_stat: diffStat,
+      diff_name_only: diffNameOnly,
+      base_commit: baseCommit,
+      head_commit: headCommit.trim() || undefined,
+      git_status_short: gitStatusShort,
       worktree_path: worktree ? `.claude/worktrees/${worktree}` : undefined,
+      scope: {
+        requested_files: normalizedRequestedFiles.length > 0 ? normalizedRequestedFiles : undefined,
+        out_of_scope_files: outOfScopeFiles,
+        scope_exceeded: outOfScopeFiles.length > 0,
+        warnings: [...warnings, ...scopeWarnings],
+      },
     };
   } catch {
+    const normalizedRequestedFiles = normalizeRequestedFiles(cwd, requestedFiles);
     return {
+      repo_root: cwd,
+      worktree_name: worktree,
       changed_files: [],
       diff_stat: "(unable to observe)",
       diff_name_only: "(unable to observe)",
+      base_commit: baseCommit,
+      head_commit: headCommit.trim() || undefined,
+      git_status_short: gitStatusShort,
       worktree_path: worktree ? `.claude/worktrees/${worktree}` : undefined,
+      scope: {
+        requested_files: normalizedRequestedFiles.length > 0 ? normalizedRequestedFiles : undefined,
+        out_of_scope_files: [],
+        scope_exceeded: false,
+        warnings,
+      },
     };
   }
 }
@@ -469,6 +696,145 @@ async function getWorktreeStatus(cwd: string, worktree: string): Promise<string>
 }
 
 // ---- Public API ----
+
+function readOnlyDisallowedTools(): string[] {
+  return DANGEROUS_DISALLOWED_TOOLS;
+}
+
+function createQueryOptions(input: ClaudeQueryInput): ClaudeRunOptions {
+  return {
+    prompt: buildQueryPrompt(input),
+    cwd: input.cwd,
+    tools: "Read,Glob,Grep,Bash",
+    allowedTools: [
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git status)",
+      "Bash(git show *)",
+      "Bash(find *)",
+      "Bash(rg *)",
+      "Bash(wc *)",
+      "Bash(ls *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(cat *)",
+    ],
+    disallowedTools: readOnlyDisallowedTools(),
+    maxTurns: input.max_turns ?? 8,
+    timeoutSec: input.timeout_sec ?? 120,
+    jsonSchema: QUERY_SCHEMA,
+  };
+}
+
+function createReviewOptions(input: ClaudeReviewInput): ClaudeRunOptions {
+  return {
+    prompt: buildReviewPrompt(input),
+    cwd: input.cwd,
+    tools: "Read,Glob,Grep,Bash",
+    allowedTools: [
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git status)",
+      "Bash(git show *)",
+      "Bash(git blame *)",
+    ],
+    disallowedTools: readOnlyDisallowedTools(),
+    maxTurns: input.max_turns ?? 10,
+    timeoutSec: input.timeout_sec ?? 180,
+    jsonSchema: REVIEW_SCHEMA,
+    noSessionPersistence: true,
+  };
+}
+
+function createImplementOptions(
+  input: ClaudeImplementInput,
+  worktreeName: string,
+  resumeSessionId?: string,
+  forked?: boolean
+): ClaudeRunOptions {
+  return {
+    prompt: buildImplementPrompt(input),
+    cwd: input.cwd,
+    worktree: worktreeName,
+    tools: "Read,Glob,Grep,Edit,Write,Bash",
+    allowedTools: [
+      "Read",
+      "Glob",
+      "Grep",
+      "Edit",
+      "Write",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git add *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(npm test *)",
+      "Bash(npm run test *)",
+      "Bash(npm run lint *)",
+      "Bash(npx *)",
+      "Bash(pytest *)",
+      "Bash(go test *)",
+      "Bash(cargo test *)",
+      "Bash(yarn test *)",
+      "Bash(pnpm test *)",
+      "Bash(pnpm run lint *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(wc *)",
+      "Bash(find *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(sort *)",
+      "Bash(uniq *)",
+      "Bash(grep *)",
+      "Bash(rg *)",
+      "Bash(which *)",
+      "Bash(echo *)",
+      "Bash(date *)",
+      "Bash(mkdir *)",
+      "Bash(cp *)",
+      "Bash(mv *)",
+      "Bash(node *)",
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(tsc *)",
+      "Bash(eslint *)",
+    ],
+    disallowedTools: [
+      ...DANGEROUS_DISALLOWED_TOOLS,
+      "Bash(git push --force *)",
+      "Bash(git branch -D *)",
+      "Bash(git reset --hard *)",
+      "Bash(git clean *)",
+      "Bash(shutdown *)",
+      "Bash(reboot *)",
+      "Bash(docker *)",
+      "Bash(kubectl *)",
+      "Bash(brew *)",
+      "Bash(npm install *)",
+      "Bash(npm uninstall *)",
+      "Bash(npm publish *)",
+      "Bash(pip install *)",
+      "Bash(pip uninstall *)",
+      "Bash(yarn add *)",
+      "Bash(yarn remove *)",
+      "Bash(pnpm add *)",
+      "Bash(pnpm remove *)",
+    ],
+    maxTurns: input.max_turns ?? 15,
+    timeoutSec: input.timeout_sec ?? 600,
+    jsonSchema: IMPLEMENT_SCHEMA,
+    resumeSessionId,
+    forkSession: forked,
+    maxBudgetUsd: input.max_cost_usd,
+  };
+}
 
 export async function checkClaudeStatus(cwd: string): Promise<ClaudeStatusResult> {
   const result: ClaudeStatusResult = {
@@ -574,7 +940,7 @@ export async function checkClaudeStatus(cwd: string): Promise<ClaudeStatusResult
 export async function runClaudeQuery(
   input: ClaudeQueryInput,
   runId: string
-): Promise<Record<string, unknown>> {
+): Promise<ToolEnvelope<Record<string, unknown>>> {
   const store = await getStore();
   const repoKey = await computeRepoKey(input.cwd);
 
@@ -585,46 +951,14 @@ export async function runClaudeQuery(
   let forked = false;
 
   const opts: ClaudeRunOptions = {
-    prompt: buildQueryPrompt(input),
-    cwd: input.cwd,
-    tools: "Read,Glob,Grep,Bash",
-    allowedTools: [
-      "Read",
-      "Glob",
-      "Grep",
-      "Bash(git diff *)",
-      "Bash(git log *)",
-      "Bash(git status)",
-      "Bash(git show *)",
-      "Bash(find *)",
-      "Bash(rg *)",
-      "Bash(wc *)",
-      "Bash(ls *)",
-      "Bash(head *)",
-      "Bash(tail *)",
-      "Bash(cat *)",
-    ],
-    disallowedTools: [
-      "Bash(rm *)",
-      "Bash(sudo *)",
-      "Bash(curl *)",
-      "Bash(wget *)",
-      "Bash(chmod *)",
-      "Bash(chown *)",
-      "Bash(git push *)",
-      "Bash(ssh *)",
-      "Bash(scp *)",
-    ],
-    maxTurns: 8,
-    timeoutSec: input.timeout_sec ?? 120,
-    jsonSchema: QUERY_SCHEMA,
+    ...createQueryOptions(input),
     resumeSessionId: requestedSessionId ?? undefined,
   };
 
   let returnedSessionId: string | null = null;
 
   try {
-    const { report, session_id } = await spawnClaude(opts);
+    const { report, session_id, execution } = await spawnClaude(opts);
     returnedSessionId = session_id;
     resumed = !!requestedSessionId;
 
@@ -636,7 +970,7 @@ export async function runClaudeQuery(
     const sessionLog: SessionLog = { requested_session_id: requestedSessionId, resumed, forked, returned_session_id: session_id };
     await logRun(runId, { type: "query", input, report, session: sessionLog });
     store.prune();
-    return report;
+    return makeEnvelope("success", report, execution, [], { claude_report: report });
   } catch (err) {
     const errorMsg = (err as Error).message;
 
@@ -648,14 +982,14 @@ export async function runClaudeQuery(
       // Retry without resume
       const retryOpts: ClaudeRunOptions = { ...opts, resumeSessionId: undefined };
       try {
-        const { report, session_id } = await spawnClaude(retryOpts);
+        const { report, session_id, execution } = await spawnClaude(retryOpts);
         returnedSessionId = session_id;
         if (session_id) {
           store.upsert(session_id, "query", repoKey, input.cwd, String((report.answer as string) ?? "").slice(0, 200));
         }
         const sessionLog: SessionLog = { requested_session_id: requestedSessionId, resumed: false, forked: false, returned_session_id: session_id };
         await logRun(runId, { type: "query", input, report, session: sessionLog, retried_after_session_expired: true });
-        return report;
+        return makeEnvelope("success", report, execution, [], { claude_report: report });
       } catch (retryErr) {
         await logRun(runId, { type: "query", input, error: (retryErr as Error).message, retried_after_session_expired: true });
         throw retryErr;
@@ -677,42 +1011,13 @@ function isSessionNotFoundError(msg: string): boolean {
 export async function runClaudeReview(
   input: ClaudeReviewInput,
   runId: string
-): Promise<Record<string, unknown>> {
-  const opts: ClaudeRunOptions = {
-    prompt: buildReviewPrompt(input),
-    cwd: input.cwd,
-    tools: "Read,Glob,Grep,Bash",
-    allowedTools: [
-      "Read",
-      "Glob",
-      "Grep",
-      "Bash(git diff *)",
-      "Bash(git log *)",
-      "Bash(git status)",
-      "Bash(git show *)",
-      "Bash(git blame *)",
-    ],
-    disallowedTools: [
-      "Bash(rm *)",
-      "Bash(sudo *)",
-      "Bash(curl *)",
-      "Bash(wget *)",
-      "Bash(chmod *)",
-      "Bash(chown *)",
-      "Bash(git push *)",
-      "Bash(ssh *)",
-      "Bash(scp *)",
-    ],
-    maxTurns: 10,
-    timeoutSec: input.timeout_sec ?? 180,
-    jsonSchema: REVIEW_SCHEMA,
-    noSessionPersistence: true,
-  };
+): Promise<ToolEnvelope<Record<string, unknown>>> {
+  const opts = createReviewOptions(input);
 
   try {
-    const { report } = await spawnClaude(opts);
+    const { report, execution } = await spawnClaude(opts);
     await logRun(runId, { type: "review", input, report });
-    return report;
+    return makeEnvelope("success", report, execution, [], { claude_report: report });
   } catch (err) {
     await logRun(runId, { type: "review", input, error: (err as Error).message });
     throw err;
@@ -725,106 +1030,66 @@ export async function runClaudeImplement(
 ): Promise<ClaudeResult> {
   const store = await getStore();
   const repoKey = await computeRepoKey(input.cwd);
-  const worktreeName = `codex-delegated-${runId.slice(0, 8)}`;
+  const worktreeName = input.worktreeName ?? `codex-delegated-${runId.slice(0, 8)}`;
+  const worktreeRelPath = path.join(".claude", "worktrees", worktreeName);
+  const worktreePath = path.join(input.cwd, worktreeRelPath);
+  const requestedFiles = normalizeRequestedFiles(input.cwd, input.files);
+  let baseCommit: string | undefined;
+
+  if (requestedFiles.length > 0) {
+    const dirtyRequestedFiles = await findDirtyFiles(input.cwd, requestedFiles);
+    if (dirtyRequestedFiles.length > 0) {
+      const message =
+        `Requested files contain uncommitted changes in main workspace: ${dirtyRequestedFiles.join(", ")}. ` +
+        "Please commit/stash/clean them first, or use an explicit dirty-snapshot mode.";
+      await logRun(runId, {
+        type: "implement",
+        input,
+        error: message,
+        requested_files: requestedFiles,
+        dirty_requested_files: dirtyRequestedFiles,
+        duration_ms: 0,
+      });
+      throw new Error(message);
+    }
+  }
+
+  try {
+    if (!existsSync(worktreePath)) {
+      await mkdir(path.dirname(worktreePath), { recursive: true });
+      await execCapture("git", ["worktree", "add", "--detach", worktreeRelPath, "HEAD"], {
+        cwd: input.cwd,
+        timeoutMs: 30000,
+      });
+    }
+    const resolvedBase = await execCapture("git", ["rev-parse", "HEAD"], { cwd: worktreePath });
+    baseCommit = resolvedBase.trim() || undefined;
+  } catch (err) {
+    await logRun(runId, {
+      type: "implement",
+      input,
+      error: `Failed to prepare worktree/base commit: ${err instanceof Error ? err.message : String(err)}`,
+      duration_ms: 0,
+    });
+    throw err;
+  }
 
   // implement only resumes when session_key is explicitly provided
   const resumeSessionId = input.session_key ?? undefined;
   const forked = input.fork_session ?? false;
 
-  const opts: ClaudeRunOptions = {
-    prompt: buildImplementPrompt(input),
-    cwd: input.cwd,
-    worktree: worktreeName,
-    tools: "Read,Glob,Grep,Edit,Write,Bash",
-    allowedTools: [
-      "Read",
-      "Glob",
-      "Grep",
-      "Edit",
-      "Write",
-      "Bash(git status)",
-      "Bash(git diff *)",
-      "Bash(git add *)",
-      "Bash(git log *)",
-      "Bash(git show *)",
-      "Bash(npm test *)",
-      "Bash(npm run test *)",
-      "Bash(npm run lint *)",
-      "Bash(npx *)",
-      "Bash(pytest *)",
-      "Bash(go test *)",
-      "Bash(cargo test *)",
-      "Bash(yarn test *)",
-      "Bash(pnpm test *)",
-      "Bash(pnpm run lint *)",
-      "Bash(ls *)",
-      "Bash(cat *)",
-      "Bash(wc *)",
-      "Bash(find *)",
-      "Bash(head *)",
-      "Bash(tail *)",
-      "Bash(sort *)",
-      "Bash(uniq *)",
-      "Bash(grep *)",
-      "Bash(rg *)",
-      "Bash(which *)",
-      "Bash(echo *)",
-      "Bash(date *)",
-      "Bash(mkdir *)",
-      "Bash(cp *)",
-      "Bash(mv *)",
-      "Bash(node *)",
-      "Bash(python *)",
-      "Bash(python3 *)",
-      "Bash(tsc *)",
-      "Bash(eslint *)",
-    ],
-    disallowedTools: [
-      "Bash(rm -rf *)",
-      "Bash(rm -r *)",
-      "Bash(sudo *)",
-      "Bash(curl *)",
-      "Bash(wget *)",
-      "Bash(chmod *)",
-      "Bash(chown *)",
-      "Bash(git push *)",
-      "Bash(git push --force *)",
-      "Bash(git branch -D *)",
-      "Bash(git reset --hard *)",
-      "Bash(git clean *)",
-      "Bash(ssh *)",
-      "Bash(scp *)",
-      "Bash(shutdown *)",
-      "Bash(reboot *)",
-      "Bash(docker *)",
-      "Bash(kubectl *)",
-      "Bash(brew *)",
-      "Bash(npm install *)",
-      "Bash(npm uninstall *)",
-      "Bash(npm publish *)",
-      "Bash(pip install *)",
-      "Bash(pip uninstall *)",
-      "Bash(yarn add *)",
-      "Bash(yarn remove *)",
-      "Bash(pnpm add *)",
-      "Bash(pnpm remove *)",
-    ],
-    maxTurns: 15,
-    timeoutSec: input.timeout_sec ?? 600,
-    jsonSchema: IMPLEMENT_SCHEMA,
-    resumeSessionId,
-    forkSession: forked,
-    maxBudgetUsd: input.max_cost_usd,
-  };
+  const opts = createImplementOptions(input, worktreeName, resumeSessionId, forked);
 
   let report: Record<string, unknown>;
   let returnedSessionId: string | null = null;
+  let execution: ExecutionMetadata;
   const startTime = Date.now();
 
   try {
     const result = await spawnClaude(opts);
     report = result.report;
     returnedSessionId = result.session_id;
+    execution = result.execution;
   } catch (err) {
     const errorMsg = (err as Error).message;
 
@@ -844,7 +1109,7 @@ export async function runClaudeImplement(
   }
 
   // Observe actual changes (don't trust Claude's self-report alone)
-  const observed = await observeResult(input.cwd, worktreeName);
+  const observed = await observeResult(input.cwd, worktreeName, baseCommit, requestedFiles);
 
   // Check resource limits
   if (input.max_changed_files !== undefined || input.max_cost_usd !== undefined) {
@@ -865,6 +1130,11 @@ export async function runClaudeImplement(
       warnings,
     };
   }
+  if (observed.scope?.scope_exceeded) {
+    for (const warning of observed.scope.warnings) {
+      log(`Scope warning: ${warning}`);
+    }
+  }
 
   const sessionLog: SessionLog = {
     requested_session_id: resumeSessionId ?? null,
@@ -883,7 +1153,15 @@ export async function runClaudeImplement(
   });
 
   store.prune();
-  return { claude_report: report, server_observed: observed };
+  const warnings = [
+    ...(observed.resource_limits?.warnings ?? []),
+    ...(observed.scope?.warnings ?? []),
+    "Worktree is retained for inspection. After applying results, call claude_cleanup to remove old delegated worktrees.",
+  ];
+  return makeEnvelope("success", undefined, execution, warnings, {
+    claude_report: report,
+    server_observed: observed,
+  });
 }
 
 // ---- Apply worktree diff to main workspace ----
@@ -904,50 +1182,62 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
     return { applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: `worktree directory not found: ${wtReal}` };
   }
 
-  // Check worktree diff stat for reporting (src/ only)
+  const wtRelPath = path.join(".claude", "worktrees", path.basename(wtReal));
+  const implementLog = await findImplementLogForWorktree(wtRelPath);
+  const observedBaseCommit =
+    typeof implementLog?.observed?.base_commit === "string" ? implementLog.observed.base_commit.trim() : "";
+  const baseCommit = observedBaseCommit || undefined;
+
   let diffStat = "";
-  try {
-    diffStat = await execCapture("git", ["diff", "--stat", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 });
-  } catch {}
-  if (!diffStat.trim()) {
-    try {
-      diffStat = await execCapture("git", ["diff", "HEAD~1", "--stat", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => "");
-    } catch {}
+  if (baseCommit) {
+    diffStat = await execCapture("git", ["diff", "--stat", baseCommit, "HEAD", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => "");
   }
 
-  // Collect changed files with status (M=modified, A=added, D=deleted).
-  // Use three sources to capture tracked (staged/unstaged/committed) AND untracked files.
-  const [diffStatus, headStatus, shortStatus] = await Promise.all([
-    execCapture("git", ["diff", "--name-status", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
-    execCapture("git", ["diff", "HEAD~1", "--name-status", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
-    execCapture("git", ["status", "--short", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
+  const [trackedStatus, uncommittedStatus, untrackedStatus] = await Promise.all([
+    baseCommit
+      ? execCapture("git", ["diff", "--name-status", "-z", baseCommit, "HEAD", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => "")
+      : Promise.resolve(""),
+    execCapture("git", ["diff", "--name-status", "-z", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
+    execCapture("git", ["status", "--porcelain=v1", "-z", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
   ]);
 
   const changesByFile = new Map<string, { status: string; file: string }>();
-
-  function addChange(change: { status: string; file: string } | null): void {
-    if (!change) return;
+  function addChange(change: { status: string; file: string }): void {
     if (!change.file.startsWith("src/")) return;
     changesByFile.set(change.file, change);
   }
 
-  for (const line of diffStatus.split("\n")) addChange(parseNameStatusLine(line));
-  for (const line of headStatus.split("\n")) addChange(parseNameStatusLine(line));
-  for (const line of shortStatus.split("\n")) addChange(parseStatusShortLine(line));
+  for (const change of parseNameStatusPorcelainZ(trackedStatus)) addChange(change);
+  for (const change of parseNameStatusPorcelainZ(uncommittedStatus)) addChange(change);
+  for (const change of parseStatusPorcelainZ(untrackedStatus)) addChange(change);
 
-  const changes = [...changesByFile.values()];
+  let usedFallback = false;
+  if (!baseCommit) {
+    usedFallback = true;
+    const [legacyDiffStatus, legacyHeadStatus, legacyStatus] = await Promise.all([
+      execCapture("git", ["diff", "--name-status", "-z", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
+      execCapture("git", ["diff", "--name-status", "-z", "HEAD~1", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
+      execCapture("git", ["status", "--porcelain=v1", "-z", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
+    ]);
+    for (const change of parseNameStatusPorcelainZ(legacyDiffStatus)) addChange(change);
+    for (const change of parseNameStatusPorcelainZ(legacyHeadStatus)) addChange(change);
+    for (const change of parseStatusPorcelainZ(legacyStatus)) addChange(change);
+    if (!diffStat.trim()) {
+      diffStat = await execCapture("git", ["diff", "--stat", "HEAD~1", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => "");
+    }
+  }
 
-  // Provide fallback diffStat when git diff shows nothing (e.g. all untracked)
+  const changes = [...changesByFile.values()].sort((a, b) => a.file.localeCompare(b.file));
   if (!diffStat.trim() && changes.length > 0) {
     diffStat = changes.map((c) => `${c.status}\t${c.file}`).join("\n");
   }
-
+  if (usedFallback) {
+    diffStat = `[fallback_without_base_commit]\n${diffStat || "(no stat)"}`;
+  }
   if (changes.length === 0) {
     return { applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts: [], error: "No changed source files found in worktree" };
   }
 
-  const wtRelPath = path.join(".claude", "worktrees", path.basename(wtReal));
-  const implementLog = await findImplementLogForWorktree(wtRelPath);
   const resourceLimits = implementLog?.observed?.resource_limits;
   if (resourceLimits?.changed_files_exceeded === true) {
     const warnings = Array.isArray(resourceLimits.warnings)
@@ -962,22 +1252,18 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
     };
   }
 
-  if (implementLog?.input && Array.isArray(implementLog.input.files) && implementLog.input.files.length > 0) {
-    const requestedFiles = implementLog.input.files
-      .filter((item): item is string => typeof item === "string")
-      .map((file) => normalizeRepoPath(input.cwd, file));
-    const outOfScope = changes.filter(
-      (change) => !requestedFiles.some((requested) => isUnderRequestedFile(change.file, requested))
-    );
-    if (outOfScope.length > 0) {
-      return {
-        applied_files: [],
-        diff_stat: diffStat,
-        cleanup_performed: false,
-        conflicts: outOfScope.map((change) => `${change.file}: outside requested files (${requestedFiles.join(", ")})`),
-        error: "Worktree contains changes outside requested files; apply refused",
-      };
-    }
+  const observedScope = implementLog?.observed?.scope;
+  if (observedScope?.scope_exceeded === true) {
+    const warnings = Array.isArray(observedScope.warnings)
+      ? observedScope.warnings.filter((item): item is string => typeof item === "string")
+      : [];
+    return {
+      applied_files: [],
+      diff_stat: diffStat,
+      cleanup_performed: false,
+      conflicts: warnings,
+      error: "Worktree contains changes outside requested files; apply refused",
+    };
   }
 
   // Preflight: check for uncommitted changes in main workspace and
