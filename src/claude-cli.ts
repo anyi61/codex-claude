@@ -75,6 +75,7 @@ interface ImplementRunLog {
   observed?: {
     worktree_path?: unknown;
     base_commit?: unknown;
+    changed_files?: unknown;
     resource_limits?: {
       changed_files_exceeded?: unknown;
       warnings?: unknown;
@@ -143,12 +144,15 @@ async function findDirtyFiles(cwd: string, requestedFiles: string[]): Promise<st
   if (requestedFiles.length === 0) return [];
   const output = await execCapture(
     "git",
-    ["status", "--porcelain=v1", "-z", "--", ...requestedFiles],
+    ["status", "--short", "--", ...requestedFiles],
     { cwd }
   ).catch(() => "");
   const dirty = new Set<string>();
-  for (const entry of parseStatusPorcelainZ(output)) {
-    if (entry.file) dirty.add(entry.file);
+  for (const line of output.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const file = trimmed.replace(/^[ MADRCU?!]{1,2}\s+/, "");
+    if (file) dirty.add(file);
   }
   return [...dirty].sort();
 }
@@ -173,9 +177,9 @@ export function parseStatusPorcelainZ(output: string): Array<{ status: string; f
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
     if (!entry) continue;
-    const match = entry.match(/^(.{2}) (.+)$/s);
+    const match = entry.match(/^(.{2}) (.+)$/s) ?? entry.match(/^([ MADRCU?!]) (.+)$/s);
     if (!match) continue;
-    const xy = match[1];
+    const xy = match[1].length === 1 ? `${match[1]} ` : match[1];
     const firstPath = match[2];
     if (!firstPath) continue;
 
@@ -1187,23 +1191,32 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   const observedBaseCommit =
     typeof implementLog?.observed?.base_commit === "string" ? implementLog.observed.base_commit.trim() : "";
   const baseCommit = observedBaseCommit || undefined;
+  const observedChangedFiles = Array.isArray(implementLog?.observed?.changed_files)
+    ? implementLog.observed.changed_files.filter((item): item is string => typeof item === "string" && item.length > 0)
+    : [];
+  const hasObservedScope = baseCommit !== undefined && observedChangedFiles.length > 0;
+  const pathspecs = hasObservedScope ? observedChangedFiles : ["src/"];
 
   let diffStat = "";
   if (baseCommit) {
-    diffStat = await execCapture("git", ["diff", "--stat", baseCommit, "HEAD", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => "");
+    diffStat = await execCapture("git", ["diff", "--stat", baseCommit, "HEAD", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 10000 }).catch(() => "");
   }
 
   const [trackedStatus, uncommittedStatus, untrackedStatus] = await Promise.all([
     baseCommit
-      ? execCapture("git", ["diff", "--name-status", "-z", baseCommit, "HEAD", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => "")
+      ? execCapture("git", ["diff", "--name-status", "-z", baseCommit, "HEAD", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 10000 }).catch(() => "")
       : Promise.resolve(""),
-    execCapture("git", ["diff", "--name-status", "-z", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
-    execCapture("git", ["status", "--porcelain=v1", "-z", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
+    execCapture("git", ["diff", "--name-status", "-z", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
+    execCapture("git", ["status", "--porcelain=v1", "-z", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
   ]);
 
   const changesByFile = new Map<string, { status: string; file: string }>();
   function addChange(change: { status: string; file: string }): void {
-    if (!change.file.startsWith("src/")) return;
+    if (hasObservedScope) {
+      if (!observedChangedFiles.includes(change.file)) return;
+    } else if (!change.file.startsWith("src/")) {
+      return;
+    }
     changesByFile.set(change.file, change);
   }
 
@@ -1235,7 +1248,7 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
     diffStat = `[fallback_without_base_commit]\n${diffStat || "(no stat)"}`;
   }
   if (changes.length === 0) {
-    return { applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts: [], error: "No changed source files found in worktree" };
+    return { applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts: [], error: "No changed files found in worktree" };
   }
 
   const resourceLimits = implementLog?.observed?.resource_limits;

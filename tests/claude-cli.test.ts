@@ -5,6 +5,7 @@ import {
   buildQueryArgs,
   buildReviewArgs,
   buildSafeEnv,
+  parseStatusPorcelainZ,
   truncateTail,
 } from "../src/claude-cli.js";
 
@@ -61,5 +62,10 @@ describe("claude cli argument construction", () => {
     expect(env.MY_PASSWORD).toBeUndefined();
     expect(env.BRIDGE_DEPTH).toBeDefined();
     expect(truncateTail("abcdef", 3)).toBe("def");
+  });
+
+  it("parses porcelain status even if leading spaces were trimmed", () => {
+    expect(parseStatusPorcelainZ("M README.md")).toEqual([{ status: "M", file: "README.md" }]);
+    expect(parseStatusPorcelainZ(" M README.md\0")).toEqual([{ status: "M", file: "README.md" }]);
   });
 });

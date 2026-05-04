@@ -15,6 +15,7 @@ async function createFixtureRepo(): Promise<{ repo: string; worktreeRel: string;
   sh(repo, "git", "config", "user.email", "test@example.com");
   await mkdir(path.join(repo, "src"), { recursive: true });
   await writeFile(path.join(repo, "src", "server.ts"), "export const value = 1;\n");
+  await writeFile(path.join(repo, "README.md"), "# Fixture\n");
   sh(repo, "git", "add", ".");
   sh(repo, "git", "commit", "-m", "init");
 
@@ -119,6 +120,40 @@ async function main(): Promise<void> {
       }
     } finally {
       await rm(fx2.repo, { recursive: true, force: true });
+    }
+
+    const fx3 = await createFixtureRepo();
+    try {
+      const wt = path.join(fx3.repo, fx3.worktreeRel);
+      await writeFile(path.join(wt, "README.md"), "# Fixture\n\nUpdated by delegated worktree.\n");
+      await writeImplementLog(logDir, "doc-apply", fx3.worktreeRel, fx3.baseCommit, {
+        changed_files: ["README.md"],
+        scope: {
+          requested_files: ["README.md"],
+          out_of_scope_files: [],
+          scope_exceeded: false,
+          warnings: [],
+        },
+        resource_limits: {
+          actual_changed_files: 1,
+          changed_files_exceeded: false,
+          warnings: [],
+        },
+      });
+
+      const result = await runClaudeApply(
+        { cwd: fx3.repo, worktree_path: fx3.worktreeRel, cleanup: false },
+        "apply-doc"
+      );
+      if (!result.applied_files.includes("README.md")) {
+        throw new Error(`expected README.md to be applied, got: ${JSON.stringify(result)}`);
+      }
+      const applied = await readFile(path.join(fx3.repo, "README.md"), "utf8");
+      if (!applied.includes("Updated by delegated worktree.")) {
+        throw new Error(`expected README.md content to be updated, got: ${applied}`);
+      }
+    } finally {
+      await rm(fx3.repo, { recursive: true, force: true });
     }
 
     const currentFile = fileURLToPath(import.meta.url);

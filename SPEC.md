@@ -395,7 +395,7 @@ class SessionStore {
 
 核心闭环：implement → review diff → apply → cleanup。implement 不自动清理 worktree，Codex 验收后再走 apply/cleanup。
 
-- [x] `claude_apply` — 直接复制 src/ 文件（非 git apply），区分 M/A/D 状态
+- [x] `claude_apply` — 优先按 implement run log 中服务端观测到的变更文件直接复制（非 git apply），区分 M/A/D 状态；缺少可信日志时回退到 `src/`
 - [x] `claude_cleanup` — 扫描残留 worktree，dry-run 模式，`git worktree remove --force`
 - [x] `claude_status` 扩展 — `delegated_worktrees_count`, `delegated_worktrees[]`, `stale_worktrees_count`
 - [x] apply 路径校验限定在 `.claude/worktrees/codex-delegated-*`
@@ -417,7 +417,7 @@ class SessionStore {
 行为 {
   1. 校验 cwd 和 worktree_path 必在 .claude/worktrees/codex-delegated-*; 确认目录存在
   2. 检查主工作区被影响文件无本地未提交变更（git status --short），有冲突则拒绝
-  3. 收集变更文件列表：git diff --name-status -- src/（区分 M/A/D）
+  3. 收集变更文件列表：优先使用 implement 记录的 `server_observed.changed_files` + `base_commit`，缺少可信日志时回退到 `git diff --name-status -- src/`（区分 M/A/D）
   4. 对 M/A 文件：直接复制 worktree → 主工作区（避免 git apply patch 解析问题）
   5. 对 D 文件：从主工作区删除对应文件
   6. cleanup=true → git worktree remove --force .claude/worktrees/<name> + git worktree prune

@@ -25,7 +25,7 @@ Codex CLI
 | `claude_query` | 只读 | 向 Claude 提问；同 repo query 会话 20 分钟内自动复用 |
 | `claude_review` | 只读 | 审查 diff 或指定文件；禁用 session persistence |
 | `claude_implement` | 写入 worktree | 在隔离 worktree 中实现任务，支持 `session_key`、`max_cost_usd`、`max_changed_files` |
-| `claude_apply` | 写入主工作区 | 将 delegated worktree 中的 `src/` 变更安全应用到主工作区 |
+| `claude_apply` | 写入主工作区 | 将 delegated worktree 中经过服务端观测和范围校验的变更安全应用到主工作区 |
 | `claude_cleanup` | worktree 管理 | dry-run 或清理 `.claude/worktrees/codex-delegated-*` |
 
 ## 设置
@@ -203,12 +203,12 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 
 重要限制：
 
-- `claude_apply` 只应用 worktree 中 `src/` 下的 `A/M/D` 文件变更，包括未跟踪的新增 `src/` 文件。
+- `claude_apply` 优先应用 implement run log 中 `server_observed.changed_files` 记录的 `A/M/D` 文件变更，因此可处理请求范围内的文档、根目录文件和 `src/` 文件。
 - `claude_apply` 会读取 implement run log；若 `scope_exceeded=true` 或 `changed_files_exceeded=true`，会拒绝 apply。
-- `claude_apply` 变更识别优先使用 implement 记录的 `base_commit`，统一按 `base_commit..HEAD` + 未提交 + untracked 观测；缺少 `base_commit` 时才回退 legacy 路径。
+- `claude_apply` 变更识别优先使用 implement 记录的 `base_commit` 和 `server_observed.changed_files`，统一按 `base_commit..HEAD` + 未提交 + untracked 观测；缺少可信 implement log 时才回退到 legacy `src/` 路径。
 - 如果主工作区相关文件有未提交改动，会全量拒绝，不做部分 apply。
 - `cleanup: true` 只在 apply 成功后移除对应 worktree。
-- `dist/`、文档或其他目录不会被 apply；需要时请手动审查处理或重新设计任务。
+- `dist/`、`.git/`、未被服务端观测记录的越界文件不会被 apply；需要时请重新设计任务并显式纳入 `files`。
 
 ### 6. 清理残留 worktree
 
@@ -280,7 +280,7 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 - `fork_session requires session_key`：`fork_session` 只能配合显式 `session_key` 使用。
 - `apply refused`：主工作区有本地改动。先提交、stash 或还原相关文件，再重试。
 - `Requested files contain uncommitted changes`：`claude_implement` 检测到 `files` 对应路径在主工作区 dirty。先提交/暂存/清理这些文件，再重试。
-- `No changed source files found`：worktree 没有 `src/` 下的 A/M/D 变更；`claude_apply` 不处理文档、dist 或根目录文件。
+- `No changed files found`：worktree 中没有可根据 implement log 或 legacy fallback 识别的 A/M/D 变更。
 - 残留 worktree：先 `claude_cleanup` dry-run，再 `dry_run: false` 清理。
 
 ## 安全
