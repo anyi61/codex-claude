@@ -41,9 +41,12 @@ The repository was already dirty before this engineering-quality pass:
 - Added execution metadata/envelope support for Claude query/review/implement paths.
 - Enriched implement observation with repo/worktree/head/status metadata.
 
-## Blockers
+## Acceptance
 
-- `npm install -D vitest` failed because network access to the npm registry through `127.0.0.1:7890` is denied with `EPERM`.
-- Retrying with proxy environment variables unset changes the failure to `ENOTFOUND registry.npmjs.org`, confirming there is no usable npm network path from this sandbox.
-- Git index writes are blocked in this sandbox: Git cannot create `.git/index.lock`, so `git rm --cached dist` and required phase commits cannot be performed here.
-- `package-lock.json` was not updated for Vitest because the dependency installation did not complete. Run `npm install` after npm/network permissions are fixed to regenerate the lockfile.
+- `npm run build`: passing.
+- `npm test`: passing, 15 tests across 3 files.
+- `npm run typecheck`: passing.
+- `npm run lint --if-present`: no lint script configured, exits successfully.
+- `npx tsx debug/test-apply-scope.ts`: passing.
+- `dist/` and `node_modules/.package-lock.json` are no longer tracked by git.
+- Remaining untracked input file: `goal.md`.
