@@ -1,4 +1,5 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { z } from "zod";
 
 // ---- Environment diagnostics types ----
 
@@ -14,6 +15,7 @@ export interface ClaudeQueryInput {
   task: string;
   cwd: string;
   timeout_sec?: number;
+  max_turns?: number;
 }
 
 export interface ClaudeReviewInput {
@@ -22,6 +24,7 @@ export interface ClaudeReviewInput {
   diff?: string;
   files?: string[];
   timeout_sec?: number;
+  max_turns?: number;
 }
 
 export interface ClaudeImplementInput {
@@ -30,10 +33,12 @@ export interface ClaudeImplementInput {
   files?: string[];
   constraints?: string[];
   timeout_sec?: number;
+  max_turns?: number;
   session_key?: string;
   fork_session?: boolean;
   max_cost_usd?: number;
   max_changed_files?: number;
+  worktreeName?: string;
 }
 
 // ---- Structured output types ----
@@ -63,18 +68,55 @@ export interface ResourceLimits {
   warnings: string[];
 }
 
+export interface ObserveScope {
+  requested_files?: string[];
+  out_of_scope_files: string[];
+  scope_exceeded: boolean;
+  warnings: string[];
+}
+
 export interface ServerObserved {
+  repo_root?: string;
+  worktree_name?: string;
   changed_files: string[];
   diff_stat: string;
   diff_name_only: string;
+  base_commit?: string;
+  head_commit?: string;
+  git_status_short?: string;
   worktree_path?: string;
   resource_limits?: ResourceLimits;
+  scope?: ObserveScope;
 }
 
-export interface ClaudeResult {
-  claude_report: Record<string, unknown>;
-  server_observed: ServerObserved;
+export interface ExecutionMetadata {
+  exit_code: number | null;
+  duration_ms: number;
+  timed_out: boolean;
+  stdout_tail: string;
+  stderr_tail: string;
 }
+
+export interface ToolEnvelope<T> {
+  status: "success" | "failed" | "partial" | "needs_user";
+  data?: T;
+  claude_report?: unknown;
+  server_observed?: unknown;
+  execution: ExecutionMetadata;
+  warnings: string[];
+}
+
+export function localExecution(startTime: number): ExecutionMetadata {
+  return {
+    exit_code: 0,
+    duration_ms: Date.now() - startTime,
+    timed_out: false,
+    stdout_tail: "",
+    stderr_tail: "",
+  };
+}
+
+export type ClaudeResult = ToolEnvelope<undefined>;
 
 export interface EnvironmentDiagnostics {
   proxy_env_present: boolean;
@@ -147,6 +189,75 @@ export interface ClaudeCleanupResult {
   removed_count: number;
   failed_count: number;
   entries: CleanupEntry[];
+}
+
+// ---- Tool input validation ----
+
+const cwdSchema = z.string().trim().min(1, "cwd is required");
+const taskSchema = z.string().trim().min(1, "task is required");
+const timeoutSchema = z.number().int().positive().max(3600).optional();
+const maxTurnsSchema = z.number().int().positive().max(50).optional();
+const filesSchema = z.array(z.string().trim().min(1)).optional();
+const constraintsSchema = z.array(z.string().trim().min(1)).optional();
+const worktreeNameSchema = z.string().regex(/^[A-Za-z0-9_-]+$/, "worktreeName may only contain letters, numbers, hyphens, and underscores").optional();
+
+export const claudeStatusInputSchema = z.object({
+  cwd: cwdSchema,
+});
+
+export const claudeQueryInputSchema = z.object({
+  task: taskSchema,
+  cwd: cwdSchema,
+  timeout_sec: timeoutSchema.default(120),
+  max_turns: maxTurnsSchema.default(8),
+});
+
+export const claudeReviewInputSchema = z.object({
+  task: taskSchema,
+  cwd: cwdSchema,
+  diff: z.string().optional(),
+  files: filesSchema,
+  timeout_sec: timeoutSchema.default(180),
+  max_turns: maxTurnsSchema.default(10),
+});
+
+export const claudeImplementInputSchema = z.object({
+  task: taskSchema,
+  cwd: cwdSchema,
+  files: filesSchema,
+  constraints: constraintsSchema,
+  timeout_sec: timeoutSchema.default(600),
+  max_turns: maxTurnsSchema.default(15),
+  session_key: z.string().trim().min(1).optional(),
+  fork_session: z.boolean().optional(),
+  max_cost_usd: z.number().positive().max(10).optional(),
+  max_changed_files: z.number().int().positive().max(100).optional(),
+  worktreeName: worktreeNameSchema,
+}).refine((value) => !value.fork_session || !!value.session_key, {
+  message: "fork_session requires session_key",
+  path: ["fork_session"],
+});
+
+export const claudeApplyInputSchema = z.object({
+  cwd: cwdSchema,
+  worktree_path: z.string().trim().min(1, "worktree_path is required"),
+  cleanup: z.boolean().optional(),
+});
+
+export const claudeCleanupInputSchema = z.object({
+  cwd: cwdSchema,
+  older_than_hours: z.number().nonnegative().max(24 * 365).optional().default(24),
+  dry_run: z.boolean().optional().default(true),
+});
+
+export function validationErrorMessage(err: unknown): string {
+  if (err instanceof z.ZodError) {
+    return err.issues.map((issue) => {
+      const path = issue.path.length ? issue.path.join(".") : "input";
+      return `${path}: ${issue.message}`;
+    }).join("; ");
+  }
+  return err instanceof Error ? err.message : String(err);
 }
 
 // ---- JSON Schemas for --json-schema flag ----
@@ -296,4 +407,3 @@ export function formatDuration(ms: number): string {
 }
 
 // end of file
-
