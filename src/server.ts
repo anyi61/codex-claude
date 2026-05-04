@@ -6,7 +6,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { randomUUID } from "node:crypto";
 
-import { validateCwd, checkRecursion, MAX_BRIDGE_DEPTH } from "./guard.js";
+import { validateCwd, validateFilesWithinCwd, checkRecursion, MAX_BRIDGE_DEPTH } from "./guard.js";
 import {
   checkClaudeStatus,
   runClaudeQuery,
@@ -15,11 +15,18 @@ import {
   runClaudeApply,
   runClaudeCleanup,
 } from "./claude-cli.js";
-import type {
-  ClaudeApplyInput,
-  ClaudeCleanupInput,
+import {
+  claudeApplyInputSchema,
+  claudeCleanupInputSchema,
+  claudeImplementInputSchema,
+  claudeQueryInputSchema,
+  claudeReviewInputSchema,
+  claudeStatusInputSchema,
+  errorResult,
+  jsonResult,
+  localExecution,
+  validationErrorMessage,
 } from "./schema.js";
-import { errorResult, jsonResult } from "./schema.js";
 
 const BRIDGE_DEPTH = checkRecursion();
 
@@ -145,80 +152,74 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case "claude_status": {
-        const { cwd } = args as { cwd: string };
+        const startTime = Date.now();
+        const parsed = claudeStatusInputSchema.safeParse(args);
+        if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
+        const { cwd } = parsed.data;
         const check = await validateCwd(cwd);
         if (!check.ok) {
-          return jsonResult({ cwd_valid: false, cwd_is_git_repo: false, errors: [check.error!], claude_available: false, claude_version: null, auth_status: null, git_available: false, worktree_capable: false });
+          return jsonResult({
+            cwd_valid: false,
+            cwd_is_git_repo: false,
+            errors: [check.error!],
+            claude_available: false,
+            claude_version: null,
+            auth_status: null,
+            git_available: false,
+            worktree_capable: false,
+            execution: localExecution(startTime),
+            warnings: [check.error!],
+          });
         }
         const status = await checkClaudeStatus(check.resolved);
-        return jsonResult(status);
+        return jsonResult({
+          ...status,
+          execution: localExecution(startTime),
+          warnings: status.errors,
+        });
       }
 
       case "claude_query": {
-        const { task, cwd, timeout_sec } = args as { task: string; cwd: string; timeout_sec?: number };
-        if (!task?.trim()) return errorResult("task is required");
+        const parsed = claudeQueryInputSchema.safeParse(args);
+        if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
+        const { task, cwd, timeout_sec, max_turns } = parsed.data;
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
 
         const report = await runClaudeQuery(
-          { task, cwd: check.resolved, timeout_sec },
+          { task, cwd: check.resolved, timeout_sec, max_turns },
           runId
         );
         return jsonResult(report);
       }
 
       case "claude_review": {
-        const { task, cwd, diff, files, timeout_sec } = args as {
-          task: string;
-          cwd: string;
-          diff?: string;
-          files?: string[];
-          timeout_sec?: number;
-        };
-        if (!task?.trim()) return errorResult("task is required");
+        const parsed = claudeReviewInputSchema.safeParse(args);
+        if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
+        const { task, cwd, diff, files, timeout_sec, max_turns } = parsed.data;
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
+        const fileCheck = await validateFilesWithinCwd(check.resolved, files);
+        if (!fileCheck.ok) return errorResult(fileCheck.error!);
 
         const report = await runClaudeReview(
-          { task, cwd: check.resolved, diff, files, timeout_sec },
+          { task, cwd: check.resolved, diff, files, timeout_sec, max_turns },
           runId
         );
         return jsonResult(report);
       }
 
       case "claude_implement": {
-        const { task, cwd, files, constraints, timeout_sec, session_key, fork_session, max_cost_usd, max_changed_files } = args as {
-          task: string;
-          cwd: string;
-          files?: string[];
-          constraints?: string[];
-          timeout_sec?: number;
-          session_key?: string;
-          fork_session?: boolean;
-          max_cost_usd?: number;
-          max_changed_files?: number;
-        };
-        if (!task?.trim()) return errorResult("task is required");
-        if (fork_session && !session_key) return errorResult("fork_session requires session_key");
-
-        // Validate max_cost_usd
-        if (max_cost_usd !== undefined) {
-          if (typeof max_cost_usd !== "number" || !Number.isFinite(max_cost_usd) || max_cost_usd <= 0 || max_cost_usd > 10) {
-            return errorResult("max_cost_usd must be a finite number > 0 and <= 10");
-          }
-        }
-
-        // Validate max_changed_files
-        if (max_changed_files !== undefined) {
-          if (!Number.isInteger(max_changed_files) || max_changed_files <= 0 || max_changed_files > 100) {
-            return errorResult("max_changed_files must be a positive integer <= 100");
-          }
-        }
+        const parsed = claudeImplementInputSchema.safeParse(args);
+        if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
+        const { task, cwd, files, constraints, timeout_sec, max_turns, session_key, fork_session, max_cost_usd, max_changed_files, worktreeName } = parsed.data;
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
+        const fileCheck = await validateFilesWithinCwd(check.resolved, files);
+        if (!fileCheck.ok) return errorResult(fileCheck.error!);
 
         // implement requires a git repo (for worktree)
         const { supportsWorktree } = await import("./guard.js");
@@ -228,15 +229,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         const result = await runClaudeImplement(
-          { task, cwd: check.resolved, files, constraints, timeout_sec, session_key, fork_session, max_cost_usd, max_changed_files },
+          { task, cwd: check.resolved, files, constraints, timeout_sec, max_turns, session_key, fork_session, max_cost_usd, max_changed_files, worktreeName },
           runId
         );
         return jsonResult(result);
       }
 
       case "claude_apply": {
-        const { cwd, worktree_path, cleanup } = args as { cwd: string; worktree_path: string; cleanup?: boolean };
-        if (!worktree_path?.trim()) return errorResult("worktree_path is required");
+        const startTime = Date.now();
+        const parsed = claudeApplyInputSchema.safeParse(args);
+        if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
+        const { cwd, worktree_path, cleanup } = parsed.data;
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
@@ -245,11 +248,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           { cwd: check.resolved, worktree_path, cleanup },
           runId
         );
-        return jsonResult(result);
+        return jsonResult({
+          ...result,
+          execution: localExecution(startTime),
+          warnings: [...result.conflicts, ...(result.error ? [result.error] : [])],
+        });
       }
 
       case "claude_cleanup": {
-        const { cwd, older_than_hours, dry_run } = args as { cwd: string; older_than_hours?: number; dry_run?: boolean };
+        const startTime = Date.now();
+        const parsed = claudeCleanupInputSchema.safeParse(args);
+        if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
+        const { cwd, older_than_hours, dry_run } = parsed.data;
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
 
@@ -257,7 +267,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           { cwd: check.resolved, older_than_hours, dry_run },
           runId
         );
-        return jsonResult(result);
+        return jsonResult({
+          ...result,
+          execution: localExecution(startTime),
+          warnings: result.entries.flatMap((entry) => entry.error ? [`${entry.worktree_name}: ${entry.error}`] : []),
+        });
       }
 
       default:
@@ -276,5 +290,3 @@ const transport = new StdioServerTransport();
 await server.connect(transport);
 
 process.stderr.write("[claude-delegate] MCP server started (stdio)\n");
-
-// 2026年5月3日 注意：必须要使用我指定的方式修改
