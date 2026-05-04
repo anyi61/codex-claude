@@ -1,13 +1,28 @@
 import { realpath, stat } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 
 // Allowlist of directories that MCP tools may operate within.
 // Override via CODEX_CLAUDE_ALLOW_ROOTS (colon-separated paths on macOS/Linux).
-const ALLOW_ROOTS: string[] = (() => {
+function dangerousRoot(raw: string): boolean {
+  const resolved = path.resolve(raw);
+  const home = process.env.HOME ? path.resolve(process.env.HOME) : "";
+  return resolved === "/" || resolved === "/etc" || resolved === "/tmp" || (!!home && resolved === home);
+}
+
+export function getAllowRoots(): string[] {
+  const normalizeRoot = (p: string): string => {
+    const resolved = path.resolve(p);
+    try {
+      return realpathSync(resolved);
+    } catch {
+      return resolved;
+    }
+  };
   const env = process.env.CODEX_CLAUDE_ALLOW_ROOTS;
   if (env) {
-    return env.split(":").filter(Boolean).map((p) => path.resolve(p));
+    return env.split(":").filter(Boolean).map(normalizeRoot);
   }
   const home = process.env.HOME;
   return [
@@ -15,7 +30,7 @@ const ALLOW_ROOTS: string[] = (() => {
     home ? `${home}/work` : null,
     home ? `${home}/codex-claude` : null,
   ].filter(Boolean) as string[];
-})();
+}
 
 // ---- cwd validation ----
 
@@ -26,6 +41,10 @@ export interface CwdCheck {
 }
 
 export async function validateCwd(raw: string): Promise<CwdCheck> {
+  if (dangerousRoot(raw)) {
+    return { ok: false, resolved: path.resolve(raw), error: `Refusing dangerous root path: ${path.resolve(raw)}` };
+  }
+
   // Resolve symlinks and relative paths
   let resolved: string;
   try {
@@ -33,16 +52,20 @@ export async function validateCwd(raw: string): Promise<CwdCheck> {
   } catch {
     return { ok: false, resolved: raw, error: `Path does not exist: ${raw}` };
   }
+  if (dangerousRoot(resolved)) {
+    return { ok: false, resolved, error: `Refusing dangerous root path: ${resolved}` };
+  }
 
   // Must be within an allowed root
-  const allowed = ALLOW_ROOTS.some(
+  const allowRoots = getAllowRoots();
+  const allowed = allowRoots.some(
     (root) => resolved === root || resolved.startsWith(root + path.sep)
   );
   if (!allowed) {
     return {
       ok: false,
       resolved,
-      error: `Path "${resolved}" is outside allowed roots: ${ALLOW_ROOTS.join(", ")}`,
+      error: `Path "${resolved}" is outside allowed roots: ${allowRoots.join(", ")}`,
     };
   }
 
@@ -53,6 +76,23 @@ export async function validateCwd(raw: string): Promise<CwdCheck> {
   }
 
   return { ok: true, resolved };
+}
+
+export async function validateFilesWithinCwd(cwd: string, files?: string[]): Promise<CwdCheck> {
+  const cwdReal = await realpath(cwd);
+  for (const file of files ?? []) {
+    const candidate = path.resolve(cwdReal, file);
+    let resolved = candidate;
+    try {
+      resolved = await realpath(candidate);
+    } catch {
+      resolved = candidate;
+    }
+    if (resolved !== cwdReal && !resolved.startsWith(cwdReal + path.sep)) {
+      return { ok: false, resolved, error: `File path escapes cwd: ${file}` };
+    }
+  }
+  return { ok: true, resolved: cwdReal };
 }
 
 // ---- Git repo check ----
@@ -86,6 +126,13 @@ export function checkRecursion(): number {
   const depth = Number.parseInt(raw, 10);
   if (Number.isNaN(depth) || depth < 0) return 0;
   return depth;
+}
+
+export function assertCanDelegate(): void {
+  const depth = checkRecursion();
+  if (depth >= MAX_BRIDGE_DEPTH) {
+    throw new Error(`BRIDGE_DEPTH=${depth} >= ${MAX_BRIDGE_DEPTH}; refusing recursive delegation`);
+  }
 }
 
 // ---- Environment sanitization ----
@@ -147,7 +194,7 @@ export function sanitizeEnv(): Record<string, string> {
     }
   }
 
-  safe.BRIDGE_DEPTH = String(1);
+  safe.BRIDGE_DEPTH = String(Math.min(checkRecursion() + 1, MAX_BRIDGE_DEPTH));
 
   return safe;
 }
