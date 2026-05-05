@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
@@ -15,8 +15,14 @@ import {
 } from "../src/claude-cli.js";
 
 const cleanupPaths: string[] = [];
+const originalCwd = process.cwd();
 
 afterEach(async () => {
+  process.chdir(originalCwd);
+  delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+  delete process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR;
+  vi.doUnmock("node:child_process");
+  vi.resetModules();
   while (cleanupPaths.length > 0) {
     await rm(cleanupPaths.pop()!, { recursive: true, force: true });
   }
@@ -38,6 +44,30 @@ async function createJobFixture() {
   const store = new jobs.JobStore(stateDir);
   await store.init();
   return { root, repo, stateDir, store };
+}
+
+async function createWorkflowFixture() {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-workflow-"));
+  cleanupPaths.push(root);
+  const repo = path.join(root, "repo-a");
+  const stateDir = path.join(root, ".codex-claude-delegate");
+  const logDir = path.join(stateDir, "runs");
+  const jobsDir = path.join(stateDir, "jobs");
+  await mkdir(repo, { recursive: true });
+  await mkdir(logDir, { recursive: true });
+  await mkdir(jobsDir, { recursive: true });
+  process.chdir(root);
+  process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+  process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+  vi.resetModules();
+  const jobs = await import("../src/jobs.js");
+  const session = await import("../src/session.js");
+  const jobStore = new jobs.JobStore(stateDir);
+  const sessionStore = new session.SessionStore(stateDir);
+  await jobStore.init();
+  await sessionStore.init();
+  const repoKey = await session.computeRepoKey(repo);
+  return { root, repo, stateDir, logDir, jobsDir, jobStore, sessionStore, repoKey };
 }
 
 function createDetachedSpawnResult(pid = 4321) {
@@ -603,8 +633,252 @@ describe("claude cli argument construction", () => {
         poll_interval_ms: 10,
       })
     ).rejects.toThrow(/Timed out/);
+  });
 
-    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
-    vi.resetModules();
+  it("resolves claude_result from an explicit job id with run, session, and next actions", async () => {
+    const { repo, logDir, jobStore, sessionStore, repoKey } = await createWorkflowFixture();
+    await writeFile(path.join(logDir, "run-implement.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "success", summary: "Changed README" },
+      observed: {
+        worktree_path: ".claude/worktrees/codex-delegated-123",
+        worktree_name: "codex-delegated-123",
+      },
+      session: {
+        requested_session_id: "sess-prev",
+        returned_session_id: "sess-impl",
+      },
+      downstream: {
+        last_apply_run_id: "run-apply",
+      },
+    }));
+    await jobStore.create({
+      job_id: "job-implement",
+      type: "implement",
+      status: "succeeded",
+      cwd: repo,
+      created_at: "2026-05-05T00:00:00.000Z",
+      updated_at: "2026-05-05T00:01:00.000Z",
+      payload: { cwd: repo, task: "ship it" },
+      run_id: "run-implement",
+      summary: "Implement job completed",
+      result: { status: "success", summary: "Changed README" },
+      worktree_name: "codex-delegated-123",
+    });
+    sessionStore.upsert("sess-impl", "implement", repoKey, repo, "Changed README");
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.getClaudeResult({ cwd: repo, job_id: "job-implement" });
+
+    expect(result.source_type).toBe("job");
+    expect(result.summary).toBe("Implement job completed");
+    expect(result.job?.job_id).toBe("job-implement");
+    expect(result.run?.run_id).toBe("run-implement");
+    expect(result.session?.session_id).toBe("sess-impl");
+    expect(result.session?.source).toBe("run");
+    expect(result.next_actions.map((action) => action.tool)).toEqual(
+      expect.arrayContaining(["claude_apply", "claude_implement"])
+    );
+    expect(result.next_actions.find((action) => action.tool === "claude_apply")?.args).toEqual({
+      cwd: repo,
+      worktree_path: ".claude/worktrees/codex-delegated-123",
+    });
+  });
+
+  it("resolves claude_result from an explicit run id", async () => {
+    const { repo, logDir } = await createWorkflowFixture();
+    await writeFile(path.join(logDir, "run-review.json"), JSON.stringify({
+      type: "review",
+      input: { cwd: repo },
+      report: { severity: "medium", findings: ["n/a"], recommendations: ["tighten docs"] },
+    }));
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.getClaudeResult({ cwd: repo, run_id: "run-review" });
+
+    expect(result.source_type).toBe("run");
+    expect(result.run?.run_id).toBe("run-review");
+    expect(result.result).toMatchObject({
+      type: "review",
+      report: { severity: "medium" },
+    });
+    expect(result.next_actions.map((action) => action.tool)).toContain("claude_review");
+  });
+
+  it("prefers the latest implement artifact and exposes resumable next actions", async () => {
+    const { repo, logDir, jobStore, sessionStore, repoKey } = await createWorkflowFixture();
+    await writeFile(path.join(logDir, "run-implement-new.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "success", summary: "Newest implement" },
+      observed: { worktree_path: ".claude/worktrees/codex-delegated-new" },
+      session: { returned_session_id: "sess-new" },
+    }));
+    await writeFile(path.join(logDir, "run-review-old.json"), JSON.stringify({
+      type: "review",
+      input: { cwd: repo },
+      report: { severity: "low", findings: [], recommendations: [] },
+    }));
+    await jobStore.create({
+      job_id: "job-implement-new",
+      type: "implement",
+      status: "succeeded",
+      cwd: repo,
+      created_at: "2026-05-05T00:00:00.000Z",
+      updated_at: "2026-05-05T00:02:00.000Z",
+      payload: { cwd: repo, task: "ship it" },
+      run_id: "run-implement-new",
+      summary: "Newest implement",
+      result: { status: "success" },
+    });
+    sessionStore.upsert("sess-new", "implement", repoKey, repo, "Newest implement");
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.getClaudeResult({ cwd: repo, prefer: "latest-implement" });
+
+    expect(result.run?.type).toBe("implement");
+    expect(result.source_type === "job" || result.source_type === "run").toBe(true);
+    if (result.job) {
+      expect(result.job.job_id).toBe("job-implement-new");
+    }
+    expect(result.next_actions.map((action) => action.tool)).toEqual(
+      expect.arrayContaining(["claude_apply", "claude_implement"])
+    );
+  });
+
+  it("returns workspace status with jobs, sessions, worktrees, and attention items", async () => {
+    const { repo, logDir, jobStore, sessionStore, repoKey } = await createWorkflowFixture();
+    const worktreeRoot = path.join(repo, ".claude", "worktrees");
+    const staleWorktree = path.join(worktreeRoot, "codex-delegated-stale");
+    const freshWorktree = path.join(worktreeRoot, "codex-delegated-fresh");
+    await mkdir(staleWorktree, { recursive: true });
+    await mkdir(freshWorktree, { recursive: true });
+    const staleDate = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    await utimes(staleWorktree, staleDate, staleDate);
+    await writeFile(path.join(logDir, "run-apply-blocked.json"), JSON.stringify({
+      type: "apply",
+      input: { cwd: repo, worktree_path: ".claude/worktrees/codex-delegated-stale" },
+      error: "conflict",
+    }));
+    await jobStore.create({
+      job_id: "job-running",
+      type: "review",
+      status: "running",
+      cwd: repo,
+      created_at: "2026-05-05T00:00:00.000Z",
+      updated_at: "2026-05-05T00:01:00.000Z",
+      payload: { cwd: repo, task: "review" },
+    });
+    await jobStore.create({
+      job_id: "job-queued-old",
+      type: "query",
+      status: "queued",
+      cwd: repo,
+      created_at: "2026-05-05T00:00:00.000Z",
+      updated_at: "2026-05-05T00:00:00.000Z",
+      payload: { cwd: repo, task: "query" },
+    });
+    await jobStore.create({
+      job_id: "job-succeeded",
+      type: "implement",
+      status: "succeeded",
+      cwd: repo,
+      created_at: "2026-05-05T00:00:00.000Z",
+      updated_at: "2026-05-05T00:02:00.000Z",
+      payload: { cwd: repo, task: "implement" },
+      summary: "done",
+    });
+    sessionStore.upsert("sess-query", "query", repoKey, repo, "Explained workspace");
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.getWorkspaceStatus({ cwd: repo, limit: 10, include_terminal: true });
+
+    expect(result.workspace_root).toBe(repo);
+    expect(result.counts.running_jobs).toBe(1);
+    expect(result.counts.queued_jobs).toBe(1);
+    expect(result.counts.terminal_jobs).toBeGreaterThanOrEqual(1);
+    expect(result.counts.apply_blocked_runs).toBe(1);
+    expect(result.latest_sessions[0]?.session_id).toBe("sess-query");
+    expect(result.delegated_worktrees.map((worktree) => worktree.worktree_name)).toEqual(
+      expect.arrayContaining(["codex-delegated-stale", "codex-delegated-fresh"])
+    );
+    expect(result.attention_items.map((item) => item.kind)).toEqual(
+      expect.arrayContaining(["queued_job", "apply_blocked", "stale_worktree"])
+    );
+  });
+
+  it("routes claude_task read mode to a background query job", async () => {
+    const { repo } = await createWorkflowFixture();
+    const spawned = createDetachedSpawnResult(6001);
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => spawned) };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      task: "Explain how background jobs work here.",
+      mode: "read",
+      background: true,
+      timeout_sec: 90,
+    }, "run-task-read");
+
+    expect(result.delegated_mode).toBe("read");
+    expect(result.job?.type).toBe("query");
+    expect(result.job?.status).toBe("queued");
+    expect(Array.isArray(result.next_actions)).toBe(true);
+  });
+
+  it("routes claude_task write mode to a background implement job", async () => {
+    const { repo } = await createWorkflowFixture();
+    const spawned = createDetachedSpawnResult(6002);
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => spawned) };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      task: "Implement input validation for README updates.",
+      mode: "write",
+      background: true,
+      files: ["README.md"],
+      constraints: ["Only change README.md"],
+      resume_latest: true,
+    }, "run-task-write");
+
+    expect(result.delegated_mode).toBe("write");
+    expect(result.job?.type).toBe("implement");
+    expect(result.job?.status).toBe("queued");
+    expect(Array.isArray(result.next_actions)).toBe(true);
+  });
+
+  it("routes claude_task auto mode to review when diff is provided", async () => {
+    const { repo } = await createWorkflowFixture();
+    const spawned = createDetachedSpawnResult(6003);
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => spawned) };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      task: "Take a look at this patch.",
+      mode: "auto",
+      background: true,
+      diff: "diff --git a/README.md b/README.md",
+      files: ["README.md"],
+    }, "run-task-auto-review");
+
+    expect(result.delegated_mode).toBe("review");
+    expect(result.job?.type).toBe("review");
+    expect(result.next_actions.map((action) => action.tool)).toContain("claude_review");
   });
 });

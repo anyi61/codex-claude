@@ -11,9 +11,14 @@ import {
   claudeJobWaitInputSchema,
   claudeJobsInputSchema,
   claudeQueryInputSchema,
+  claudeReviewGateInputSchema,
+  claudeResultInputSchema,
+  claudeSetupInputSchema,
+  claudeTaskInputSchema,
   claudeRunInspectInputSchema,
   claudeRunsInputSchema,
   claudeReviewInputSchema,
+  claudeWorkspaceStatusInputSchema,
 } from "../src/schema.js";
 
 describe("schema definitions", () => {
@@ -91,5 +96,35 @@ describe("schema definitions", () => {
     expect(claudeJobCleanupInputSchema.safeParse({ cwd: "/repo", older_than_hours: -1 }).success).toBe(false);
     expect(claudeJobWaitInputSchema.safeParse({ cwd: "/repo", job_id: "" }).success).toBe(false);
     expect(claudeJobWaitInputSchema.safeParse({ cwd: "/repo", job_id: "job-1", timeout_ms: 0 }).success).toBe(false);
+  });
+
+  it("accepts high-level result inputs and rejects ambiguous selectors", () => {
+    expect(claudeResultInputSchema.safeParse({ cwd: "/repo" }).success).toBe(true);
+    expect(claudeResultInputSchema.safeParse({ cwd: "/repo", job_id: "job-1" }).success).toBe(true);
+    expect(claudeResultInputSchema.safeParse({ cwd: "/repo", run_id: "run-1", prefer: "latest-run" }).success).toBe(true);
+    expect(claudeResultInputSchema.safeParse({ cwd: "/repo", job_id: "job-1", run_id: "run-1" }).success).toBe(false);
+    expect(claudeResultInputSchema.safeParse({ cwd: "/repo", prefer: "bad" }).success).toBe(false);
+  });
+
+  it("accepts workspace status inputs and validates limits", () => {
+    expect(claudeWorkspaceStatusInputSchema.safeParse({ cwd: "/repo" }).success).toBe(true);
+    expect(claudeWorkspaceStatusInputSchema.safeParse({ cwd: "/repo", limit: 5, include_terminal: false }).success).toBe(true);
+    expect(claudeWorkspaceStatusInputSchema.safeParse({ cwd: "/repo", limit: 0 }).success).toBe(false);
+  });
+
+  it("validates high-level task routing inputs", () => {
+    expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "explain auth", mode: "read" }).success).toBe(true);
+    expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "review this diff", mode: "review", diff: "diff --git a b" }).success).toBe(true);
+    expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "change code", mode: "write", resume_latest: true }).success).toBe(true);
+    expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "explain auth", mode: "read", resume_latest: true }).success).toBe(false);
+    expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "review this diff", mode: "review", resume_latest: true }).success).toBe(false);
+  });
+
+  it("accepts setup and review-gate inputs", () => {
+    expect(claudeSetupInputSchema.safeParse({ cwd: "/repo" }).success).toBe(true);
+    expect(claudeReviewGateInputSchema.safeParse({ cwd: "/repo", action: "status" }).success).toBe(true);
+    expect(claudeReviewGateInputSchema.safeParse({ cwd: "/repo", action: "enable" }).success).toBe(true);
+    expect(claudeReviewGateInputSchema.safeParse({ cwd: "/repo", action: "disable" }).success).toBe(true);
+    expect(claudeReviewGateInputSchema.safeParse({ cwd: "/repo", action: "bad" }).success).toBe(false);
   });
 });

@@ -4,6 +4,12 @@ const {
   validateCwdMock,
   validateFilesWithinCwdMock,
   checkRecursionMock,
+  supportsWorktreeMock,
+  getClaudeResultMock,
+  manageClaudeReviewGateMock,
+  runClaudeSetupMock,
+  runClaudeTaskMock,
+  getWorkspaceStatusMock,
   listBackgroundJobsMock,
   getBackgroundJobResultMock,
   cancelBackgroundJobMock,
@@ -16,6 +22,12 @@ const {
   validateCwdMock: vi.fn(),
   validateFilesWithinCwdMock: vi.fn(),
   checkRecursionMock: vi.fn(() => 0),
+  supportsWorktreeMock: vi.fn(async () => true),
+  getClaudeResultMock: vi.fn(),
+  manageClaudeReviewGateMock: vi.fn(),
+  runClaudeSetupMock: vi.fn(),
+  runClaudeTaskMock: vi.fn(),
+  getWorkspaceStatusMock: vi.fn(),
   listBackgroundJobsMock: vi.fn(),
   getBackgroundJobResultMock: vi.fn(),
   cancelBackgroundJobMock: vi.fn(),
@@ -29,6 +41,7 @@ const {
 vi.mock("../src/guard.js", () => ({
   MAX_BRIDGE_DEPTH: 2,
   checkRecursion: checkRecursionMock,
+  supportsWorktree: supportsWorktreeMock,
   validateCwd: validateCwdMock,
   validateFilesWithinCwd: validateFilesWithinCwdMock,
 }));
@@ -37,8 +50,13 @@ vi.mock("../src/claude-cli.js", () => ({
   cancelBackgroundJob: cancelBackgroundJobMock,
   checkClaudeStatus: vi.fn(),
   cleanupBackgroundJobs: cleanupBackgroundJobsMock,
+  getClaudeResult: getClaudeResultMock,
   getBackgroundJobResult: getBackgroundJobResultMock,
   getRunLogById: vi.fn(),
+  getWorkspaceStatus: getWorkspaceStatusMock,
+  manageClaudeReviewGate: manageClaudeReviewGateMock,
+  runClaudeSetup: runClaudeSetupMock,
+  runClaudeTask: runClaudeTaskMock,
   runClaudeQuery: vi.fn(),
   runClaudeReview: vi.fn(),
   runClaudeImplement: vi.fn(),
@@ -85,6 +103,160 @@ describe("server background job handlers", () => {
     expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
     expect(listBackgroundJobsMock).toHaveBeenCalledWith({ cwd: "/repo/resolved", limit: 5 });
     expect(payload.entries).toEqual([{ job_id: "job-1", status: "queued" }]);
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("routes claude_result through getClaudeResult with resolved cwd", async () => {
+    getClaudeResultMock.mockResolvedValue({
+      source_type: "job",
+      summary: "Implement job completed",
+      job: { job_id: "job-1", type: "implement", status: "succeeded" },
+      run: { run_id: "run-1", type: "implement", lifecycle: "success" },
+      next_actions: [{ tool: "claude_apply", reason: "land it" }],
+    });
+
+    const result = await handleToolCall("claude_result", {
+      cwd: "/repo/input",
+      job_id: "job-1",
+    });
+    const payload = parsePayload(result);
+
+    expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
+    expect(getClaudeResultMock).toHaveBeenCalledWith({
+      cwd: "/repo/resolved",
+      job_id: "job-1",
+      prefer: "latest-job",
+    });
+    expect(payload.summary).toBe("Implement job completed");
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("routes claude_setup through runClaudeSetup with resolved cwd", async () => {
+    runClaudeSetupMock.mockResolvedValue({
+      workspace_root: "/repo/resolved",
+      review_gate: { enabled: false, pending_review: false },
+      claude_available: true,
+      claude_version: "1.0.0",
+      auth_status: "ok",
+      git_available: true,
+      worktree_capable: true,
+      cwd_valid: true,
+      cwd_is_git_repo: true,
+      errors: [],
+      next_steps: [],
+    });
+
+    const result = await handleToolCall("claude_setup", { cwd: "/repo/input" });
+    const payload = parsePayload(result);
+
+    expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
+    expect(runClaudeSetupMock).toHaveBeenCalledWith({ cwd: "/repo/resolved" });
+    expect(payload.workspace_root).toBe("/repo/resolved");
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("returns validation errors for claude_result when both job_id and run_id are provided", async () => {
+    const result = await handleToolCall("claude_result", {
+      cwd: "/repo/input",
+      job_id: "job-1",
+      run_id: "run-1",
+    });
+    const payload = parsePayload(result);
+
+    expect(validateCwdMock).not.toHaveBeenCalled();
+    expect(getClaudeResultMock).not.toHaveBeenCalled();
+    expect(result.isError).toBe(true);
+    expect(String(payload.error)).toContain("cannot be combined");
+  });
+
+  it("routes claude_workspace_status through getWorkspaceStatus with resolved cwd", async () => {
+    getWorkspaceStatusMock.mockResolvedValue({
+      workspace_root: "/repo/resolved",
+      running_jobs: [],
+      queued_jobs: [],
+      recent_terminal_jobs: [],
+      recent_runs: [],
+      latest_sessions: [],
+      delegated_worktrees: [],
+      counts: {
+        running_jobs: 0,
+        queued_jobs: 0,
+        terminal_jobs: 0,
+        recent_runs: 0,
+        delegated_worktrees: 0,
+        stale_worktrees: 0,
+        apply_blocked_runs: 0,
+      },
+      attention_items: [],
+    });
+
+    const result = await handleToolCall("claude_workspace_status", {
+      cwd: "/repo/input",
+      limit: 7,
+      include_terminal: false,
+    });
+    const payload = parsePayload(result);
+
+    expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
+    expect(getWorkspaceStatusMock).toHaveBeenCalledWith({
+      cwd: "/repo/resolved",
+      limit: 7,
+      include_terminal: false,
+    });
+    expect(payload.workspace_root).toBe("/repo/resolved");
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("routes claude_task through runClaudeTask with resolved cwd", async () => {
+    runClaudeTaskMock.mockResolvedValue({
+      delegated_mode: "read",
+      summary: "Delegated read task as a background job.",
+      job: { job_id: "job-read", type: "query", status: "queued" },
+      next_actions: [],
+    });
+
+    const result = await handleToolCall("claude_task", {
+      cwd: "/repo/input",
+      task: "Explain auth flow",
+      mode: "read",
+      background: true,
+    });
+    const payload = parsePayload(result);
+
+    expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
+    expect(validateFilesWithinCwdMock).toHaveBeenCalledWith("/repo/resolved", undefined);
+    expect(runClaudeTaskMock).toHaveBeenCalledWith({
+      cwd: "/repo/resolved",
+      task: "Explain auth flow",
+      mode: "read",
+      background: true,
+    }, expect.any(String));
+    expect(payload.delegated_mode).toBe("read");
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("routes claude_review_gate through manageClaudeReviewGate with resolved cwd", async () => {
+    manageClaudeReviewGateMock.mockResolvedValue({
+      action: "enable",
+      changed: true,
+      enabled: true,
+      hook_installed: true,
+      summary: "Review gate enabled for this workspace and stop-hook manifest is ready.",
+      next_steps: [],
+    });
+
+    const result = await handleToolCall("claude_review_gate", {
+      cwd: "/repo/input",
+      action: "enable",
+    });
+    const payload = parsePayload(result);
+
+    expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
+    expect(manageClaudeReviewGateMock).toHaveBeenCalledWith({
+      cwd: "/repo/resolved",
+      action: "enable",
+    });
+    expect(payload.enabled).toBe(true);
     expect(result.isError).toBeUndefined();
   });
 

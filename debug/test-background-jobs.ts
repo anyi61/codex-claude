@@ -206,9 +206,26 @@ async function main(): Promise<void> {
     process.stderr.write(`  ✓ background implement completed (${worktreePath})\n`);
 
     process.stderr.write("\n=== background apply ===\n");
+    const applyWorktreePath = ".claude/worktrees/codex-delegated-apply";
+    sh(fixtureRepo, "git", "worktree", "add", "--detach", applyWorktreePath, "HEAD");
+    await writeFile(
+      path.join(fixtureRepo, applyWorktreePath, "README.md"),
+      "# Background Fixture\n\nImplemented in background mode.\n"
+    );
+    await writeFile(path.join(logDir, "manual-apply-implement.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: fixtureRepo, task: "manual apply fixture", files: ["README.md"] },
+      observed: {
+        worktree_path: applyWorktreePath,
+        worktree_name: "codex-delegated-apply",
+        base_commit: sh(fixtureRepo, "git", "rev-parse", "HEAD"),
+        changed_files: ["README.md"],
+      },
+      report: { status: "success", summary: "Manual apply fixture" },
+    }, null, 2));
     const applyStart = payload(await req(child, "tools/call", {
       name: "claude_apply",
-      arguments: { cwd: fixtureRepo, worktree_path: worktreePath, cleanup: true, background: true },
+      arguments: { cwd: fixtureRepo, worktree_path: applyWorktreePath, cleanup: true, background: true },
     }));
     const applyJob = applyStart.job as Record<string, unknown> | undefined;
     const applyJobId = String(applyJob?.job_id ?? "");
@@ -227,7 +244,7 @@ async function main(): Promise<void> {
     }
     const content = await readFile(path.join(fixtureRepo, "README.md"), "utf8");
     if (!content.includes("Implemented in background mode.")) {
-      throw new Error(`background implement content not present after apply: ${content}`);
+      throw new Error(`background apply content not present after apply: ${content}`);
     }
     process.stderr.write("  ✓ background apply succeeded and landed implement result\n");
 
