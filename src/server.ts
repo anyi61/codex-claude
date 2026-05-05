@@ -13,8 +13,12 @@ import {
   cancelBackgroundJob,
   checkClaudeStatus,
   cleanupBackgroundJobs,
+  getClaudeResult,
   getBackgroundJobResult,
   getRunLogById,
+  manageClaudeReviewGate,
+  runClaudeSetup,
+  runClaudeTask,
   runClaudeQuery,
   runClaudeReview,
   runClaudeImplement,
@@ -28,6 +32,7 @@ import {
   startBackgroundImplement,
   startBackgroundQuery,
   startBackgroundReview,
+  getWorkspaceStatus,
   waitForBackgroundJob,
 } from "./claude-cli.js";
 import {
@@ -40,10 +45,15 @@ import {
   claudeJobWaitInputSchema,
   claudeJobsInputSchema,
   claudeQueryInputSchema,
+  claudeResultInputSchema,
   claudeRunInspectInputSchema,
   claudeReviewInputSchema,
+  claudeReviewGateInputSchema,
   claudeRunsInputSchema,
+  claudeSetupInputSchema,
   claudeStatusInputSchema,
+  claudeTaskInputSchema,
+  claudeWorkspaceStatusInputSchema,
   errorResult,
   jsonResult,
   localExecution,
@@ -60,6 +70,18 @@ const TOOL_DEFINITIONS = [
       required: ["cwd"],
       properties: {
         cwd: { type: "string", description: "Working directory to check" },
+      },
+    },
+  },
+  {
+    name: "claude_setup",
+    description:
+      "Check workspace readiness for the high-level workflow layer, including review-gate hook installability and current gate state.",
+    inputSchema: {
+      type: "object",
+      required: ["cwd"],
+      properties: {
+        cwd: { type: "string", description: "Working directory to inspect and prepare" },
       },
     },
   },
@@ -89,6 +111,69 @@ const TOOL_DEFINITIONS = [
       properties: {
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
         run_id: { type: "string", description: "Run log id without the .json suffix" },
+      },
+    },
+  },
+  {
+    name: "claude_result",
+    description:
+      "Resolve the most relevant finished job or run for this workspace and return a normalized summary, session, and next actions.",
+    inputSchema: {
+      type: "object",
+      required: ["cwd"],
+      properties: {
+        cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
+        job_id: { type: "string", description: "Explicit background job id to resolve first" },
+        run_id: { type: "string", description: "Explicit run id to resolve if no job id is provided" },
+        prefer: { type: "string", enum: ["latest-job", "latest-run", "latest-implement", "latest-review"], description: "How to choose the latest result when no explicit id is provided" },
+      },
+    },
+  },
+  {
+    name: "claude_workspace_status",
+    description:
+      "Show a workspace-centric view of current jobs, recent runs, recent sessions, delegated worktrees, and attention items.",
+    inputSchema: {
+      type: "object",
+      required: ["cwd"],
+      properties: {
+        cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
+        limit: { type: "number", description: "Maximum number of recent jobs, runs, and sessions to include (default 10)" },
+        include_terminal: { type: "boolean", description: "Include recent terminal background jobs in the aggregated status view (default true)" },
+      },
+    },
+  },
+  {
+    name: "claude_task",
+    description:
+      "High-level rescue/task entrypoint that routes to query, review, or implement and can run either synchronously or in the background.",
+    inputSchema: {
+      type: "object",
+      required: ["cwd", "task"],
+      properties: {
+        cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
+        task: { type: "string", description: "High-level task to delegate" },
+        mode: { type: "string", enum: ["auto", "read", "review", "write"], description: "Routing mode. auto infers from diff/files/task wording." },
+        background: { type: "boolean", description: "Queue the delegated task as a persistent background job" },
+        resume_latest: { type: "boolean", description: "For write mode, resume the latest implement session for this repository." },
+        files: { type: "array", items: { type: "string" }, description: "Relevant files for review or implementation context" },
+        constraints: { type: "array", items: { type: "string" }, description: "Implementation constraints for write mode" },
+        diff: { type: "string", description: "Diff to review. Presence strongly biases auto mode toward review." },
+        timeout_sec: { type: "number", description: "Timeout in seconds for the delegated task" },
+        max_turns: { type: "number", description: "Maximum Claude turns for the delegated task" },
+      },
+    },
+  },
+  {
+    name: "claude_review_gate",
+    description:
+      "Inspect, enable, or disable the review gate for the current workspace. Enable persists a repo-local gate flag and ensures the stop-hook manifest is present.",
+    inputSchema: {
+      type: "object",
+      required: ["cwd", "action"],
+      properties: {
+        cwd: { type: "string", description: "Working directory for the repo-local review gate state" },
+        action: { type: "string", enum: ["status", "enable", "disable"], description: "Review gate action" },
       },
     },
   },
@@ -292,6 +377,14 @@ export async function handleToolCall(name: string, args: unknown, runId = random
         });
       }
 
+      case "claude_setup": {
+        const parsed = claudeSetupInputSchema.safeParse(args);
+        if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
+        const check = await validateCwd(parsed.data.cwd);
+        if (!check.ok) return errorResult(check.error!);
+        return jsonResult(await runClaudeSetup({ cwd: check.resolved }));
+      }
+
       case "claude_runs": {
         const parsed = claudeRunsInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
@@ -309,6 +402,50 @@ export async function handleToolCall(name: string, args: unknown, runId = random
         const result = await getRunLogById({ cwd: check.resolved, run_id: parsed.data.run_id });
         if (!result) return errorResult(`Run not found: ${parsed.data.run_id}`);
         return jsonResult(result);
+      }
+
+      case "claude_result": {
+        const parsed = claudeResultInputSchema.safeParse(args);
+        if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
+        const check = await validateCwd(parsed.data.cwd);
+        if (!check.ok) return errorResult(check.error!);
+        return jsonResult(await getClaudeResult({ ...parsed.data, cwd: check.resolved }));
+      }
+
+      case "claude_workspace_status": {
+        const parsed = claudeWorkspaceStatusInputSchema.safeParse(args);
+        if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
+        const check = await validateCwd(parsed.data.cwd);
+        if (!check.ok) return errorResult(check.error!);
+        return jsonResult(await getWorkspaceStatus({ ...parsed.data, cwd: check.resolved }));
+      }
+
+      case "claude_task": {
+        const parsed = claudeTaskInputSchema.safeParse(args);
+        if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
+        const { cwd, mode, files } = parsed.data;
+        const check = await validateCwd(cwd);
+        if (!check.ok) return errorResult(check.error!);
+        const fileCheck = await validateFilesWithinCwd(check.resolved, files);
+        if (!fileCheck.ok) return errorResult(fileCheck.error!);
+
+        if (mode === "write" || (mode === "auto" && (parsed.data.resume_latest || (parsed.data.constraints?.length ?? 0) > 0))) {
+          const { supportsWorktree } = await import("./guard.js");
+          const wtCapable = await supportsWorktree(check.resolved);
+          if (!wtCapable) {
+            return errorResult("claude_task write mode requires a git repository with worktree support");
+          }
+        }
+
+        return jsonResult(await runClaudeTask({ ...parsed.data, cwd: check.resolved }, runId));
+      }
+
+      case "claude_review_gate": {
+        const parsed = claudeReviewGateInputSchema.safeParse(args);
+        if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
+        const check = await validateCwd(parsed.data.cwd);
+        if (!check.ok) return errorResult(check.error!);
+        return jsonResult(await manageClaudeReviewGate({ ...parsed.data, cwd: check.resolved }));
       }
 
       case "claude_query": {

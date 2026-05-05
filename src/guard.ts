@@ -95,6 +95,14 @@ export async function validateFilesWithinCwd(cwd: string, files?: string[]): Pro
   return { ok: true, resolved: cwdReal };
 }
 
+export function resolveRepoLocalPath(cwd: string, relativePath: string): CwdCheck {
+  const resolved = path.resolve(cwd, relativePath);
+  if (resolved !== cwd && !resolved.startsWith(cwd + path.sep)) {
+    return { ok: false, resolved, error: `Path escapes cwd: ${relativePath}` };
+  }
+  return { ok: true, resolved };
+}
+
 // ---- Git repo check ----
 
 export async function isGitRepo(cwd: string): Promise<boolean> {

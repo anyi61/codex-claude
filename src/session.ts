@@ -72,6 +72,19 @@ export class SessionStore {
     return candidates[0] ?? null;
   }
 
+  getById(sessionId: string): Session | null {
+    const store = this.read();
+    return store.sessions.find((session) => session.session_id === sessionId) ?? null;
+  }
+
+  listByRepo(repoKey: string, limit = 10): Session[] {
+    const store = this.read();
+    return store.sessions
+      .filter((session) => session.repo_key === repoKey)
+      .sort((a, b) => new Date(b.last_used).getTime() - new Date(a.last_used).getTime())
+      .slice(0, limit);
+  }
+
   // Create or update a session record.
   upsert(sessionId: string, type: SessionType, repoKey: string, repoPath: string, summary?: string): void {
     const store = this.read();

@@ -1,3 +1,16 @@
 {
-  "hooks": []
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'${CLAUDE_PLUGIN_ROOT}/hooks/review-gate-stop.mjs'",
+            "async": false
+          }
+        ]
+      }
+    ]
+  }
 }

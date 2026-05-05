@@ -45,6 +45,21 @@ export interface ClaudeImplementInput {
   background?: boolean;
 }
 
+export type ClaudeTaskMode = "auto" | "read" | "review" | "write";
+
+export interface ClaudeTaskInput {
+  cwd: string;
+  task: string;
+  mode?: ClaudeTaskMode;
+  background?: boolean;
+  resume_latest?: boolean;
+  files?: string[];
+  constraints?: string[];
+  diff?: string;
+  timeout_sec?: number;
+  max_turns?: number;
+}
+
 export type BackgroundJobType = "query" | "review" | "implement" | "apply" | "cleanup";
 export type BackgroundJobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
@@ -76,6 +91,15 @@ export interface ClaudeJobsResult {
 export interface ClaudeJobResultInput {
   cwd: string;
   job_id: string;
+}
+
+export type ClaudeResultPrefer = "latest-job" | "latest-run" | "latest-implement" | "latest-review";
+
+export interface ClaudeResultInput {
+  cwd: string;
+  job_id?: string;
+  run_id?: string;
+  prefer?: ClaudeResultPrefer;
 }
 
 export interface ClaudeJobWaitInput {
@@ -113,6 +137,134 @@ export interface ClaudeJobCleanupResult {
   removed_count: number;
   failed_count: number;
   entries: BackgroundJobCleanupEntry[];
+}
+
+export interface WorkflowSessionSummary {
+  session_id: string;
+  type: "query" | "review" | "implement";
+  repo_path?: string;
+  last_used?: string;
+  use_count?: number;
+  summary?: string;
+  requested_session_id?: string | null;
+  returned_session_id?: string | null;
+  resumed?: boolean;
+  forked?: boolean;
+  source: "run" | "store";
+}
+
+export interface WorkflowNextAction {
+  tool: string;
+  reason: string;
+  args?: Record<string, unknown>;
+}
+
+export interface ClaudeResultResult {
+  source_type: "job" | "run";
+  summary: string;
+  job?: BackgroundJobSummary;
+  run?: RunLogEntrySummary;
+  session?: WorkflowSessionSummary;
+  result?: Record<string, unknown>;
+  related_runs?: {
+    apply_run_id?: string;
+    cleanup_run_id?: string;
+  };
+  next_actions: WorkflowNextAction[];
+}
+
+export interface ClaudeWorkspaceStatusInput {
+  cwd: string;
+  limit?: number;
+  include_terminal?: boolean;
+}
+
+export interface ClaudeSetupInput {
+  cwd: string;
+}
+
+export type ClaudeReviewGateAction = "status" | "enable" | "disable";
+
+export interface ClaudeReviewGateInput {
+  cwd: string;
+  action?: ClaudeReviewGateAction;
+}
+
+export interface DelegatedWorktreeSummary {
+  worktree_name: string;
+  worktree_path: string;
+  updated_at?: string;
+  stale: boolean;
+}
+
+export interface WorkspaceAttentionItem {
+  kind: "queued_job" | "apply_blocked" | "stale_worktree";
+  severity: "info" | "warning";
+  message: string;
+}
+
+export interface ClaudeWorkspaceStatusResult {
+  workspace_root: string;
+  running_jobs: BackgroundJobSummary[];
+  queued_jobs: BackgroundJobSummary[];
+  recent_terminal_jobs: BackgroundJobSummary[];
+  recent_runs: RunLogEntrySummary[];
+  latest_sessions: WorkflowSessionSummary[];
+  delegated_worktrees: DelegatedWorktreeSummary[];
+  counts: {
+    running_jobs: number;
+    queued_jobs: number;
+    terminal_jobs: number;
+    recent_runs: number;
+    delegated_worktrees: number;
+    stale_worktrees: number;
+    apply_blocked_runs: number;
+  };
+  attention_items: WorkspaceAttentionItem[];
+}
+
+export interface ReviewGateState {
+  workspace_root: string;
+  config_path: string;
+  hook_manifest_path: string;
+  hook_script_path: string;
+  hook_installed: boolean;
+  enabled: boolean;
+  mode: "soft-stop";
+  pending_review: boolean;
+  updated_at?: string;
+  last_write_at?: string;
+  last_review_at?: string;
+}
+
+export interface ClaudeReviewGateResult extends ReviewGateState {
+  action: ClaudeReviewGateAction;
+  changed: boolean;
+  summary: string;
+  next_steps: string[];
+}
+
+export interface ClaudeSetupResult {
+  workspace_root: string;
+  review_gate: ReviewGateState;
+  claude_available: boolean;
+  claude_version: string | null;
+  auth_status: "ok" | "missing" | "unknown";
+  git_available: boolean;
+  worktree_capable: boolean;
+  cwd_valid: boolean;
+  cwd_is_git_repo: boolean;
+  errors: string[];
+  next_steps: string[];
+}
+
+export interface ClaudeTaskResult {
+  delegated_mode: Exclude<ClaudeTaskMode, "auto">;
+  summary: string;
+  result?: Record<string, unknown>;
+  job?: BackgroundJobSummary;
+  session?: WorkflowSessionSummary;
+  next_actions: WorkflowNextAction[];
 }
 
 // ---- Structured output types ----
@@ -347,6 +499,10 @@ export const claudeStatusInputSchema = z.object({
   cwd: cwdSchema,
 });
 
+export const claudeSetupInputSchema = z.object({
+  cwd: cwdSchema,
+});
+
 export const claudeQueryInputSchema = z.object({
   task: taskSchema,
   cwd: cwdSchema,
@@ -384,6 +540,25 @@ export const claudeImplementInputSchema = z.object({
   path: ["fork_session"],
 }).refine((value) => !value.resume_latest || !value.session_key, {
   message: "resume_latest cannot be combined with session_key",
+  path: ["resume_latest"],
+});
+
+export const claudeTaskInputSchema = z.object({
+  cwd: cwdSchema,
+  task: taskSchema,
+  mode: z.enum(["auto", "read", "review", "write"]).optional().default("auto"),
+  background: z.boolean().optional(),
+  resume_latest: z.boolean().optional(),
+  files: filesSchema,
+  constraints: constraintsSchema,
+  diff: z.string().optional(),
+  timeout_sec: timeoutSchema.optional(),
+  max_turns: maxTurnsSchema.optional(),
+}).refine((value) => value.mode !== "read" || !value.resume_latest, {
+  message: "resume_latest is only supported for write mode",
+  path: ["resume_latest"],
+}).refine((value) => value.mode !== "review" || !value.resume_latest, {
+  message: "resume_latest is only supported for write mode",
   path: ["resume_latest"],
 });
 
@@ -427,6 +602,16 @@ export const claudeJobResultInputSchema = z.object({
   job_id: z.string().trim().min(1, "job_id is required"),
 });
 
+export const claudeResultInputSchema = z.object({
+  cwd: cwdSchema,
+  job_id: z.string().trim().min(1).optional(),
+  run_id: z.string().trim().min(1).optional(),
+  prefer: z.enum(["latest-job", "latest-run", "latest-implement", "latest-review"]).optional().default("latest-job"),
+}).refine((value) => !(value.job_id && value.run_id), {
+  message: "job_id and run_id cannot be combined",
+  path: ["job_id"],
+});
+
 export const claudeJobWaitInputSchema = z.object({
   cwd: cwdSchema,
   job_id: z.string().trim().min(1, "job_id is required"),
@@ -444,6 +629,17 @@ export const claudeJobCleanupInputSchema = z.object({
   older_than_hours: z.number().nonnegative().max(24 * 365).optional().default(24),
   dry_run: z.boolean().optional().default(true),
   limit: z.number().int().positive().max(200).optional().default(20),
+});
+
+export const claudeWorkspaceStatusInputSchema = z.object({
+  cwd: cwdSchema,
+  limit: z.number().int().positive().max(200).optional().default(10),
+  include_terminal: z.boolean().optional().default(true),
+});
+
+export const claudeReviewGateInputSchema = z.object({
+  cwd: cwdSchema,
+  action: z.enum(["status", "enable", "disable"]).optional().default("status"),
 });
 
 export function validationErrorMessage(err: unknown): string {
