@@ -5,6 +5,7 @@ import path from "node:path";
 import { execCapture, sanitizeEnv } from "./guard.js";
 import { SessionStore, computeRepoKey, RECENT_WINDOW_MINUTES } from "./session.js";
 import type {
+  ApplyPlannedChange,
   ClaudeApplyInput,
   ClaudeApplyResult,
   ClaudeCleanupInput,
@@ -13,11 +14,18 @@ import type {
   ClaudeQueryInput,
   ClaudeReviewInput,
   ClaudeResult,
+  ClaudeRunInspectInput,
+  ClaudeRunInspectResult,
+  ClaudeRunsInput,
+  ClaudeRunsResult,
   ClaudeStatusResult,
   CleanupEntry,
   EnvironmentDiagnostics,
   EnvStatus,
   ExecutionMetadata,
+  RunLogEntrySummary,
+  RunLifecycle,
+  RunLogStatus,
   ServerObserved,
   SessionLog,
   ToolEnvelope,
@@ -58,9 +66,10 @@ function log(msg: string): void {
 async function logRun(runId: string, data: Record<string, unknown>): Promise<void> {
   try {
     await mkdir(LOG_DIR, { recursive: true });
+    const timestamp = new Date().toISOString();
     await writeFile(
       path.join(LOG_DIR, `${runId}.json`),
-      JSON.stringify(data, null, 2)
+      JSON.stringify({ started_at: timestamp, updated_at: timestamp, ...data }, null, 2)
     );
   } catch {
     // best-effort logging
@@ -69,7 +78,11 @@ async function logRun(runId: string, data: Record<string, unknown>): Promise<voi
 
 interface ImplementRunLog {
   type?: unknown;
+  downstream?: {
+    current_lifecycle?: unknown;
+  };
   input?: {
+    cwd?: unknown;
     files?: unknown;
   };
   observed?: {
@@ -85,6 +98,42 @@ interface ImplementRunLog {
       warnings?: unknown;
     };
   };
+}
+
+interface GenericRunLog {
+  started_at?: unknown;
+  updated_at?: unknown;
+  type?: unknown;
+  input?: {
+    cwd?: unknown;
+    worktree_path?: unknown;
+  };
+  report?: {
+    status?: unknown;
+    summary?: unknown;
+  };
+  error?: unknown;
+  preview?: unknown;
+  applied_files?: unknown;
+  removed_count?: unknown;
+  failed_count?: unknown;
+  downstream?: {
+    current_lifecycle?: unknown;
+    previewed_at?: unknown;
+    applied_at?: unknown;
+    cleaned_at?: unknown;
+    last_apply_run_id?: unknown;
+    last_cleanup_run_id?: unknown;
+  };
+  observed?: {
+    worktree_path?: unknown;
+    worktree_name?: unknown;
+  };
+  session?: {
+    requested_session_id?: unknown;
+    returned_session_id?: unknown;
+  };
+  retried_after_session_expired?: unknown;
 }
 
 function normalizeRepoPath(cwd: string, file: string): string {
@@ -136,6 +185,244 @@ async function findImplementLogForWorktree(worktreePath: string): Promise<Implem
     }
   } catch {
     // Missing logs should not block legacy/manual apply flows.
+  }
+  return null;
+}
+
+async function findImplementLogRecordForWorktree(worktreePath: string): Promise<{ file: string; parsed: ImplementRunLog } | null> {
+  try {
+    const entries = await readdir(LOG_DIR);
+    const candidates = await Promise.all(
+      entries
+        .filter((name) => name.endsWith(".json"))
+        .map(async (name) => {
+          const file = path.join(LOG_DIR, name);
+          try {
+            return { file, mtimeMs: (await stat(file)).mtimeMs };
+          } catch {
+            return null;
+          }
+        })
+    );
+
+    for (const entry of candidates
+      .filter((item): item is { file: string; mtimeMs: number } => item !== null)
+      .sort((a, b) => b.mtimeMs - a.mtimeMs)) {
+      try {
+        const parsed = JSON.parse(await readFile(entry.file, "utf8")) as ImplementRunLog;
+        if (parsed.type === "implement" && parsed.observed?.worktree_path === worktreePath) {
+          return { file: entry.file, parsed };
+        }
+      } catch {
+        continue;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function updateImplementLifecycleForWorktree(
+  worktreePath: string,
+  update: Partial<NonNullable<GenericRunLog["downstream"]>>
+): Promise<void> {
+  const record = await findImplementLogRecordForWorktree(worktreePath);
+  if (!record) return;
+  const parsed = record.parsed as GenericRunLog;
+  const timestamp = new Date().toISOString();
+  const next = {
+    ...parsed,
+    updated_at: timestamp,
+    downstream: {
+      ...(parsed.downstream ?? {}),
+      ...update,
+    },
+  };
+  await writeFile(record.file, JSON.stringify(next, null, 2));
+}
+
+function parseRunStatus(raw: GenericRunLog): RunLogStatus {
+  if (typeof raw.error === "string" && raw.error.length > 0) return "failed";
+  const status = raw.report?.status;
+  if (status === "success" || status === "failed" || status === "partial" || status === "needs_user") {
+    return status;
+  }
+  return "unknown";
+}
+
+function parseRunLifecycle(raw: GenericRunLog): RunLifecycle {
+  const downstreamLifecycle = raw.downstream?.current_lifecycle;
+  if (
+    downstreamLifecycle === "queued" ||
+    downstreamLifecycle === "running" ||
+    downstreamLifecycle === "success" ||
+    downstreamLifecycle === "partial" ||
+    downstreamLifecycle === "failed" ||
+    downstreamLifecycle === "apply_blocked" ||
+    downstreamLifecycle === "applied" ||
+    downstreamLifecycle === "cleaned" ||
+    downstreamLifecycle === "unknown"
+  ) {
+    return downstreamLifecycle;
+  }
+  const type = typeof raw.type === "string" ? raw.type : "unknown";
+  const status = parseRunStatus(raw);
+
+  if (type === "apply") {
+    if (typeof raw.error === "string" && raw.error.length > 0) return "apply_blocked";
+    const appliedCount = Array.isArray(raw.applied_files) ? raw.applied_files.length : 0;
+    if (appliedCount > 0) return "applied";
+    if (raw.preview === true) return "success";
+  }
+
+  if (type === "cleanup") {
+    const removedCount = typeof raw.removed_count === "number" ? raw.removed_count : 0;
+    const failedCount = typeof raw.failed_count === "number" ? raw.failed_count : 0;
+    if (removedCount > 0 && failedCount === 0) return "cleaned";
+    if (failedCount > 0) return "partial";
+    return "success";
+  }
+
+  if (status === "needs_user") {
+    return "partial";
+  }
+  if (status === "success" || status === "partial" || status === "failed") {
+    return status;
+  }
+  return "unknown";
+}
+
+function summarizeRunLog(runId: string, raw: GenericRunLog, updatedAt?: string): RunLogEntrySummary {
+  const worktreePath =
+    typeof raw.observed?.worktree_path === "string"
+      ? raw.observed.worktree_path
+      : typeof raw.input?.worktree_path === "string"
+        ? raw.input.worktree_path
+        : undefined;
+  return {
+    run_id: runId,
+    type: typeof raw.type === "string" ? raw.type : "unknown",
+    status: parseRunStatus(raw),
+    lifecycle: parseRunLifecycle(raw),
+    cwd: typeof raw.input?.cwd === "string" ? raw.input.cwd : undefined,
+    summary: typeof raw.report?.summary === "string" ? raw.report.summary : undefined,
+    error: typeof raw.error === "string" ? raw.error : undefined,
+    worktree_path: worktreePath,
+    worktree_name:
+      typeof raw.observed?.worktree_name === "string"
+        ? raw.observed.worktree_name
+        : worktreePath
+          ? path.basename(worktreePath)
+          : undefined,
+    requested_session_id:
+      typeof raw.session?.requested_session_id === "string" || raw.session?.requested_session_id === null
+        ? raw.session.requested_session_id
+        : undefined,
+    returned_session_id:
+      typeof raw.session?.returned_session_id === "string" || raw.session?.returned_session_id === null
+        ? raw.session.returned_session_id
+        : undefined,
+    retried_after_session_expired: raw.retried_after_session_expired === true,
+    started_at: typeof raw.started_at === "string" ? raw.started_at : updatedAt,
+    updated_at: typeof raw.updated_at === "string" ? raw.updated_at : updatedAt,
+  };
+}
+
+function summarizeRecentRuns(entries: RunLogEntrySummary[]): { entries: RunLogEntrySummary[]; lifecycle_counts: Record<string, number> } {
+  const lifecycleCounts: Record<string, number> = {};
+  for (const entry of entries) {
+    lifecycleCounts[entry.lifecycle] = (lifecycleCounts[entry.lifecycle] ?? 0) + 1;
+  }
+  return { entries, lifecycle_counts: lifecycleCounts };
+}
+
+async function readRunLogFile(runId: string): Promise<GenericRunLog | null> {
+  const file = path.join(LOG_DIR, `${runId}.json`);
+  try {
+    return JSON.parse(await readFile(file, "utf8")) as GenericRunLog;
+  } catch {
+    return null;
+  }
+}
+
+export async function listRunLogs(input: ClaudeRunsInput): Promise<ClaudeRunsResult> {
+  const limit = input.limit ?? 20;
+  try {
+    const entries = await readdir(LOG_DIR);
+    const candidates = await Promise.all(
+      entries
+        .filter((name) => name.endsWith(".json"))
+        .map(async (name) => {
+          const file = path.join(LOG_DIR, name);
+          try {
+            const stats = await stat(file);
+            return { file, runId: name.replace(/\.json$/, ""), mtimeMs: stats.mtimeMs, updatedAt: new Date(stats.mtimeMs).toISOString() };
+          } catch {
+            return null;
+          }
+        })
+    );
+
+    const summaries: RunLogEntrySummary[] = [];
+    for (const candidate of candidates
+      .filter((item): item is { file: string; runId: string; mtimeMs: number; updatedAt: string } => item !== null)
+      .sort((a, b) => b.mtimeMs - a.mtimeMs)) {
+      try {
+        const raw = JSON.parse(await readFile(candidate.file, "utf8")) as GenericRunLog;
+        const summary = summarizeRunLog(candidate.runId, raw, candidate.updatedAt);
+        if (summary.cwd && summary.cwd !== input.cwd) continue;
+        if (input.type && summary.type !== input.type) continue;
+        if (input.status && summary.status !== input.status) continue;
+        if (input.worktree_name && summary.worktree_name !== input.worktree_name) continue;
+        summaries.push(summary);
+        if (summaries.length >= limit) break;
+      } catch {
+        continue;
+      }
+    }
+
+    return { entries: summaries, total_entries: summaries.length };
+  } catch {
+    return { entries: [], total_entries: 0 };
+  }
+}
+
+export async function getRecentRunsSummary(cwd: string, limit = 5): Promise<{ entries: RunLogEntrySummary[]; lifecycle_counts: Record<string, number> }> {
+  const runs = await listRunLogs({ cwd, limit });
+  return summarizeRecentRuns(runs.entries);
+}
+
+export async function getRunLogById(input: ClaudeRunInspectInput): Promise<ClaudeRunInspectResult | null> {
+  const raw = await readRunLogFile(input.run_id);
+  if (!raw) return null;
+
+  const summary = summarizeRunLog(input.run_id, raw);
+  if (summary.cwd && summary.cwd !== input.cwd) return null;
+
+  return {
+    entry: summary,
+    raw: raw as Record<string, unknown>,
+    related_runs: {
+      apply_run_id:
+        typeof raw.downstream?.last_apply_run_id === "string" ? raw.downstream.last_apply_run_id : undefined,
+      cleanup_run_id:
+        typeof raw.downstream?.last_cleanup_run_id === "string" ? raw.downstream.last_cleanup_run_id : undefined,
+    },
+  };
+}
+
+export async function resolveLatestImplementSession(input: { cwd: string }): Promise<{ run_id: string; session_id: string } | null> {
+  const runs = await listRunLogs({ cwd: input.cwd, type: "implement", limit: 50 });
+  for (const run of runs.entries) {
+    const raw = await readRunLogFile(run.run_id);
+    const sessionId =
+      raw && typeof raw.session?.returned_session_id === "string"
+        ? raw.session.returned_session_id
+        : null;
+    if (sessionId) {
+      return { run_id: run.run_id, session_id: sessionId };
+    }
   }
   return null;
 }
@@ -1034,21 +1321,31 @@ export async function runClaudeImplement(
 ): Promise<ClaudeResult> {
   const store = await getStore();
   const repoKey = await computeRepoKey(input.cwd);
-  const worktreeName = input.worktreeName ?? `codex-delegated-${runId.slice(0, 8)}`;
+  let implementInput = input;
+
+  if (implementInput.resume_latest) {
+    const latest = await resolveLatestImplementSession({ cwd: implementInput.cwd });
+    if (!latest) {
+      throw new Error("No resumable implement session found for this repository.");
+    }
+    implementInput = { ...implementInput, session_key: latest.session_id };
+  }
+
+  const worktreeName = implementInput.worktreeName ?? `codex-delegated-${runId.slice(0, 8)}`;
   const worktreeRelPath = path.join(".claude", "worktrees", worktreeName);
-  const worktreePath = path.join(input.cwd, worktreeRelPath);
-  const requestedFiles = normalizeRequestedFiles(input.cwd, input.files);
+  const worktreePath = path.join(implementInput.cwd, worktreeRelPath);
+  const requestedFiles = normalizeRequestedFiles(implementInput.cwd, implementInput.files);
   let baseCommit: string | undefined;
 
   if (requestedFiles.length > 0) {
-    const dirtyRequestedFiles = await findDirtyFiles(input.cwd, requestedFiles);
+    const dirtyRequestedFiles = await findDirtyFiles(implementInput.cwd, requestedFiles);
     if (dirtyRequestedFiles.length > 0) {
       const message =
         `Requested files contain uncommitted changes in main workspace: ${dirtyRequestedFiles.join(", ")}. ` +
         "Please commit/stash/clean them first, or use an explicit dirty-snapshot mode.";
       await logRun(runId, {
         type: "implement",
-        input,
+        input: implementInput,
         error: message,
         requested_files: requestedFiles,
         dirty_requested_files: dirtyRequestedFiles,
@@ -1062,7 +1359,7 @@ export async function runClaudeImplement(
     if (!existsSync(worktreePath)) {
       await mkdir(path.dirname(worktreePath), { recursive: true });
       await execCapture("git", ["worktree", "add", "--detach", worktreeRelPath, "HEAD"], {
-        cwd: input.cwd,
+        cwd: implementInput.cwd,
         timeoutMs: 30000,
       });
     }
@@ -1071,18 +1368,17 @@ export async function runClaudeImplement(
   } catch (err) {
     await logRun(runId, {
       type: "implement",
-      input,
+      input: implementInput,
       error: `Failed to prepare worktree/base commit: ${err instanceof Error ? err.message : String(err)}`,
       duration_ms: 0,
     });
     throw err;
   }
 
-  // implement only resumes when session_key is explicitly provided
-  const resumeSessionId = input.session_key ?? undefined;
-  const forked = input.fork_session ?? false;
+  const resumeSessionId = implementInput.session_key ?? undefined;
+  const forked = implementInput.fork_session ?? false;
 
-  const opts = createImplementOptions(input, worktreeName, resumeSessionId, forked);
+  const opts = createImplementOptions(implementInput, worktreeName, resumeSessionId, forked);
 
   let report: Record<string, unknown>;
   let returnedSessionId: string | null = null;
@@ -1103,32 +1399,32 @@ export async function runClaudeImplement(
       log(`Session ${resumeSessionId} not found, marked expired`);
     }
 
-    await logRun(runId, { type: "implement", input, error: errorMsg, duration_ms: Date.now() - startTime });
+    await logRun(runId, { type: "implement", input: implementInput, error: errorMsg, duration_ms: Date.now() - startTime });
     throw err;
   }
 
   // Persist session (record only, never auto-resume implement)
   if (returnedSessionId) {
-    store.upsert(returnedSessionId, "implement", repoKey, input.cwd, (report.summary as string) ?? "");
+    store.upsert(returnedSessionId, "implement", repoKey, implementInput.cwd, (report.summary as string) ?? "");
   }
 
   // Observe actual changes (don't trust Claude's self-report alone)
-  const observed = await observeResult(input.cwd, worktreeName, baseCommit, requestedFiles);
+  const observed = await observeResult(implementInput.cwd, worktreeName, baseCommit, requestedFiles);
 
   // Check resource limits
-  if (input.max_changed_files !== undefined || input.max_cost_usd !== undefined) {
+  if (implementInput.max_changed_files !== undefined || implementInput.max_cost_usd !== undefined) {
     const warnings: string[] = [];
     const exceeded =
-      input.max_changed_files !== undefined &&
-      observed.changed_files.length > input.max_changed_files;
+      implementInput.max_changed_files !== undefined &&
+      observed.changed_files.length > implementInput.max_changed_files;
     if (exceeded) {
-      const msg = `Changed ${observed.changed_files.length} files, exceeds limit of ${input.max_changed_files}`;
+      const msg = `Changed ${observed.changed_files.length} files, exceeds limit of ${implementInput.max_changed_files}`;
       warnings.push(msg);
       log(`Resource warning: ${msg}`);
     }
     observed.resource_limits = {
-      max_cost_usd: input.max_cost_usd,
-      max_changed_files: input.max_changed_files,
+      max_cost_usd: implementInput.max_cost_usd,
+      max_changed_files: implementInput.max_changed_files,
       actual_changed_files: observed.changed_files.length,
       changed_files_exceeded: exceeded,
       warnings,
@@ -1149,7 +1445,7 @@ export async function runClaudeImplement(
 
   await logRun(runId, {
     type: "implement",
-    input,
+    input: implementInput,
     report,
     observed,
     session: sessionLog,
@@ -1172,18 +1468,46 @@ export async function runClaudeImplement(
 
 export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Promise<ClaudeApplyResult> {
   const startTime = Date.now();
+  const finish = async (result: ClaudeApplyResult): Promise<ClaudeApplyResult> => {
+    await logRun(runId, {
+      type: "apply",
+      input,
+      applied_files: result.applied_files,
+      cleanup_performed: result.cleanup_performed,
+      preview: input.preview === true,
+      planned_changes: result.planned_changes,
+      conflicts: result.conflicts,
+      error: result.error,
+      duration_ms: Date.now() - startTime,
+    });
+    const wtRelPath = path.join(".claude", "worktrees", path.basename(path.resolve(input.cwd, input.worktree_path)));
+    if (input.preview === true) {
+      await updateImplementLifecycleForWorktree(wtRelPath, {
+        current_lifecycle: result.error ? "apply_blocked" : "success",
+        previewed_at: new Date().toISOString(),
+        last_apply_run_id: runId,
+      }).catch(() => {});
+    } else {
+      await updateImplementLifecycleForWorktree(wtRelPath, {
+        current_lifecycle: result.error ? "apply_blocked" : (result.applied_files.length > 0 ? "applied" : "unknown"),
+        applied_at: result.applied_files.length > 0 ? new Date().toISOString() : undefined,
+        last_apply_run_id: runId,
+      }).catch(() => {});
+    }
+    return result;
+  };
 
   // Validate worktree path
   const wtReal = path.resolve(input.cwd, input.worktree_path);
   const wtDir = path.join(input.cwd, ".claude", "worktrees");
   if (!wtReal.startsWith(wtDir + path.sep)) {
-    return { applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: `worktree_path must be under ${wtDir}` };
+    return finish({ applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: `worktree_path must be under ${wtDir}` });
   }
   if (!wtReal.startsWith(wtDir + path.sep + "codex-delegated-")) {
-    return { applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: "worktree_path must be a delegated worktree (codex-delegated-*)" };
+    return finish({ applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: "worktree_path must be a delegated worktree (codex-delegated-*)" });
   }
   if (!existsSync(wtReal)) {
-    return { applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: `worktree directory not found: ${wtReal}` };
+    return finish({ applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: `worktree directory not found: ${wtReal}` });
   }
 
   const wtRelPath = path.join(".claude", "worktrees", path.basename(wtReal));
@@ -1247,8 +1571,9 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   if (usedFallback) {
     diffStat = `[fallback_without_base_commit]\n${diffStat || "(no stat)"}`;
   }
+  const plannedChanges: ApplyPlannedChange[] = changes.map((c) => ({ status: c.status, file: c.file }));
   if (changes.length === 0) {
-    return { applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts: [], error: "No changed files found in worktree" };
+    return finish({ applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts: [], error: "No changed files found in worktree", preview: input.preview === true, planned_changes: plannedChanges });
   }
 
   const resourceLimits = implementLog?.observed?.resource_limits;
@@ -1256,13 +1581,15 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
     const warnings = Array.isArray(resourceLimits.warnings)
       ? resourceLimits.warnings.filter((item): item is string => typeof item === "string")
       : [];
-    return {
+    return finish({
       applied_files: [],
       diff_stat: diffStat,
       cleanup_performed: false,
       conflicts: warnings,
       error: "Worktree exceeded implement resource limits; apply refused",
-    };
+      preview: input.preview === true,
+      planned_changes: plannedChanges,
+    });
   }
 
   const observedScope = implementLog?.observed?.scope;
@@ -1270,13 +1597,15 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
     const warnings = Array.isArray(observedScope.warnings)
       ? observedScope.warnings.filter((item): item is string => typeof item === "string")
       : [];
-    return {
+    return finish({
       applied_files: [],
       diff_stat: diffStat,
       cleanup_performed: false,
       conflicts: warnings,
       error: "Worktree contains changes outside requested files; apply refused",
-    };
+      preview: input.preview === true,
+      planned_changes: plannedChanges,
+    });
   }
 
   // Preflight: check for uncommitted changes in main workspace and
@@ -1298,7 +1627,18 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   }
 
   if (conflicts.length > 0) {
-    return { applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts, error: "Main workspace has uncommitted or unsupported changes; apply refused" };
+    return finish({ applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts, error: "Main workspace has uncommitted or unsupported changes; apply refused", preview: input.preview === true, planned_changes: plannedChanges });
+  }
+
+  if (input.preview) {
+    return finish({
+      applied_files: [],
+      diff_stat: diffStat,
+      cleanup_performed: false,
+      conflicts: [],
+      preview: true,
+      planned_changes: plannedChanges,
+    });
   }
 
   // Apply changes
@@ -1326,7 +1666,7 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   }
 
   if (copied.length === 0) {
-    return { applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts, error: "No changes could be applied" };
+    return finish({ applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts, error: "No changes could be applied", planned_changes: plannedChanges });
   }
 
   // Optional: cleanup worktree
@@ -1341,15 +1681,7 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
     }
   }
 
-  await logRun(runId, {
-    type: "apply",
-    input,
-    applied_files: copied,
-    cleanup_performed: cleanupPerformed,
-    duration_ms: Date.now() - startTime,
-  });
-
-  return { applied_files: copied, diff_stat: diffStat, cleanup_performed: cleanupPerformed, conflicts };
+  return finish({ applied_files: copied, diff_stat: diffStat, cleanup_performed: cleanupPerformed, conflicts, planned_changes: plannedChanges });
 }
 
 // ---- Cleanup delegated worktrees ----
@@ -1380,6 +1712,7 @@ export async function runClaudeCleanup(input: ClaudeCleanupInput, runId: string)
 
     for (const name of dirs) {
       const dirPath = path.join(worktreeDir, name);
+      const wtRelPath = path.join(".claude", "worktrees", name);
 
       // Check age if filter set
       if (olderThanHours > 0) {
@@ -1401,10 +1734,14 @@ export async function runClaudeCleanup(input: ClaudeCleanupInput, runId: string)
 
       // Actual remove — use relative path from repo root, not just basename
       try {
-        const wtRelPath = path.join(".claude", "worktrees", name);
         await execCapture("git", ["worktree", "remove", "--force", wtRelPath], { cwd: input.cwd, timeoutMs: 30000 });
         removedCount++;
         entries.push({ worktree_name: name, removed: true });
+        await updateImplementLifecycleForWorktree(wtRelPath, {
+          current_lifecycle: "cleaned",
+          cleaned_at: new Date().toISOString(),
+          last_cleanup_run_id: runId,
+        }).catch(() => {});
       } catch (err) {
         failedCount++;
         entries.push({ worktree_name: name, removed: false, error: err instanceof Error ? err.message : String(err) });

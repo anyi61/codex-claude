@@ -8,7 +8,7 @@ MCP 服务器，让 Codex CLI 可以把查询、审查和实现任务委托给 C
 
 ```text
 Codex CLI
-  -> MCP tool: claude_query / claude_review / claude_implement / claude_apply
+  -> MCP tool: claude_runs / claude_run_inspect / claude_query / claude_review / claude_implement / claude_apply
   -> codex-claude-delegate-mcp (stdio)
   -> spawn("claude", args[]) with sanitized env and tool restrictions
   -> Claude Code returns structured JSON
@@ -22,10 +22,12 @@ Codex CLI
 | 工具 | 模式 | 作用 |
 |---|---|---|
 | `claude_status` | 只读 | 检查 Claude/Git/worktree/残留 delegated worktree 状态 |
+| `claude_runs` | 只读 | 检查最近的 query/review/implement/apply/cleanup 运行记录 |
+| `claude_run_inspect` | 只读 | 按 run id 读取单条运行日志，返回规范化摘要、原始日志和关联 apply/cleanup run id |
 | `claude_query` | 只读 | 向 Claude 提问；同 repo query 会话 20 分钟内自动复用 |
 | `claude_review` | 只读 | 审查 diff 或指定文件；禁用 session persistence |
-| `claude_implement` | 写入 worktree | 在隔离 worktree 中实现任务，支持 `session_key`、`max_cost_usd`、`max_changed_files` |
-| `claude_apply` | 写入主工作区 | 将 delegated worktree 中经过服务端观测和范围校验的变更安全应用到主工作区 |
+| `claude_implement` | 写入 worktree | 在隔离 worktree 中实现任务，支持 `session_key`、`resume_latest`、`max_cost_usd`、`max_changed_files` |
+| `claude_apply` | 写入主工作区 / preview | 将 delegated worktree 中经过服务端观测和范围校验的变更安全应用到主工作区，或先 preview |
 | `claude_cleanup` | worktree 管理 | dry-run 或清理 `.claude/worktrees/codex-delegated-*` |
 
 ## 设置
@@ -65,7 +67,7 @@ command = "node"
 args = ["/path/to/codex-claude-delegate-mcp/dist/server.js"]
 tool_timeout_sec = 600
 startup_timeout_sec = 20
-enabled_tools = ["claude_status", "claude_query", "claude_review", "claude_implement", "claude_apply", "claude_cleanup"]
+enabled_tools = ["claude_status", "claude_runs", "claude_run_inspect", "claude_query", "claude_review", "claude_implement", "claude_apply", "claude_cleanup"]
 ```
 
 ### 4. 使用 Codex Plugin
@@ -117,8 +119,35 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 - `claude_available` 和 `auth_status`
 - `cwd_valid` 和 `cwd_is_git_repo`
 - `delegated_worktrees_count` 和 `stale_worktrees_count`
+- `recent_runs.entries` 和 `recent_runs.lifecycle_counts`，用于查看最近委托活动摘要
 
 ### 2. 只读提问
+
+在提问前，也可以先检查最近委托记录：
+
+```json
+{
+  "cwd": "/path/to/repo",
+  "type": "implement",
+  "limit": 10
+}
+```
+
+`claude_runs` 会返回近期 run log 摘要，可按 `type`、`status`、`worktree_name` 过滤。
+对于 `implement` 记录，`lifecycle` 会在后续 `claude_apply` / `claude_cleanup` 成功后更新为 `applied` / `cleaned`，便于从单次委托视角查看闭环状态。
+
+若已知某个 `run_id`，可进一步读取单条日志：
+
+```json
+{
+  "cwd": "/path/to/repo",
+  "run_id": "run-implement"
+}
+```
+
+`claude_run_inspect` 会返回该 run 的规范化 `entry`、原始 `raw` 日志，以及关联的 `apply_run_id` / `cleanup_run_id`（如存在）。
+
+### 3. 只读提问
 
 适合架构理解、代码定位、方案比较：
 
@@ -132,7 +161,7 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 
 `claude_query` 会自动复用最近 20 分钟内同 repo 的 query session。不要用它要求 Claude 修改文件。
 
-### 3. 只读审查
+### 4. 只读审查
 
 适合复杂 diff、安全敏感代码或 `claude_implement` 后的二次审查：
 
@@ -148,7 +177,7 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 
 `claude_review` 不写文件，也不持久化 session。
 
-### 4. 委托实现
+### 5. 委托实现
 
 适合多文件重构、风险较高或需要 Claude 独立执行的任务：
 
@@ -189,7 +218,19 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 
 `fork_session` 必须和 `session_key` 一起使用。
 
-### 5. 审查并应用结果
+如果只是继续当前仓库最近一次可续接的 implement session，可直接让服务端解析最近日志：
+
+```json
+{
+  "task": "Continue the previous implementation and fix the build error.",
+  "cwd": "/path/to/repo",
+  "resume_latest": true
+}
+```
+
+`resume_latest` 不能和 `session_key` 同时传入；解析不到可续接会话时会直接报错。
+
+### 6. 审查并应用结果
 
 `claude_implement` 不会修改主工作区。确认 `server_observed.worktree_path` 后，再调用 `claude_apply`：
 
@@ -197,9 +238,22 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 {
   "cwd": "/path/to/repo",
   "worktree_path": ".claude/worktrees/codex-delegated-xxxxxxxx",
-  "cleanup": true
+  "cleanup": true,
+  "preview": false
 }
 ```
+
+只想预览，不想修改主工作区时：
+
+```json
+{
+  "cwd": "/path/to/repo",
+  "worktree_path": ".claude/worktrees/codex-delegated-xxxxxxxx",
+  "preview": true
+}
+```
+
+preview 模式会返回 `planned_changes`，并保证主工作区不被修改。
 
 重要限制：
 
@@ -207,10 +261,11 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 - `claude_apply` 会读取 implement run log；若 `scope_exceeded=true` 或 `changed_files_exceeded=true`，会拒绝 apply。
 - `claude_apply` 变更识别优先使用 implement 记录的 `base_commit` 和 `server_observed.changed_files`，统一按 `base_commit..HEAD` + 未提交 + untracked 观测；缺少可信 implement log 时才回退到 legacy `src/` 路径。
 - 如果主工作区相关文件有未提交改动，会全量拒绝，不做部分 apply。
+- `claude_apply` 在 preview 模式下同样会执行范围校验、冲突检测和 planned changes 解析，但不会写入主工作区。
 - `cleanup: true` 只在 apply 成功后移除对应 worktree。
 - `dist/`、`.git/`、未被服务端观测记录的越界文件不会被 apply；需要时请重新设计任务并显式纳入 `files`。
 
-### 6. 清理残留 worktree
+### 7. 清理残留 worktree
 
 先 dry-run：
 
@@ -249,11 +304,12 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 ```text
 1. claude_status
 2. claude_implement with max_cost_usd + max_changed_files
-3. inspect claude_report + server_observed
+3. claude_runs or claude_run_inspect
 4. claude_review on the returned worktree/diff if risky
-5. claude_apply with cleanup=true
-6. npm run build or project-specific tests
-7. claude_status to confirm delegated_worktrees_count
+5. claude_apply preview=true
+6. claude_apply with cleanup=true
+7. npm run build or project-specific tests
+8. claude_status to confirm delegated_worktrees_count
 ```
 
 如果 `max_changed_files` 超限，优先拆小任务或先 `claude_review`，不要直接 apply。
@@ -299,7 +355,7 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 
 ```text
 src/
-├── server.ts       # MCP stdio 入口，注册 6 个工具
+├── server.ts       # MCP stdio 入口，注册 8 个工具
 ├── claude-cli.ts   # Claude CLI spawn、session、apply/cleanup、资源控制
 ├── guard.ts        # cwd 校验、环境清理、递归防护、exec helper
 ├── schema.ts       # 类型、JSON schema、prompt 构建器

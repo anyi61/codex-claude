@@ -36,6 +36,7 @@ export interface ClaudeImplementInput {
   max_turns?: number;
   session_key?: string;
   fork_session?: boolean;
+  resume_latest?: boolean;
   max_cost_usd?: number;
   max_changed_files?: number;
   worktreeName?: string;
@@ -147,6 +148,7 @@ export interface ClaudeStatusResult {
   stale_worktrees_count: number;
   errors: string[];
   environment_diagnostics?: EnvironmentDiagnostics;
+  recent_runs?: RecentRunsSummary;
 }
 
 export interface SessionLog {
@@ -162,6 +164,12 @@ export interface ClaudeApplyInput {
   cwd: string;
   worktree_path: string;
   cleanup?: boolean;
+  preview?: boolean;
+}
+
+export interface ApplyPlannedChange {
+  status: string;
+  file: string;
 }
 
 export interface ClaudeApplyResult {
@@ -170,6 +178,8 @@ export interface ClaudeApplyResult {
   cleanup_performed: boolean;
   conflicts: string[];
   error?: string;
+  preview?: boolean;
+  planned_changes?: ApplyPlannedChange[];
 }
 
 export interface ClaudeCleanupInput {
@@ -189,6 +199,63 @@ export interface ClaudeCleanupResult {
   removed_count: number;
   failed_count: number;
   entries: CleanupEntry[];
+}
+
+export type RunLogType = "query" | "review" | "implement" | "apply" | "cleanup";
+export type RunLogStatus = "success" | "failed" | "partial" | "needs_user" | "unknown";
+export type RunLifecycle = "queued" | "running" | "success" | "partial" | "failed" | "apply_blocked" | "applied" | "cleaned" | "unknown";
+
+export interface ClaudeRunsInput {
+  cwd: string;
+  limit?: number;
+  type?: RunLogType;
+  status?: RunLogStatus;
+  worktree_name?: string;
+}
+
+export interface ClaudeRunInspectInput {
+  cwd: string;
+  run_id: string;
+}
+
+export interface RunLogEntrySummary {
+  run_id: string;
+  type: string;
+  status: RunLogStatus;
+  lifecycle: RunLifecycle;
+  cwd?: string;
+  summary?: string;
+  error?: string;
+  worktree_path?: string;
+  worktree_name?: string;
+  requested_session_id?: string | null;
+  returned_session_id?: string | null;
+  retried_after_session_expired?: boolean;
+  started_at?: string;
+  updated_at?: string;
+}
+
+export interface ClaudeRunsResult {
+  entries: RunLogEntrySummary[];
+  total_entries: number;
+}
+
+export interface ClaudeRunInspectResult {
+  entry: RunLogEntrySummary;
+  raw: Record<string, unknown>;
+  related_runs?: {
+    apply_run_id?: string;
+    cleanup_run_id?: string;
+  };
+}
+
+export interface RunSummaryCounts {
+  [key: string]: number;
+}
+
+export interface RecentRunsSummary {
+  entries: RunLogEntrySummary[];
+  lifecycle_counts: RunSummaryCounts;
 }
 
 // ---- Tool input validation ----
@@ -230,24 +297,42 @@ export const claudeImplementInputSchema = z.object({
   max_turns: maxTurnsSchema.default(15),
   session_key: z.string().trim().min(1).optional(),
   fork_session: z.boolean().optional(),
+  resume_latest: z.boolean().optional(),
   max_cost_usd: z.number().positive().max(10).optional(),
   max_changed_files: z.number().int().positive().max(100).optional(),
   worktreeName: worktreeNameSchema,
 }).refine((value) => !value.fork_session || !!value.session_key, {
   message: "fork_session requires session_key",
   path: ["fork_session"],
+}).refine((value) => !value.resume_latest || !value.session_key, {
+  message: "resume_latest cannot be combined with session_key",
+  path: ["resume_latest"],
 });
 
 export const claudeApplyInputSchema = z.object({
   cwd: cwdSchema,
   worktree_path: z.string().trim().min(1, "worktree_path is required"),
   cleanup: z.boolean().optional(),
+  preview: z.boolean().optional(),
 });
 
 export const claudeCleanupInputSchema = z.object({
   cwd: cwdSchema,
   older_than_hours: z.number().nonnegative().max(24 * 365).optional().default(24),
   dry_run: z.boolean().optional().default(true),
+});
+
+export const claudeRunsInputSchema = z.object({
+  cwd: cwdSchema,
+  limit: z.number().int().positive().max(200).optional().default(20),
+  type: z.enum(["query", "review", "implement", "apply", "cleanup"]).optional(),
+  status: z.enum(["success", "failed", "partial", "needs_user", "unknown"]).optional(),
+  worktree_name: z.string().trim().min(1).optional(),
+});
+
+export const claudeRunInspectInputSchema = z.object({
+  cwd: cwdSchema,
+  run_id: z.string().trim().min(1, "run_id is required"),
 });
 
 export function validationErrorMessage(err: unknown): string {

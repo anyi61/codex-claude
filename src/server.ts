@@ -9,18 +9,23 @@ import { randomUUID } from "node:crypto";
 import { validateCwd, validateFilesWithinCwd, checkRecursion, MAX_BRIDGE_DEPTH } from "./guard.js";
 import {
   checkClaudeStatus,
+  getRunLogById,
   runClaudeQuery,
   runClaudeReview,
   runClaudeImplement,
   runClaudeApply,
   runClaudeCleanup,
+  getRecentRunsSummary,
+  listRunLogs,
 } from "./claude-cli.js";
 import {
   claudeApplyInputSchema,
   claudeCleanupInputSchema,
   claudeImplementInputSchema,
   claudeQueryInputSchema,
+  claudeRunInspectInputSchema,
   claudeReviewInputSchema,
+  claudeRunsInputSchema,
   claudeStatusInputSchema,
   errorResult,
   jsonResult,
@@ -63,6 +68,35 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: "claude_runs",
+      description:
+        "Inspect recent delegated run logs for this repository. Use to trace implement/apply/cleanup history without reading raw JSON files.",
+      inputSchema: {
+        type: "object",
+        required: ["cwd"],
+        properties: {
+          cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
+          limit: { type: "number", description: "Maximum number of recent runs to return (default 20)" },
+          type: { type: "string", enum: ["query", "review", "implement", "apply", "cleanup"], description: "Filter by tool type" },
+          status: { type: "string", enum: ["success", "failed", "partial", "needs_user", "unknown"], description: "Filter by derived run status" },
+          worktree_name: { type: "string", description: "Filter by delegated worktree name" },
+        },
+      },
+    },
+    {
+      name: "claude_run_inspect",
+      description:
+        "Inspect a single delegated run log by run id, including normalized details and lifecycle metadata.",
+      inputSchema: {
+        type: "object",
+        required: ["cwd", "run_id"],
+        properties: {
+          cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
+          run_id: { type: "string", description: "Run log id without the .json suffix" },
+        },
+      },
+    },
+    {
       name: "claude_query",
       description:
         "Ask Claude a read-only question. Claude can read files and run safe git commands but cannot modify anything. Use for code explanations, architecture questions, and analysis.",
@@ -73,6 +107,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           task: { type: "string", description: "The question or analysis task" },
           cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
           timeout_sec: { type: "number", description: "Timeout in seconds (default 120)" },
+          max_turns: { type: "number", description: "Maximum Claude turns for this query (default 8)" },
         },
       },
     },
@@ -89,13 +124,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           diff: { type: "string", description: "The diff to review (optional; Claude can also git diff itself)" },
           files: { type: "array", items: { type: "string" }, description: "Specific files to focus on" },
           timeout_sec: { type: "number", description: "Timeout in seconds (default 180)" },
+          max_turns: { type: "number", description: "Maximum Claude turns for this review (default 10)" },
         },
       },
     },
     {
       name: "claude_implement",
       description:
-        "Delegate an implementation task to Claude Code. Claude runs in an isolated git worktree, makes changes, runs tests, and returns a structured result with a diff. Does NOT modify the main working tree.",
+        "Delegate an implementation task to Claude Code. Claude runs in an isolated git worktree, makes changes, runs tests, and returns a structured result with a diff. Does NOT modify the main working tree. Supports explicit session_key resume or resume_latest for the latest implement session in this repo.",
       inputSchema: {
         type: "object",
         required: ["task", "cwd"],
@@ -105,10 +141,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           files: { type: "array", items: { type: "string" }, description: "Relevant files for context" },
           constraints: { type: "array", items: { type: "string" }, description: "Constraints (e.g. 'do not modify tests')" },
           timeout_sec: { type: "number", description: "Timeout in seconds (default 600)" },
+          max_turns: { type: "number", description: "Maximum Claude turns for this implementation (default 15)" },
           session_key: { type: "string", description: "Resume an existing Claude session by ID (implement does NOT auto-resume)" },
           fork_session: { type: "boolean", description: "When used with session_key, fork the session instead of continuing it" },
+          resume_latest: { type: "boolean", description: "Resume the latest implement session recorded for this repository. Cannot be combined with session_key." },
           max_cost_usd: { type: "number", description: "Maximum USD budget for this task (passed as --max-budget-usd to Claude). Must be > 0 and <= 10." },
           max_changed_files: { type: "number", description: "Warn if Claude changes more than this many files. Must be a positive integer <= 100." },
+          worktreeName: { type: "string", description: "Optional delegated worktree name override" },
         },
       },
     },
@@ -123,6 +162,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
           worktree_path: { type: "string", description: "Path to worktree, e.g. .claude/worktrees/codex-delegated-xxx" },
           cleanup: { type: "boolean", description: "Remove worktree after successful apply (default false)" },
+          preview: { type: "boolean", description: "Preview which files would be applied without modifying the main working tree" },
         },
       },
     },
@@ -174,9 +214,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const status = await checkClaudeStatus(check.resolved);
         return jsonResult({
           ...status,
+          recent_runs: await getRecentRunsSummary(check.resolved),
           execution: localExecution(startTime),
           warnings: status.errors,
         });
+      }
+
+      case "claude_runs": {
+        const parsed = claudeRunsInputSchema.safeParse(args);
+        if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
+        const { cwd, limit, type, status, worktree_name } = parsed.data;
+        const check = await validateCwd(cwd);
+        if (!check.ok) return errorResult(check.error!);
+        return jsonResult(await listRunLogs({ cwd: check.resolved, limit, type, status, worktree_name }));
+      }
+
+      case "claude_run_inspect": {
+        const parsed = claudeRunInspectInputSchema.safeParse(args);
+        if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
+        const check = await validateCwd(parsed.data.cwd);
+        if (!check.ok) return errorResult(check.error!);
+        const result = await getRunLogById({ cwd: check.resolved, run_id: parsed.data.run_id });
+        if (!result) return errorResult(`Run not found: ${parsed.data.run_id}`);
+        return jsonResult(result);
       }
 
       case "claude_query": {
@@ -214,7 +274,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "claude_implement": {
         const parsed = claudeImplementInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, files, constraints, timeout_sec, max_turns, session_key, fork_session, max_cost_usd, max_changed_files, worktreeName } = parsed.data;
+        const { task, cwd, files, constraints, timeout_sec, max_turns, session_key, fork_session, resume_latest, max_cost_usd, max_changed_files, worktreeName } = parsed.data;
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
@@ -229,7 +289,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         const result = await runClaudeImplement(
-          { task, cwd: check.resolved, files, constraints, timeout_sec, max_turns, session_key, fork_session, max_cost_usd, max_changed_files, worktreeName },
+          { task, cwd: check.resolved, files, constraints, timeout_sec, max_turns, session_key, fork_session, resume_latest, max_cost_usd, max_changed_files, worktreeName },
           runId
         );
         return jsonResult(result);
@@ -239,13 +299,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const startTime = Date.now();
         const parsed = claudeApplyInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { cwd, worktree_path, cleanup } = parsed.data;
+        const { cwd, worktree_path, cleanup, preview } = parsed.data;
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
 
         const result = await runClaudeApply(
-          { cwd: check.resolved, worktree_path, cleanup },
+          { cwd: check.resolved, worktree_path, cleanup, preview },
           runId
         );
         return jsonResult({
