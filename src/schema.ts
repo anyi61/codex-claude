@@ -25,6 +25,7 @@ export interface ClaudeReviewInput {
   files?: string[];
   timeout_sec?: number;
   max_turns?: number;
+  background?: boolean;
 }
 
 export interface ClaudeImplementInput {
@@ -40,6 +41,45 @@ export interface ClaudeImplementInput {
   max_cost_usd?: number;
   max_changed_files?: number;
   worktreeName?: string;
+  background?: boolean;
+}
+
+export type BackgroundJobType = "review" | "implement";
+export type BackgroundJobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+
+export interface BackgroundJobSummary {
+  job_id: string;
+  type: BackgroundJobType;
+  status: BackgroundJobStatus;
+  cwd: string;
+  created_at: string;
+  updated_at: string;
+  pid?: number;
+  run_id?: string;
+  worktree_name?: string;
+  summary?: string;
+  error?: string;
+}
+
+export interface ClaudeJobsInput {
+  cwd: string;
+  limit?: number;
+  status?: BackgroundJobStatus;
+  type?: BackgroundJobType;
+}
+
+export interface ClaudeJobsResult {
+  entries: BackgroundJobSummary[];
+}
+
+export interface ClaudeJobResultInput {
+  cwd: string;
+  job_id: string;
+}
+
+export interface ClaudeJobCancelInput {
+  cwd: string;
+  job_id: string;
 }
 
 // ---- Structured output types ----
@@ -286,6 +326,7 @@ export const claudeReviewInputSchema = z.object({
   files: filesSchema,
   timeout_sec: timeoutSchema.default(180),
   max_turns: maxTurnsSchema.default(10),
+  background: z.boolean().optional(),
 });
 
 export const claudeImplementInputSchema = z.object({
@@ -301,6 +342,7 @@ export const claudeImplementInputSchema = z.object({
   max_cost_usd: z.number().positive().max(10).optional(),
   max_changed_files: z.number().int().positive().max(100).optional(),
   worktreeName: worktreeNameSchema,
+  background: z.boolean().optional(),
 }).refine((value) => !value.fork_session || !!value.session_key, {
   message: "fork_session requires session_key",
   path: ["fork_session"],
@@ -333,6 +375,23 @@ export const claudeRunsInputSchema = z.object({
 export const claudeRunInspectInputSchema = z.object({
   cwd: cwdSchema,
   run_id: z.string().trim().min(1, "run_id is required"),
+});
+
+export const claudeJobsInputSchema = z.object({
+  cwd: cwdSchema,
+  limit: z.number().int().positive().max(200).optional().default(20),
+  status: z.enum(["queued", "running", "succeeded", "failed", "cancelled"]).optional(),
+  type: z.enum(["review", "implement"]).optional(),
+});
+
+export const claudeJobResultInputSchema = z.object({
+  cwd: cwdSchema,
+  job_id: z.string().trim().min(1, "job_id is required"),
+});
+
+export const claudeJobCancelInputSchema = z.object({
+  cwd: cwdSchema,
+  job_id: z.string().trim().min(1, "job_id is required"),
 });
 
 export function validationErrorMessage(err: unknown): string {

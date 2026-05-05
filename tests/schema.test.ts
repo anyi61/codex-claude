@@ -5,8 +5,12 @@ import {
   REVIEW_SCHEMA,
   claudeApplyInputSchema,
   claudeImplementInputSchema,
+  claudeJobCancelInputSchema,
+  claudeJobResultInputSchema,
+  claudeJobsInputSchema,
   claudeRunInspectInputSchema,
   claudeRunsInputSchema,
+  claudeReviewInputSchema,
 } from "../src/schema.js";
 
 describe("schema definitions", () => {
@@ -64,5 +68,14 @@ describe("schema definitions", () => {
     expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", resume_latest: true }).success).toBe(false);
     expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "", resume_latest: true }).success).toBe(false);
     expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", resume_latest: true, session_key: "sess-1" }).success).toBe(false);
+  });
+
+  it("accepts background job inputs", () => {
+    expect(claudeReviewInputSchema.safeParse({ cwd: "/repo", task: "review this", background: true }).success).toBe(true);
+    expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "ship it", background: true }).success).toBe(true);
+    expect(claudeJobsInputSchema.safeParse({ cwd: "/repo", limit: 10 }).success).toBe(true);
+    expect(claudeJobResultInputSchema.safeParse({ cwd: "/repo", job_id: "job-123" }).success).toBe(true);
+    expect(claudeJobCancelInputSchema.safeParse({ cwd: "/repo", job_id: "job-123" }).success).toBe(true);
+    expect(claudeJobResultInputSchema.safeParse({ cwd: "/repo", job_id: "" }).success).toBe(false);
   });
 });

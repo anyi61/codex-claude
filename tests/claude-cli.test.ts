@@ -1,6 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { EventEmitter } from "node:events";
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -23,6 +24,27 @@ afterEach(async () => {
 
 function sh(cwd: string, ...args: string[]): string {
   return execFileSync(args[0], args.slice(1), { cwd, encoding: "utf8" }).trim();
+}
+
+async function createJobFixture() {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-jobs-"));
+  cleanupPaths.push(root);
+  const repo = path.join(root, "repo-a");
+  const stateDir = path.join(root, ".codex-claude-delegate");
+  await mkdir(repo, { recursive: true });
+  process.env.CODEX_CLAUDE_RUN_LOG_DIR = path.join(stateDir, "runs");
+  vi.resetModules();
+  const jobs = await import("../src/jobs.js");
+  const store = new jobs.JobStore(stateDir);
+  await store.init();
+  return { root, repo, stateDir, store };
+}
+
+function createDetachedSpawnResult(pid = 4321) {
+  const child = new EventEmitter() as EventEmitter & { pid: number; unref: ReturnType<typeof vi.fn> };
+  child.pid = pid;
+  child.unref = vi.fn();
+  return child;
 }
 
 describe("claude cli argument construction", () => {
@@ -300,6 +322,133 @@ describe("claude cli argument construction", () => {
     expect(cleaned.removed_count).toBe(1);
     runs = await reloaded.listRunLogs({ cwd: repo, type: "implement" });
     expect(runs.entries[0]?.lifecycle).toBe("cleaned");
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("stores and updates persisted background jobs", async () => {
+    const { store } = await createJobFixture();
+
+    await store.create({
+      job_id: "job-1",
+      type: "review",
+      status: "queued",
+      cwd: "/repo-a",
+      created_at: "2026-05-05T00:00:00.000Z",
+      updated_at: "2026-05-05T00:00:00.000Z",
+      payload: { cwd: "/repo-a", task: "review this" },
+    });
+
+    const listed = await store.list({ cwd: "/repo-a", limit: 10 });
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.status).toBe("queued");
+
+    await store.update("job-1", { status: "running", pid: 12345 });
+    const job = await store.get("job-1");
+    expect(job?.pid).toBe(12345);
+
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("enqueues a detached background job and records launch metadata", async () => {
+    const { repo, stateDir } = await createJobFixture();
+    const spawned = createDetachedSpawnResult();
+    const spawnMock = vi.fn(() => spawned);
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: spawnMock };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const created = await reloaded.enqueueBackgroundJob({
+      cwd: repo,
+      type: "review",
+      payload: { cwd: repo, task: "review this" },
+    });
+
+    expect(created.job.status).toBe("queued");
+    expect(created.job.job_id).toBeTruthy();
+    expect(created.job.pid).toBe(4321);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+
+    const jobs = await import("../src/jobs.js");
+    const store = new jobs.JobStore(stateDir);
+    const persisted = await store.get(created.job.job_id);
+    expect(persisted?.pid).toBe(4321);
+
+    vi.doUnmock("node:child_process");
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("routes background review and implement requests through the job queue", async () => {
+    const { repo } = await createJobFixture();
+    const spawned = createDetachedSpawnResult(5555);
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => spawned) };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const review = await reloaded.startBackgroundReview({
+      cwd: repo,
+      task: "review this",
+      background: true,
+    });
+    expect(review.job.status).toBe("queued");
+
+    const implement = await reloaded.startBackgroundImplement({
+      cwd: repo,
+      task: "ship it",
+      background: true,
+    });
+    expect(implement.job.type).toBe("implement");
+
+    vi.doUnmock("node:child_process");
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("lists, reads, and cancels background jobs", async () => {
+    const { repo, store } = await createJobFixture();
+
+    await store.create({
+      job_id: "job-1",
+      type: "review",
+      status: "queued",
+      cwd: repo,
+      created_at: "2026-05-05T00:00:00.000Z",
+      updated_at: "2026-05-05T00:00:00.000Z",
+      payload: { cwd: repo, task: "review this" },
+      result: { status: "success" },
+    });
+    await store.create({
+      job_id: "job-running",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      created_at: "2026-05-05T00:01:00.000Z",
+      updated_at: "2026-05-05T00:01:00.000Z",
+      pid: 7777,
+      payload: { cwd: repo, task: "ship it" },
+    });
+
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+    const reloaded = await import("../src/claude-cli.js");
+
+    const jobs = await reloaded.listBackgroundJobs({ cwd: repo, limit: 10 });
+    expect(jobs.entries).toHaveLength(2);
+
+    const result = await reloaded.getBackgroundJobResult({ cwd: repo, job_id: "job-1" });
+    expect(result?.job.job_id).toBe("job-1");
+
+    const cancel = await reloaded.cancelBackgroundJob({ cwd: repo, job_id: "job-running" });
+    expect(cancel.cancelled).toBe(true);
+    expect(killSpy).toHaveBeenCalledWith(7777, "SIGTERM");
+
     delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
     vi.resetModules();
   });

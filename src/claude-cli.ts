@@ -1,16 +1,26 @@
 import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { writeFile, mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { execCapture, sanitizeEnv } from "./guard.js";
+import { JobStore, type BackgroundJobRecord } from "./jobs.js";
 import { SessionStore, computeRepoKey, RECENT_WINDOW_MINUTES } from "./session.js";
 import type {
   ApplyPlannedChange,
+  BackgroundJobSummary,
+  BackgroundJobType,
   ClaudeApplyInput,
   ClaudeApplyResult,
   ClaudeCleanupInput,
   ClaudeCleanupResult,
   ClaudeImplementInput,
+  ClaudeJobCancelInput,
+  ClaudeJobResultInput,
+  ClaudeJobsInput,
+  ClaudeJobsResult,
   ClaudeQueryInput,
   ClaudeReviewInput,
   ClaudeResult,
@@ -44,10 +54,12 @@ const LOG_DIR = process.env.CODEX_CLAUDE_RUN_LOG_DIR
   ? path.resolve(process.env.CODEX_CLAUDE_RUN_LOG_DIR)
   : path.join(process.cwd(), ".codex-claude-delegate", "runs");
 const SESSION_DIR = path.join(process.cwd(), ".codex-claude-delegate");
+const JOB_STATE_DIR_ENV = "CODEX_CLAUDE_BACKGROUND_STATE_DIR";
 
 // ---- Session store (lazy init) ----
 
 let store: SessionStore | null = null;
+let activeClaudeChild: ChildProcess | null = null;
 
 async function getStore(): Promise<SessionStore> {
   if (!store) {
@@ -55,6 +67,70 @@ async function getStore(): Promise<SessionStore> {
     await store.init();
   }
   return store;
+}
+
+function getBackgroundStateDir(): string {
+  if (process.env[JOB_STATE_DIR_ENV]) {
+    return path.resolve(process.env[JOB_STATE_DIR_ENV]!);
+  }
+  if (process.env.CODEX_CLAUDE_RUN_LOG_DIR) {
+    return path.dirname(path.resolve(process.env.CODEX_CLAUDE_RUN_LOG_DIR));
+  }
+  return path.join(process.cwd(), ".codex-claude-delegate");
+}
+
+async function getJobStore(): Promise<JobStore> {
+  const store = new JobStore(getBackgroundStateDir());
+  await store.init();
+  return store;
+}
+
+function toJobSummary(record: BackgroundJobRecord): BackgroundJobSummary {
+  return {
+    job_id: record.job_id,
+    type: record.type,
+    status: record.status,
+    cwd: record.cwd,
+    created_at: record.created_at,
+    updated_at: record.updated_at,
+    pid: record.pid,
+    run_id: record.run_id,
+    worktree_name: record.worktree_name,
+    summary: record.summary,
+    error: record.error,
+  };
+}
+
+function summarizeBackgroundResult(type: BackgroundJobType, result: Record<string, unknown>): string | undefined {
+  if (type === "implement") {
+    const claudeReport = result.claude_report;
+    if (claudeReport && typeof claudeReport === "object" && typeof (claudeReport as { summary?: unknown }).summary === "string") {
+      return (claudeReport as { summary: string }).summary;
+    }
+    return "Implement job completed";
+  }
+  const data = result.data;
+  if (data && typeof data === "object" && typeof (data as { severity?: unknown }).severity === "string") {
+    return `Review completed (${(data as { severity: string }).severity})`;
+  }
+  return "Review completed";
+}
+
+function getBackgroundWorktreeName(result: Record<string, unknown>): string | undefined {
+  const observed = result.server_observed;
+  if (!observed || typeof observed !== "object") return undefined;
+  return typeof (observed as { worktree_name?: unknown }).worktree_name === "string"
+    ? (observed as { worktree_name: string }).worktree_name
+    : undefined;
+}
+
+function getJobRunnerArgs(jobId: string): string[] {
+  const currentFile = fileURLToPath(import.meta.url);
+  const currentDir = path.dirname(currentFile);
+  if (currentFile.endsWith(".ts") && process.argv[1]?.includes("tsx")) {
+    return [process.argv[1], path.join(currentDir, "job-runner.ts"), jobId];
+  }
+  return [path.join(currentDir, "job-runner.js"), jobId];
 }
 
 // ---- Logging (stderr only, never stdout) ----
@@ -412,6 +488,121 @@ export async function getRunLogById(input: ClaudeRunInspectInput): Promise<Claud
   };
 }
 
+export async function enqueueBackgroundJob(input: {
+  cwd: string;
+  type: BackgroundJobType;
+  payload: Record<string, unknown>;
+}): Promise<{ job: BackgroundJobSummary }> {
+  const jobStore = await getJobStore();
+  const now = new Date().toISOString();
+  const jobId = `job-${randomUUID()}`;
+  const record: BackgroundJobRecord = {
+    job_id: jobId,
+    type: input.type,
+    status: "queued",
+    cwd: input.cwd,
+    created_at: now,
+    updated_at: now,
+    payload: input.payload,
+  };
+
+  await jobStore.create(record);
+
+  const child = spawn(process.execPath, getJobRunnerArgs(jobId), {
+    cwd: input.cwd,
+    detached: true,
+    stdio: "ignore",
+    env: {
+      ...sanitizeEnv(),
+      [JOB_STATE_DIR_ENV]: getBackgroundStateDir(),
+    },
+  });
+  child.unref();
+
+  const updated = await jobStore.update(jobId, {
+    pid: child.pid ?? undefined,
+    updated_at: new Date().toISOString(),
+  });
+
+  return {
+    job: toJobSummary(updated ?? { ...record, pid: child.pid ?? undefined }),
+  };
+}
+
+export async function startBackgroundReview(input: ClaudeReviewInput): Promise<{ job: BackgroundJobSummary }> {
+  return enqueueBackgroundJob({
+    cwd: input.cwd,
+    type: "review",
+    payload: input as unknown as Record<string, unknown>,
+  });
+}
+
+export async function startBackgroundImplement(input: ClaudeImplementInput): Promise<{ job: BackgroundJobSummary }> {
+  return enqueueBackgroundJob({
+    cwd: input.cwd,
+    type: "implement",
+    payload: input as unknown as Record<string, unknown>,
+  });
+}
+
+export async function listBackgroundJobs(input: ClaudeJobsInput): Promise<ClaudeJobsResult> {
+  const jobStore = await getJobStore();
+  const entries = await jobStore.list({
+    cwd: input.cwd,
+    limit: input.limit ?? 20,
+    status: input.status,
+    type: input.type,
+  });
+  return { entries: entries.map(toJobSummary) };
+}
+
+export async function getBackgroundJobResult(
+  input: ClaudeJobResultInput
+): Promise<{ job: BackgroundJobSummary; result?: Record<string, unknown> } | null> {
+  const jobStore = await getJobStore();
+  const job = await jobStore.get(input.job_id);
+  if (!job || job.cwd !== input.cwd) return null;
+  return {
+    job: toJobSummary(job),
+    result: job.result,
+  };
+}
+
+export async function cancelBackgroundJob(
+  input: ClaudeJobCancelInput
+): Promise<{ cancelled: boolean; job?: BackgroundJobSummary; error?: string }> {
+  const jobStore = await getJobStore();
+  const job = await jobStore.get(input.job_id);
+  if (!job || job.cwd !== input.cwd) {
+    return { cancelled: false, error: `Job not found: ${input.job_id}` };
+  }
+
+  if (job.status === "cancelled" || job.status === "failed" || job.status === "succeeded") {
+    return { cancelled: false, job: toJobSummary(job), error: `Job is already ${job.status}` };
+  }
+
+  if (job.status === "running" && job.pid) {
+    try {
+      process.kill(job.pid, "SIGTERM");
+    } catch (err) {
+      return {
+        cancelled: false,
+        job: toJobSummary(job),
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  const updated = await jobStore.update(job.job_id, {
+    status: "cancelled",
+    updated_at: new Date().toISOString(),
+    summary: job.summary ?? "Cancelled by user",
+    error: undefined,
+  });
+
+  return { cancelled: true, job: updated ? toJobSummary(updated) : undefined };
+}
+
 export async function resolveLatestImplementSession(input: { cwd: string }): Promise<{ run_id: string; session_id: string } | null> {
   const runs = await listRunLogs({ cwd: input.cwd, type: "implement", limit: 50 });
   for (const run of runs.entries) {
@@ -592,6 +783,16 @@ export function buildSafeEnv(): Record<string, string> {
   return sanitizeEnv();
 }
 
+export function abortActiveClaudeRun(signal: NodeJS.Signals = "SIGTERM"): boolean {
+  if (!activeClaudeChild?.pid) return false;
+  try {
+    process.kill(activeClaudeChild.pid, signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function buildClaudeArgs(opts: ClaudeRunOptions): string[] {
   const args: string[] = ["-p"];
 
@@ -688,6 +889,7 @@ function spawnClaude(opts: ClaudeRunOptions): Promise<ClaudeSpawnResult> {
       timeout: opts.timeoutSec * 1000,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    activeClaudeChild = child;
 
     let stdout = "";
     let stderr = "";
@@ -700,6 +902,7 @@ function spawnClaude(opts: ClaudeRunOptions): Promise<ClaudeSpawnResult> {
     });
 
     child.on("error", (err: NodeJS.ErrnoException) => {
+      activeClaudeChild = null;
       if (err.code === "ENOENT") {
         reject(new Error(`Claude CLI not found. Ensure "claude" is in PATH or set CLAUDE_BIN env var.`));
       } else {
@@ -708,6 +911,7 @@ function spawnClaude(opts: ClaudeRunOptions): Promise<ClaudeSpawnResult> {
     });
 
     child.on("close", async (code, signal) => {
+      activeClaudeChild = null;
       if (stderr) log(`claude stderr: ${redactSensitive(stderr.slice(0, 2000))}`);
 
       // Try to parse stdout even when exit code is non-zero.
@@ -1297,6 +1501,58 @@ export async function runClaudeQuery(
 function isSessionNotFoundError(msg: string): boolean {
   const patterns = ["session not found", "not found", "session.*expired", "invalid session"];
   return patterns.some((p) => new RegExp(p, "i").test(msg));
+}
+
+export async function executeBackgroundJob(jobId: string): Promise<void> {
+  const jobStore = await getJobStore();
+  const job = await jobStore.get(jobId);
+  if (!job) {
+    throw new Error(`Background job not found: ${jobId}`);
+  }
+  if (job.status === "cancelled") {
+    return;
+  }
+
+  const running = await jobStore.update(jobId, {
+    status: "running",
+    updated_at: new Date().toISOString(),
+  });
+  if (!running || running.status === "cancelled") {
+    return;
+  }
+
+  const runId = randomUUID();
+
+  try {
+    let result: Record<string, unknown>;
+    if (running.type === "review") {
+      result = await runClaudeReview(running.payload as unknown as ClaudeReviewInput, runId) as unknown as Record<string, unknown>;
+    } else {
+      result = await runClaudeImplement(running.payload as unknown as ClaudeImplementInput, runId) as unknown as Record<string, unknown>;
+    }
+
+    await jobStore.update(jobId, {
+      status: "succeeded",
+      updated_at: new Date().toISOString(),
+      result,
+      summary: summarizeBackgroundResult(running.type, result),
+      run_id: runId,
+      worktree_name: getBackgroundWorktreeName(result),
+      error: undefined,
+    });
+  } catch (err) {
+    const current = await jobStore.get(jobId);
+    if (current?.status === "cancelled") {
+      return;
+    }
+    await jobStore.update(jobId, {
+      status: "failed",
+      updated_at: new Date().toISOString(),
+      error: err instanceof Error ? err.message : String(err),
+      summary: `Background ${running.type} job failed`,
+    });
+    throw err;
+  }
 }
 
 export async function runClaudeReview(

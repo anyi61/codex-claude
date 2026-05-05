@@ -8,7 +8,7 @@ MCP 服务器，让 Codex CLI 可以把查询、审查和实现任务委托给 C
 
 ```text
 Codex CLI
-  -> MCP tool: claude_runs / claude_run_inspect / claude_query / claude_review / claude_implement / claude_apply
+  -> MCP tool: claude_runs / claude_run_inspect / claude_query / claude_review / claude_implement / claude_jobs / claude_job_result / claude_job_cancel / claude_apply
   -> codex-claude-delegate-mcp (stdio)
   -> spawn("claude", args[]) with sanitized env and tool restrictions
   -> Claude Code returns structured JSON
@@ -25,8 +25,11 @@ Codex CLI
 | `claude_runs` | 只读 | 检查最近的 query/review/implement/apply/cleanup 运行记录 |
 | `claude_run_inspect` | 只读 | 按 run id 读取单条运行日志，返回规范化摘要、原始日志和关联 apply/cleanup run id |
 | `claude_query` | 只读 | 向 Claude 提问；同 repo query 会话 20 分钟内自动复用 |
-| `claude_review` | 只读 | 审查 diff 或指定文件；禁用 session persistence |
-| `claude_implement` | 写入 worktree | 在隔离 worktree 中实现任务，支持 `session_key`、`resume_latest`、`max_cost_usd`、`max_changed_files` |
+| `claude_review` | 只读 / background | 审查 diff 或指定文件；禁用 session persistence；可用 `background: true` 排队后台执行 |
+| `claude_implement` | 写入 worktree / background | 在隔离 worktree 中实现任务，支持 `session_key`、`resume_latest`、`max_cost_usd`、`max_changed_files`；可用 `background: true` 排队后台执行 |
+| `claude_jobs` | 只读 | 列出当前仓库最近的后台 review/implement 任务 |
+| `claude_job_result` | 只读 | 按 `job_id` 读取单个后台任务状态和最终结果 |
+| `claude_job_cancel` | 控制 | 取消 queued/running 后台任务 |
 | `claude_apply` | 写入主工作区 / preview | 将 delegated worktree 中经过服务端观测和范围校验的变更安全应用到主工作区，或先 preview |
 | `claude_cleanup` | worktree 管理 | dry-run 或清理 `.claude/worktrees/codex-delegated-*` |
 
@@ -177,6 +180,17 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 
 `claude_review` 不写文件，也不持久化 session。
 
+如需后台执行并稍后轮询结果：
+
+```json
+{
+  "task": "Review this diff for correctness and regressions.",
+  "cwd": "/path/to/repo",
+  "files": ["src/server.ts"],
+  "background": true
+}
+```
+
 ### 5. 委托实现
 
 适合多文件重构、风险较高或需要 Claude 独立执行的任务：
@@ -217,6 +231,18 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 ```
 
 `fork_session` 必须和 `session_key` 一起使用。
+
+如需后台实现：
+
+```json
+{
+  "task": "Add input validation for the new API path and update related types.",
+  "cwd": "/path/to/repo",
+  "files": ["src/server.ts", "src/schema.ts"],
+  "constraints": ["Run npm run build"],
+  "background": true
+}
+```
 
 如果只是继续当前仓库最近一次可续接的 implement session，可直接让服务端解析最近日志：
 
@@ -265,7 +291,51 @@ preview 模式会返回 `planned_changes`，并保证主工作区不被修改。
 - `cleanup: true` 只在 apply 成功后移除对应 worktree。
 - `dist/`、`.git/`、未被服务端观测记录的越界文件不会被 apply；需要时请重新设计任务并显式纳入 `files`。
 
-### 7. 清理残留 worktree
+### 7. 后台任务管理
+
+后台任务状态持久化到：
+
+```text
+.codex-claude-delegate/jobs/
+```
+
+列出任务：
+
+```json
+{
+  "cwd": "/path/to/repo",
+  "limit": 10
+}
+```
+
+读取单个任务结果：
+
+```json
+{
+  "cwd": "/path/to/repo",
+  "job_id": "job-123"
+}
+```
+
+取消任务：
+
+```json
+{
+  "cwd": "/path/to/repo",
+  "job_id": "job-123"
+}
+```
+
+推荐流程：
+
+```text
+1. claude_implement 或 claude_review with background=true
+2. claude_jobs 或 claude_job_result 轮询状态
+3. 必要时 claude_job_cancel
+4. inspect result, then claude_apply / claude_cleanup
+```
+
+### 8. 清理残留 worktree
 
 先 dry-run：
 
@@ -355,8 +425,10 @@ preview 模式会返回 `planned_changes`，并保证主工作区不被修改。
 
 ```text
 src/
-├── server.ts       # MCP stdio 入口，注册 8 个工具
-├── claude-cli.ts   # Claude CLI spawn、session、apply/cleanup、资源控制
+├── server.ts       # MCP stdio 入口，注册 status/runs/query/review/implement/jobs/apply/cleanup 工具
+├── claude-cli.ts   # Claude CLI spawn、session、background job 管理、apply/cleanup、资源控制
+├── job-runner.ts   # detached background worker 入口
+├── jobs.ts         # background job 持久化与取消辅助
 ├── guard.ts        # cwd 校验、环境清理、递归防护、exec helper
 ├── schema.ts       # 类型、JSON schema、prompt 构建器
 └── session.ts      # sessions.json 读写、query auto-resume、prune

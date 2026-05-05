@@ -8,7 +8,9 @@ import { randomUUID } from "node:crypto";
 
 import { validateCwd, validateFilesWithinCwd, checkRecursion, MAX_BRIDGE_DEPTH } from "./guard.js";
 import {
+  cancelBackgroundJob,
   checkClaudeStatus,
+  getBackgroundJobResult,
   getRunLogById,
   runClaudeQuery,
   runClaudeReview,
@@ -16,12 +18,18 @@ import {
   runClaudeApply,
   runClaudeCleanup,
   getRecentRunsSummary,
+  listBackgroundJobs,
   listRunLogs,
+  startBackgroundImplement,
+  startBackgroundReview,
 } from "./claude-cli.js";
 import {
   claudeApplyInputSchema,
   claudeCleanupInputSchema,
   claudeImplementInputSchema,
+  claudeJobCancelInputSchema,
+  claudeJobResultInputSchema,
+  claudeJobsInputSchema,
   claudeQueryInputSchema,
   claudeRunInspectInputSchema,
   claudeReviewInputSchema,
@@ -114,7 +122,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "claude_review",
       description:
-        "Have Claude Code review code changes. Claude runs in read-only mode. Provide a diff and/or file list for context.",
+        "Have Claude Code review code changes. Claude runs in read-only mode. Provide a diff and/or file list for context. Set background=true to queue a persistent background job.",
       inputSchema: {
         type: "object",
         required: ["task", "cwd"],
@@ -125,13 +133,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           files: { type: "array", items: { type: "string" }, description: "Specific files to focus on" },
           timeout_sec: { type: "number", description: "Timeout in seconds (default 180)" },
           max_turns: { type: "number", description: "Maximum Claude turns for this review (default 10)" },
+          background: { type: "boolean", description: "Queue the review as a persistent background job" },
         },
       },
     },
     {
       name: "claude_implement",
       description:
-        "Delegate an implementation task to Claude Code. Claude runs in an isolated git worktree, makes changes, runs tests, and returns a structured result with a diff. Does NOT modify the main working tree. Supports explicit session_key resume or resume_latest for the latest implement session in this repo.",
+        "Delegate an implementation task to Claude Code. Claude runs in an isolated git worktree, makes changes, runs tests, and returns a structured result with a diff. Does NOT modify the main working tree. Supports explicit session_key resume or resume_latest for the latest implement session in this repo. Set background=true to queue a persistent background job.",
       inputSchema: {
         type: "object",
         required: ["task", "cwd"],
@@ -148,6 +157,48 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           max_cost_usd: { type: "number", description: "Maximum USD budget for this task (passed as --max-budget-usd to Claude). Must be > 0 and <= 10." },
           max_changed_files: { type: "number", description: "Warn if Claude changes more than this many files. Must be a positive integer <= 100." },
           worktreeName: { type: "string", description: "Optional delegated worktree name override" },
+          background: { type: "boolean", description: "Queue the implementation as a persistent background job" },
+        },
+      },
+    },
+    {
+      name: "claude_jobs",
+      description:
+        "List recent background review/implement jobs for this repository.",
+      inputSchema: {
+        type: "object",
+        required: ["cwd"],
+        properties: {
+          cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
+          limit: { type: "number", description: "Maximum number of recent jobs to return (default 20)" },
+          status: { type: "string", enum: ["queued", "running", "succeeded", "failed", "cancelled"], description: "Filter by background job status" },
+          type: { type: "string", enum: ["review", "implement"], description: "Filter by background job type" },
+        },
+      },
+    },
+    {
+      name: "claude_job_result",
+      description:
+        "Load one background job record, including final result when available.",
+      inputSchema: {
+        type: "object",
+        required: ["cwd", "job_id"],
+        properties: {
+          cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
+          job_id: { type: "string", description: "Background job id" },
+        },
+      },
+    },
+    {
+      name: "claude_job_cancel",
+      description:
+        "Cancel a running or queued background job by id.",
+      inputSchema: {
+        type: "object",
+        required: ["cwd", "job_id"],
+        properties: {
+          cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
+          job_id: { type: "string", description: "Background job id" },
         },
       },
     },
@@ -257,12 +308,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "claude_review": {
         const parsed = claudeReviewInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, diff, files, timeout_sec, max_turns } = parsed.data;
+        const { task, cwd, diff, files, timeout_sec, max_turns, background } = parsed.data;
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
         const fileCheck = await validateFilesWithinCwd(check.resolved, files);
         if (!fileCheck.ok) return errorResult(fileCheck.error!);
+
+        if (background === true) {
+          return jsonResult(await startBackgroundReview(
+            { task, cwd: check.resolved, diff, files, timeout_sec, max_turns, background },
+          ));
+        }
 
         const report = await runClaudeReview(
           { task, cwd: check.resolved, diff, files, timeout_sec, max_turns },
@@ -274,7 +331,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "claude_implement": {
         const parsed = claudeImplementInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, files, constraints, timeout_sec, max_turns, session_key, fork_session, resume_latest, max_cost_usd, max_changed_files, worktreeName } = parsed.data;
+        const { task, cwd, files, constraints, timeout_sec, max_turns, session_key, fork_session, resume_latest, max_cost_usd, max_changed_files, worktreeName, background } = parsed.data;
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
@@ -288,10 +345,58 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return errorResult("claude_implement requires a git repository with worktree support");
         }
 
+        if (background === true) {
+          return jsonResult(await startBackgroundImplement({
+            task,
+            cwd: check.resolved,
+            files,
+            constraints,
+            timeout_sec,
+            max_turns,
+            session_key,
+            fork_session,
+            resume_latest,
+            max_cost_usd,
+            max_changed_files,
+            worktreeName,
+            background,
+          }));
+        }
+
         const result = await runClaudeImplement(
           { task, cwd: check.resolved, files, constraints, timeout_sec, max_turns, session_key, fork_session, resume_latest, max_cost_usd, max_changed_files, worktreeName },
           runId
         );
+        return jsonResult(result);
+      }
+
+      case "claude_jobs": {
+        const parsed = claudeJobsInputSchema.safeParse(args);
+        if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
+        const check = await validateCwd(parsed.data.cwd);
+        if (!check.ok) return errorResult(check.error!);
+        return jsonResult(await listBackgroundJobs({ ...parsed.data, cwd: check.resolved }));
+      }
+
+      case "claude_job_result": {
+        const parsed = claudeJobResultInputSchema.safeParse(args);
+        if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
+        const check = await validateCwd(parsed.data.cwd);
+        if (!check.ok) return errorResult(check.error!);
+        const result = await getBackgroundJobResult({ ...parsed.data, cwd: check.resolved });
+        if (!result) return errorResult(`Job not found: ${parsed.data.job_id}`);
+        return jsonResult(result);
+      }
+
+      case "claude_job_cancel": {
+        const parsed = claudeJobCancelInputSchema.safeParse(args);
+        if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
+        const check = await validateCwd(parsed.data.cwd);
+        if (!check.ok) return errorResult(check.error!);
+        const result = await cancelBackgroundJob({ ...parsed.data, cwd: check.resolved });
+        if (!result.cancelled && result.error) {
+          return errorResult(result.error);
+        }
         return jsonResult(result);
       }
 
