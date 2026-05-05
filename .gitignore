@@ -1,6 +1,7 @@
 node_modules/
 .claude/
 .codex-claude-delegate/
+.debug-fixtures/
 /dist/
 *.tsbuildinfo
 coverage/
