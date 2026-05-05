@@ -61,17 +61,17 @@ async function main(): Promise<void> {
 
     const payload = JSON.parse(pending.stdout) as {
       review_gate?: { pending_review?: unknown };
+      systemMessage?: unknown;
       additional_context?: unknown;
-      hookSpecificOutput?: { additionalContext?: unknown };
     };
     if (payload.review_gate?.pending_review !== true) {
       throw new Error(`Expected pending_review=true in hook output, got ${pending.stdout}`);
     }
+    if (typeof payload.systemMessage !== "string" || payload.systemMessage.length === 0) {
+      throw new Error(`Expected systemMessage in hook output, got ${pending.stdout}`);
+    }
     if (typeof payload.additional_context !== "string" || payload.additional_context.length === 0) {
       throw new Error(`Expected additional_context in hook output, got ${pending.stdout}`);
-    }
-    if (typeof payload.hookSpecificOutput?.additionalContext !== "string") {
-      throw new Error(`Expected hookSpecificOutput.additionalContext in hook output, got ${pending.stdout}`);
     }
 
     process.stderr.write("=== REVIEW GATE HOOK PASSED ===\n");

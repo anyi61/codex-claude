@@ -248,13 +248,20 @@ The low-level tools (`claude_job_result`, `claude_runs`, `claude_run_inspect`, `
 
 **Files:**
 - Modify: `debug/test-high-level-workflows.ts`
+- Create: `debug/test-review-gate-hook.ts`
+- Create: `debug/test-claude-plugin-runtime.ts`
 
-- [ ] Verify:
+- [x] Verify:
   - enabling the gate reports success
   - status reflects enabled state
   - disabling reports success
   - any installed hook artifact exists where expected
-  - Enable/status/disable are covered; hook artifact existence still needs a direct assertion in the real flow.
+  - direct hook execution emits `systemMessage` when review is pending
+  - external Claude plugin runtime loads the plugin, registers the Stop hook, connects the plugin MCP server, and exposes high-level tools
+  - strict external validation with `STRICT_STOP_HOOK=1 USE_REAL_CLAUDE_HOME=1 node --import tsx debug/test-claude-plugin-runtime.ts` confirms a real Claude completion fires the Stop hook
+- [x] Compatibility fixes from real runtime validation:
+  - hook command uses `node '${CLAUDE_PLUGIN_ROOT}/hooks/review-gate-stop.mjs'` instead of executing the `.mjs` file directly, so it does not depend on executable bits.
+  - Stop hook output uses top-level `systemMessage`; `hookSpecificOutput` is intentionally omitted because Claude 2.1.116 validates that field against non-Stop hook schemas.
 
 ## Final Verification
 

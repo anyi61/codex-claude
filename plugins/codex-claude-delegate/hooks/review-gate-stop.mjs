@@ -25,10 +25,8 @@ try {
       state_path: statePath,
       suggested_tools: ["claude_review", "claude_task"],
     },
+    systemMessage: message,
     additional_context: message,
-    hookSpecificOutput: {
-      additionalContext: message,
-    },
   };
 
   process.stdout.write(`${JSON.stringify(payload)}\n`);

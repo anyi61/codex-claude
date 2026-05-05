@@ -289,7 +289,7 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 - 确保插件 stop-hook manifest 已存在
 - 在后续 write-oriented 工作流后记录 `pending_review`
 
-当前 review gate 已验证 MCP 层的 enable/status/disable、repo-local 状态和 hook 脚本/资产准备；外部 Claude 插件运行时真实触发 `Stop` hook 仍需单独集成验证。
+当前 review gate 已验证 MCP 层的 enable/status/disable、repo-local 状态、hook 脚本/资产准备，以及外部 Claude 插件运行时真实触发 `Stop` hook。Stop hook 只输出顶层 `systemMessage` 和诊断字段；不要在 Stop hook 输出中使用 `hookSpecificOutput`，Claude 2.1.116 会按非 Stop 事件 schema 校验该字段。
 
 ### 7. 只读提问
 
@@ -643,6 +643,9 @@ npm run build                # 编译 TypeScript 到 dist/
 npm start                    # 运行 dist/server.js
 npx tsx debug/mcp-test.ts    # MCP status/query/session 复用验证
 npx tsx debug/test-implement.ts  # implement/resource_limits 验证
+npx tsx debug/test-review-gate-hook.ts  # 直接验证 review gate Stop hook 输出
+npx tsx debug/test-claude-plugin-runtime.ts  # 验证外部 Claude 插件加载、hook 注册、MCP 连接
+STRICT_STOP_HOOK=1 USE_REAL_CLAUDE_HOME=1 node --import tsx debug/test-claude-plugin-runtime.ts  # 在真实 Claude 环境断言 Stop hook 端到端触发
 ```
 
 完整工具链验收应覆盖：

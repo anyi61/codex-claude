@@ -1,0 +1,19 @@
+{
+  "name": "codex-claude-delegate",
+  "description": "Claude Code hook and skill assets for the Codex Claude delegate workflow.",
+  "version": "0.1.0",
+  "author": {
+    "name": "codex-claude-delegate",
+    "url": "https://github.com/anyi/codex-claude"
+  },
+  "homepage": "https://github.com/anyi/codex-claude",
+  "repository": "https://github.com/anyi/codex-claude",
+  "license": "MIT",
+  "keywords": [
+    "claude",
+    "codex",
+    "delegation",
+    "hooks",
+    "review-gate"
+  ]
+}

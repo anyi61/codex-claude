@@ -75,7 +75,7 @@ const LOG_DIR = process.env.CODEX_CLAUDE_RUN_LOG_DIR
 const SESSION_DIR = path.join(process.cwd(), ".codex-claude-delegate");
 const JOB_STATE_DIR_ENV = "CODEX_CLAUDE_BACKGROUND_STATE_DIR";
 const REVIEW_GATE_RELATIVE_PATH = path.join(".codex-claude-delegate", "review-gate.json");
-const REVIEW_GATE_HOOK_COMMAND = "'${CLAUDE_PLUGIN_ROOT}/hooks/review-gate-stop.mjs'";
+const REVIEW_GATE_HOOK_COMMAND = "node '${CLAUDE_PLUGIN_ROOT}/hooks/review-gate-stop.mjs'";
 
 // ---- Session store (lazy init) ----
 
