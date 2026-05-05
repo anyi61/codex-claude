@@ -65,7 +65,9 @@ async function waitForJob(
 }
 
 async function main(): Promise<void> {
-  const root = await mkdtemp(path.join(PROJECT_ROOT, ".debug-fixtures", "background-jobs-"));
+  const fixturesRoot = path.join(PROJECT_ROOT, ".debug-fixtures");
+  await mkdir(fixturesRoot, { recursive: true });
+  const root = await mkdtemp(path.join(fixturesRoot, "background-jobs-"));
   const stateDir = path.join(root, ".codex-claude-delegate");
   const logDir = path.join(stateDir, "runs");
   const jobsDir = path.join(stateDir, "jobs");
@@ -104,6 +106,33 @@ async function main(): Promise<void> {
       clientInfo: { name: "background-jobs", version: "0.1.0" },
     });
     notify(child, "notifications/initialized");
+
+    process.stderr.write("\n=== background query ===\n");
+    const queryStart = payload(await req(child, "tools/call", {
+      name: "claude_query",
+      arguments: {
+        cwd: PROJECT_ROOT,
+        task: "In one sentence, explain what this project does.",
+        timeout_sec: 120,
+        background: true,
+      },
+    }));
+    const queryJob = queryStart.job as Record<string, unknown> | undefined;
+    const queryJobId = String(queryJob?.job_id ?? "");
+    if (!queryJobId || queryJob?.status !== "queued") {
+      throw new Error(`background query did not return a queued job: ${JSON.stringify(queryStart)}`);
+    }
+    const queryResult = await waitForJob(child, PROJECT_ROOT, queryJobId);
+    const finishedQueryJob = queryResult.job as Record<string, unknown> | undefined;
+    if (finishedQueryJob?.status !== "succeeded") {
+      throw new Error(`background query did not succeed: ${JSON.stringify(queryResult)}`);
+    }
+    const queryPayload = queryResult.result as Record<string, unknown> | undefined;
+    const queryData = queryPayload?.data as Record<string, unknown> | undefined;
+    if (typeof queryData?.answer !== "string" || queryData.answer.length === 0) {
+      throw new Error(`background query missing answer payload: ${JSON.stringify(queryResult)}`);
+    }
+    process.stderr.write("  ✓ background query completed and persisted result\n");
 
     process.stderr.write("\n=== background review ===\n");
     const reviewStart = payload(await req(child, "tools/call", {
@@ -176,20 +205,95 @@ async function main(): Promise<void> {
     }
     process.stderr.write(`  ✓ background implement completed (${worktreePath})\n`);
 
-    process.stderr.write("\n=== apply background implement result ===\n");
-    const applied = payload(await req(child, "tools/call", {
+    process.stderr.write("\n=== background apply ===\n");
+    const applyStart = payload(await req(child, "tools/call", {
       name: "claude_apply",
-      arguments: { cwd: fixtureRepo, worktree_path: worktreePath, cleanup: true },
+      arguments: { cwd: fixtureRepo, worktree_path: worktreePath, cleanup: true, background: true },
     }));
-    const appliedFiles = (applied.applied_files as string[] | undefined) ?? [];
+    const applyJob = applyStart.job as Record<string, unknown> | undefined;
+    const applyJobId = String(applyJob?.job_id ?? "");
+    if (!applyJobId || applyJob?.status !== "queued") {
+      throw new Error(`background apply did not return a queued job: ${JSON.stringify(applyStart)}`);
+    }
+    const applyResult = await waitForJob(child, fixtureRepo, applyJobId);
+    const finishedApplyJob = applyResult.job as Record<string, unknown> | undefined;
+    if (finishedApplyJob?.status !== "succeeded") {
+      throw new Error(`background apply did not succeed: ${JSON.stringify(applyResult)}`);
+    }
+    const applied = applyResult.result as Record<string, unknown> | undefined;
+    const appliedFiles = (applied?.applied_files as string[] | undefined) ?? [];
     if (!appliedFiles.includes("README.md")) {
-      throw new Error(`claude_apply did not apply README.md from background implement: ${JSON.stringify(applied)}`);
+      throw new Error(`claude_apply did not apply README.md from background implement: ${JSON.stringify(applyResult)}`);
     }
     const content = await readFile(path.join(fixtureRepo, "README.md"), "utf8");
     if (!content.includes("Implemented in background mode.")) {
       throw new Error(`background implement content not present after apply: ${content}`);
     }
-    process.stderr.write("  ✓ applied background implement result\n");
+    process.stderr.write("  ✓ background apply succeeded and landed implement result\n");
+
+    process.stderr.write("\n=== background cleanup worktrees ===\n");
+    const cleanupWorktree = ".claude/worktrees/codex-delegated-cleanup";
+    sh(fixtureRepo, "git", "worktree", "add", "--detach", cleanupWorktree, "HEAD");
+    const cleanupStart = payload(await req(child, "tools/call", {
+      name: "claude_cleanup",
+      arguments: { cwd: fixtureRepo, older_than_hours: 0, dry_run: false, background: true },
+    }));
+    const cleanupJob = cleanupStart.job as Record<string, unknown> | undefined;
+    const cleanupJobId = String(cleanupJob?.job_id ?? "");
+    if (!cleanupJobId || cleanupJob?.status !== "queued") {
+      throw new Error(`background cleanup did not return a queued job: ${JSON.stringify(cleanupStart)}`);
+    }
+    const cleanupResult = await waitForJob(child, fixtureRepo, cleanupJobId);
+    const finishedCleanupJob = cleanupResult.job as Record<string, unknown> | undefined;
+    if (finishedCleanupJob?.status !== "succeeded") {
+      throw new Error(`background cleanup did not succeed: ${JSON.stringify(cleanupResult)}`);
+    }
+    const cleanupPayload = cleanupResult.result as Record<string, unknown> | undefined;
+    const removedCount = Number(cleanupPayload?.removed_count ?? 0);
+    if (removedCount < 1) {
+      throw new Error(`background cleanup did not remove any worktree: ${JSON.stringify(cleanupResult)}`);
+    }
+    process.stderr.write("  ✓ background cleanup removed delegated worktree\n");
+
+    process.stderr.write("\n=== cleanup terminal background jobs ===\n");
+    const oldCreated = "2026-05-01T00:00:00.000Z";
+    await writeFile(path.join(jobsDir, "job-old-success.json"), JSON.stringify({
+      job_id: "job-old-success",
+      type: "query",
+      status: "succeeded",
+      cwd: PROJECT_ROOT,
+      created_at: oldCreated,
+      updated_at: oldCreated,
+      payload: { cwd: PROJECT_ROOT, task: "old query fixture" },
+      result: { data: { answer: "done" } },
+    }, null, 2));
+    await writeFile(path.join(jobsDir, "job-old-failed.json"), JSON.stringify({
+      job_id: "job-old-failed",
+      type: "review",
+      status: "failed",
+      cwd: PROJECT_ROOT,
+      created_at: oldCreated,
+      updated_at: oldCreated,
+      payload: { cwd: PROJECT_ROOT, task: "old review fixture" },
+      error: "fixture failure",
+    }, null, 2));
+    const cleanupJobsPreview = payload(await req(child, "tools/call", {
+      name: "claude_job_cleanup",
+      arguments: { cwd: PROJECT_ROOT, older_than_hours: 0, dry_run: true, limit: 10 },
+    }));
+    const previewMatched = Number(cleanupJobsPreview.matched_count ?? 0);
+    if (previewMatched < 2) {
+      throw new Error(`claude_job_cleanup dry-run did not match terminal jobs: ${JSON.stringify(cleanupJobsPreview)}`);
+    }
+    const cleanupJobsApplied = payload(await req(child, "tools/call", {
+      name: "claude_job_cleanup",
+      arguments: { cwd: PROJECT_ROOT, older_than_hours: 0, dry_run: false, limit: 10 },
+    }));
+    const removedJobs = Number(cleanupJobsApplied.removed_count ?? 0);
+    if (removedJobs < 2) {
+      throw new Error(`claude_job_cleanup did not remove terminal jobs: ${JSON.stringify(cleanupJobsApplied)}`);
+    }
+    process.stderr.write("  ✓ claude_job_cleanup removed old terminal jobs\n");
 
     process.stderr.write("\n=== cancel queued job ===\n");
     const queuedJobId = "job-manual-cancel";

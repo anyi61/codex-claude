@@ -6,8 +6,11 @@ import {
   claudeApplyInputSchema,
   claudeImplementInputSchema,
   claudeJobCancelInputSchema,
+  claudeJobCleanupInputSchema,
   claudeJobResultInputSchema,
+  claudeJobWaitInputSchema,
   claudeJobsInputSchema,
+  claudeQueryInputSchema,
   claudeRunInspectInputSchema,
   claudeRunsInputSchema,
   claudeReviewInputSchema,
@@ -53,7 +56,10 @@ describe("schema definitions", () => {
 
   it("accepts apply preview and validates run filters", () => {
     expect(claudeApplyInputSchema.safeParse({ cwd: "/repo", worktree_path: ".claude/worktrees/codex-delegated-x", preview: true }).success).toBe(true);
+    expect(claudeApplyInputSchema.safeParse({ cwd: "/repo", worktree_path: ".claude/worktrees/codex-delegated-x", background: true }).success).toBe(true);
     expect(claudeRunsInputSchema.safeParse({ cwd: "/repo", limit: 10, type: "implement", status: "failed" }).success).toBe(true);
+    expect(claudeJobsInputSchema.safeParse({ cwd: "/repo", type: "apply" }).success).toBe(true);
+    expect(claudeJobsInputSchema.safeParse({ cwd: "/repo", type: "cleanup" }).success).toBe(true);
     expect(claudeRunsInputSchema.safeParse({ cwd: "/repo", limit: 0 }).success).toBe(false);
     expect(claudeRunsInputSchema.safeParse({ cwd: "/repo", type: "bad-type" }).success).toBe(false);
   });
@@ -71,11 +77,19 @@ describe("schema definitions", () => {
   });
 
   it("accepts background job inputs", () => {
+    expect(claudeQueryInputSchema.safeParse({ cwd: "/repo", task: "explain", background: true }).success).toBe(true);
     expect(claudeReviewInputSchema.safeParse({ cwd: "/repo", task: "review this", background: true }).success).toBe(true);
     expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "ship it", background: true }).success).toBe(true);
-    expect(claudeJobsInputSchema.safeParse({ cwd: "/repo", limit: 10 }).success).toBe(true);
+    expect(claudeJobsInputSchema.safeParse({ cwd: "/repo", limit: 10, type: "query" }).success).toBe(true);
     expect(claudeJobResultInputSchema.safeParse({ cwd: "/repo", job_id: "job-123" }).success).toBe(true);
     expect(claudeJobCancelInputSchema.safeParse({ cwd: "/repo", job_id: "job-123" }).success).toBe(true);
+    expect(claudeJobCleanupInputSchema.safeParse({ cwd: "/repo", dry_run: true, older_than_hours: 12, limit: 5 }).success).toBe(true);
+    expect(claudeJobWaitInputSchema.safeParse({ cwd: "/repo", job_id: "job-1" }).success).toBe(true);
+    expect(claudeJobWaitInputSchema.safeParse({ cwd: "/repo", job_id: "job-1", timeout_ms: 5000 }).success).toBe(true);
     expect(claudeJobResultInputSchema.safeParse({ cwd: "/repo", job_id: "" }).success).toBe(false);
+    expect(claudeJobCleanupInputSchema.safeParse({ cwd: "/repo", limit: 0 }).success).toBe(false);
+    expect(claudeJobCleanupInputSchema.safeParse({ cwd: "/repo", older_than_hours: -1 }).success).toBe(false);
+    expect(claudeJobWaitInputSchema.safeParse({ cwd: "/repo", job_id: "" }).success).toBe(false);
+    expect(claudeJobWaitInputSchema.safeParse({ cwd: "/repo", job_id: "job-1", timeout_ms: 0 }).success).toBe(false);
   });
 });

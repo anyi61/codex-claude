@@ -18,7 +18,10 @@ import type {
   ClaudeCleanupResult,
   ClaudeImplementInput,
   ClaudeJobCancelInput,
+  ClaudeJobCleanupInput,
+  ClaudeJobCleanupResult,
   ClaudeJobResultInput,
+  ClaudeJobWaitInput,
   ClaudeJobsInput,
   ClaudeJobsResult,
   ClaudeQueryInput,
@@ -102,12 +105,33 @@ function toJobSummary(record: BackgroundJobRecord): BackgroundJobSummary {
 }
 
 function summarizeBackgroundResult(type: BackgroundJobType, result: Record<string, unknown>): string | undefined {
+  if (type === "query") {
+    const data = result.data;
+    if (data && typeof data === "object" && typeof (data as { answer?: unknown }).answer === "string") {
+      return `Query completed: ${String((data as { answer: string }).answer).slice(0, 80)}`;
+    }
+    return "Query completed";
+  }
   if (type === "implement") {
     const claudeReport = result.claude_report;
     if (claudeReport && typeof claudeReport === "object" && typeof (claudeReport as { summary?: unknown }).summary === "string") {
       return (claudeReport as { summary: string }).summary;
     }
     return "Implement job completed";
+  }
+  if (type === "apply") {
+    const data = result.data;
+    if (data && typeof data === "object" && Array.isArray((data as { applied_files?: unknown }).applied_files)) {
+      return `Apply completed (${(data as { applied_files: unknown[] }).applied_files.length} files)`;
+    }
+    return "Apply completed";
+  }
+  if (type === "cleanup") {
+    const data = result.data;
+    if (data && typeof data === "object" && typeof (data as { removed_count?: unknown }).removed_count === "number") {
+      return `Cleanup completed (${(data as { removed_count: number }).removed_count} removed)`;
+    }
+    return "Cleanup completed";
   }
   const data = result.data;
   if (data && typeof data === "object" && typeof (data as { severity?: unknown }).severity === "string") {
@@ -116,7 +140,10 @@ function summarizeBackgroundResult(type: BackgroundJobType, result: Record<strin
   return "Review completed";
 }
 
-function getBackgroundWorktreeName(result: Record<string, unknown>): string | undefined {
+function getBackgroundWorktreeName(type: BackgroundJobType, payload: Record<string, unknown>, result: Record<string, unknown>): string | undefined {
+  if (type === "apply" && typeof payload.worktree_path === "string") {
+    return path.basename(payload.worktree_path);
+  }
   const observed = result.server_observed;
   if (!observed || typeof observed !== "object") return undefined;
   return typeof (observed as { worktree_name?: unknown }).worktree_name === "string"
@@ -537,10 +564,34 @@ export async function startBackgroundReview(input: ClaudeReviewInput): Promise<{
   });
 }
 
+export async function startBackgroundQuery(input: ClaudeQueryInput): Promise<{ job: BackgroundJobSummary }> {
+  return enqueueBackgroundJob({
+    cwd: input.cwd,
+    type: "query",
+    payload: input as unknown as Record<string, unknown>,
+  });
+}
+
 export async function startBackgroundImplement(input: ClaudeImplementInput): Promise<{ job: BackgroundJobSummary }> {
   return enqueueBackgroundJob({
     cwd: input.cwd,
     type: "implement",
+    payload: input as unknown as Record<string, unknown>,
+  });
+}
+
+export async function startBackgroundApply(input: ClaudeApplyInput): Promise<{ job: BackgroundJobSummary }> {
+  return enqueueBackgroundJob({
+    cwd: input.cwd,
+    type: "apply",
+    payload: input as unknown as Record<string, unknown>,
+  });
+}
+
+export async function startBackgroundCleanup(input: ClaudeCleanupInput): Promise<{ job: BackgroundJobSummary }> {
+  return enqueueBackgroundJob({
+    cwd: input.cwd,
+    type: "cleanup",
     payload: input as unknown as Record<string, unknown>,
   });
 }
@@ -566,6 +617,31 @@ export async function getBackgroundJobResult(
     job: toJobSummary(job),
     result: job.result,
   };
+}
+
+export async function waitForBackgroundJob(
+  input: ClaudeJobWaitInput
+): Promise<{ job: BackgroundJobSummary; result?: Record<string, unknown> }> {
+  const timeoutMs = input.timeout_ms ?? 30_000;
+  const pollIntervalMs = input.poll_interval_ms ?? 1_000;
+  const deadline = Date.now() + timeoutMs;
+
+  while (true) {
+    const result = await getBackgroundJobResult({ cwd: input.cwd, job_id: input.job_id });
+    if (!result) {
+      throw new Error(`Job not found: ${input.job_id}`);
+    }
+
+    if (result.job.status === "succeeded" || result.job.status === "failed" || result.job.status === "cancelled") {
+      return result;
+    }
+
+    if (Date.now() >= deadline) {
+      throw new Error(`Timed out waiting for job ${input.job_id}`);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollIntervalMs, Math.max(deadline - Date.now(), 0))));
+  }
 }
 
 export async function cancelBackgroundJob(
@@ -601,6 +677,18 @@ export async function cancelBackgroundJob(
   });
 
   return { cancelled: true, job: updated ? toJobSummary(updated) : undefined };
+}
+
+export async function cleanupBackgroundJobs(
+  input: ClaudeJobCleanupInput
+): Promise<ClaudeJobCleanupResult> {
+  const jobStore = await getJobStore();
+  return jobStore.cleanup({
+    cwd: input.cwd,
+    older_than_hours: input.older_than_hours ?? 24,
+    dry_run: input.dry_run ?? true,
+    limit: input.limit ?? 20,
+  });
 }
 
 export async function resolveLatestImplementSession(input: { cwd: string }): Promise<{ run_id: string; session_id: string } | null> {
@@ -1525,10 +1613,16 @@ export async function executeBackgroundJob(jobId: string): Promise<void> {
 
   try {
     let result: Record<string, unknown>;
-    if (running.type === "review") {
+    if (running.type === "query") {
+      result = await runClaudeQuery(running.payload as unknown as ClaudeQueryInput, runId) as unknown as Record<string, unknown>;
+    } else if (running.type === "review") {
       result = await runClaudeReview(running.payload as unknown as ClaudeReviewInput, runId) as unknown as Record<string, unknown>;
-    } else {
+    } else if (running.type === "implement") {
       result = await runClaudeImplement(running.payload as unknown as ClaudeImplementInput, runId) as unknown as Record<string, unknown>;
+    } else if (running.type === "apply") {
+      result = await runClaudeApply(running.payload as unknown as ClaudeApplyInput, runId) as unknown as Record<string, unknown>;
+    } else {
+      result = await runClaudeCleanup(running.payload as unknown as ClaudeCleanupInput, runId) as unknown as Record<string, unknown>;
     }
 
     await jobStore.update(jobId, {
@@ -1537,7 +1631,7 @@ export async function executeBackgroundJob(jobId: string): Promise<void> {
       result,
       summary: summarizeBackgroundResult(running.type, result),
       run_id: runId,
-      worktree_name: getBackgroundWorktreeName(result),
+      worktree_name: getBackgroundWorktreeName(running.type, running.payload, result),
       error: undefined,
     });
   } catch (err) {

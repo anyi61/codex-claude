@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type {
+  BackgroundJobCleanupEntry,
   BackgroundJobStatus,
   BackgroundJobSummary,
   BackgroundJobType,
@@ -18,6 +19,15 @@ interface JobListInput {
   status?: BackgroundJobStatus;
   type?: BackgroundJobType;
 }
+
+interface JobCleanupInput {
+  cwd: string;
+  older_than_hours?: number;
+  dry_run: boolean;
+  limit: number;
+}
+
+const TERMINAL_JOB_STATUSES = new Set<BackgroundJobStatus>(["succeeded", "failed", "cancelled"]);
 
 export class JobStore {
   private readonly jobsDir: string;
@@ -58,33 +68,108 @@ export class JobStore {
   }
 
   async list(input: JobListInput): Promise<BackgroundJobRecord[]> {
-    await this.init();
-    const entries = await readdir(this.jobsDir).catch(() => []);
-    const jobs = (
-      await Promise.all(
-        entries
-          .filter((entry) => entry.endsWith(".json"))
-          .map(async (entry) => {
-            try {
-              const raw = await readFile(path.join(this.jobsDir, entry), "utf8");
-              return JSON.parse(raw) as BackgroundJobRecord;
-            } catch {
-              return null;
-            }
-          })
-      )
-    )
+    const jobs = await this.readAllRecords();
+    return jobs
       .filter((entry): entry is BackgroundJobRecord => entry !== null)
       .filter((entry) => entry.cwd === input.cwd)
       .filter((entry) => !input.status || entry.status === input.status)
       .filter((entry) => !input.type || entry.type === input.type)
-      .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+      .slice(0, input.limit);
+  }
 
-    return jobs.slice(0, input.limit);
+  async cleanup(input: JobCleanupInput): Promise<{
+    dry_run: boolean;
+    matched_count: number;
+    removed_count: number;
+    failed_count: number;
+    entries: BackgroundJobCleanupEntry[];
+  }> {
+    const cutoff = typeof input.older_than_hours === "number"
+      ? Date.now() - (input.older_than_hours * 60 * 60 * 1000)
+      : null;
+    const jobs = (await this.readAllRecords())
+      .filter((entry): entry is BackgroundJobRecord => entry !== null)
+      .filter((entry) => entry.cwd === input.cwd)
+      .filter((entry) => TERMINAL_JOB_STATUSES.has(entry.status))
+      .filter((entry) => {
+        if (cutoff === null) return true;
+        const updatedAt = Date.parse(entry.updated_at);
+        return Number.isFinite(updatedAt) && updatedAt <= cutoff;
+      })
+      .sort((a, b) => a.updated_at.localeCompare(b.updated_at))
+      .slice(0, input.limit);
+
+    const entries: BackgroundJobCleanupEntry[] = [];
+    let removedCount = 0;
+    let failedCount = 0;
+
+    for (const job of jobs) {
+      if (input.dry_run) {
+        entries.push({
+          job_id: job.job_id,
+          type: job.type,
+          status: job.status,
+          updated_at: job.updated_at,
+          removed: false,
+          summary: job.summary,
+        });
+        continue;
+      }
+
+      try {
+        await unlink(this.getJobPath(job.job_id));
+        removedCount += 1;
+        entries.push({
+          job_id: job.job_id,
+          type: job.type,
+          status: job.status,
+          updated_at: job.updated_at,
+          removed: true,
+          summary: job.summary,
+        });
+      } catch (err) {
+        failedCount += 1;
+        entries.push({
+          job_id: job.job_id,
+          type: job.type,
+          status: job.status,
+          updated_at: job.updated_at,
+          removed: false,
+          summary: job.summary,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    return {
+      dry_run: input.dry_run,
+      matched_count: jobs.length,
+      removed_count: removedCount,
+      failed_count: failedCount,
+      entries,
+    };
   }
 
   private getJobPath(jobId: string): string {
     return path.join(this.jobsDir, `${jobId}.json`);
+  }
+
+  private async readAllRecords(): Promise<Array<BackgroundJobRecord | null>> {
+    await this.init();
+    const entries = await readdir(this.jobsDir).catch(() => []);
+    return Promise.all(
+      entries
+        .filter((entry) => entry.endsWith(".json"))
+        .map(async (entry) => {
+          try {
+            const raw = await readFile(path.join(this.jobsDir, entry), "utf8");
+            return JSON.parse(raw) as BackgroundJobRecord;
+          } catch {
+            return null;
+          }
+        })
+    );
   }
 
   private async writeRecord(record: BackgroundJobRecord): Promise<void> {

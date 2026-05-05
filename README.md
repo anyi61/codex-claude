@@ -8,7 +8,7 @@ MCP 服务器，让 Codex CLI 可以把查询、审查和实现任务委托给 C
 
 ```text
 Codex CLI
-  -> MCP tool: claude_runs / claude_run_inspect / claude_query / claude_review / claude_implement / claude_jobs / claude_job_result / claude_job_cancel / claude_apply
+  -> MCP tool: claude_runs / claude_run_inspect / claude_query / claude_review / claude_implement / claude_jobs / claude_job_result / claude_job_cancel / claude_job_wait / claude_job_cleanup / claude_apply
   -> codex-claude-delegate-mcp (stdio)
   -> spawn("claude", args[]) with sanitized env and tool restrictions
   -> Claude Code returns structured JSON
@@ -24,14 +24,16 @@ Codex CLI
 | `claude_status` | 只读 | 检查 Claude/Git/worktree/残留 delegated worktree 状态 |
 | `claude_runs` | 只读 | 检查最近的 query/review/implement/apply/cleanup 运行记录 |
 | `claude_run_inspect` | 只读 | 按 run id 读取单条运行日志，返回规范化摘要、原始日志和关联 apply/cleanup run id |
-| `claude_query` | 只读 | 向 Claude 提问；同 repo query 会话 20 分钟内自动复用 |
+| `claude_query` | 只读 / background | 向 Claude 提问；同 repo query 会话 20 分钟内自动复用；也可排队后台执行 |
 | `claude_review` | 只读 / background | 审查 diff 或指定文件；禁用 session persistence；可用 `background: true` 排队后台执行 |
 | `claude_implement` | 写入 worktree / background | 在隔离 worktree 中实现任务，支持 `session_key`、`resume_latest`、`max_cost_usd`、`max_changed_files`；可用 `background: true` 排队后台执行 |
-| `claude_jobs` | 只读 | 列出当前仓库最近的后台 review/implement 任务 |
+| `claude_jobs` | 只读 | 列出当前仓库最近的后台 review/implement/apply/cleanup 任务 |
 | `claude_job_result` | 只读 | 按 `job_id` 读取单个后台任务状态和最终结果 |
 | `claude_job_cancel` | 控制 | 取消 queued/running 后台任务 |
-| `claude_apply` | 写入主工作区 / preview | 将 delegated worktree 中经过服务端观测和范围校验的变更安全应用到主工作区，或先 preview |
-| `claude_cleanup` | worktree 管理 | dry-run 或清理 `.claude/worktrees/codex-delegated-*` |
+| `claude_job_wait` | 只读 | 阻塞等待后台任务进入终态，避免客户端自己轮询 |
+| `claude_job_cleanup` | 控制 | dry-run 或删除当前仓库较旧的终态后台任务记录 |
+| `claude_apply` | 写入主工作区 / preview / background | 将 delegated worktree 中经过服务端观测和范围校验的变更安全应用到主工作区，或先 preview，也可排队后台执行 |
+| `claude_cleanup` | worktree 管理 / background | dry-run 或清理 `.claude/worktrees/codex-delegated-*`，也可排队后台执行 |
 
 ## 设置
 
@@ -70,7 +72,7 @@ command = "node"
 args = ["/path/to/codex-claude-delegate-mcp/dist/server.js"]
 tool_timeout_sec = 600
 startup_timeout_sec = 20
-enabled_tools = ["claude_status", "claude_runs", "claude_run_inspect", "claude_query", "claude_review", "claude_implement", "claude_apply", "claude_cleanup"]
+enabled_tools = ["claude_status", "claude_runs", "claude_run_inspect", "claude_query", "claude_review", "claude_implement", "claude_jobs", "claude_job_result", "claude_job_cancel", "claude_job_wait", "claude_job_cleanup", "claude_apply", "claude_cleanup"]
 ```
 
 ### 4. 使用 Codex Plugin
@@ -164,6 +166,16 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 
 `claude_query` 会自动复用最近 20 分钟内同 repo 的 query session。不要用它要求 Claude 修改文件。
 
+如需把只读分析放到后台执行：
+
+```json
+{
+  "task": "Explain how the background job model works in this repo.",
+  "cwd": "/path/to/repo",
+  "background": true
+}
+```
+
 ### 4. 只读审查
 
 适合复杂 diff、安全敏感代码或 `claude_implement` 后的二次审查：
@@ -190,6 +202,32 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
   "background": true
 }
 ```
+
+拿到返回的 `job.job_id` 后，可以直接等待终态，而不是自己循环调用 `claude_job_result`：
+
+```json
+{
+  "cwd": "/path/to/repo",
+  "job_id": "<job-id>",
+  "timeout_ms": 30000,
+  "poll_interval_ms": 1000
+}
+```
+
+`claude_job_wait` 会在任务变为 `succeeded`、`failed` 或 `cancelled` 时返回完整 job/result；超时则报错。
+
+如果后台任务历史积累较多，可以先 dry-run 看看哪些终态任务会被清理：
+
+```json
+{
+  "cwd": "/path/to/repo",
+  "older_than_hours": 24,
+  "dry_run": true,
+  "limit": 20
+}
+```
+
+确认后把 `dry_run` 改成 `false` 即可实际删除；`claude_job_cleanup` 只会处理当前仓库的终态任务记录，不会碰 `queued` / `running` 任务。
 
 ### 5. 委托实现
 
@@ -244,6 +282,8 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 }
 ```
 
+后台实现同样可配合 `claude_job_wait` 使用；如果只想做非阻塞轮询，仍可继续使用 `claude_jobs` 和 `claude_job_result`。
+
 如果只是继续当前仓库最近一次可续接的 implement session，可直接让服务端解析最近日志：
 
 ```json
@@ -280,6 +320,16 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 ```
 
 preview 模式会返回 `planned_changes`，并保证主工作区不被修改。
+
+如需把 apply 放到后台执行：
+
+```json
+{
+  "cwd": "/path/to/repo",
+  "worktree_path": ".claude/worktrees/codex-delegated-xxxxxxxx",
+  "background": true
+}
+```
 
 重要限制：
 
@@ -329,10 +379,11 @@ preview 模式会返回 `planned_changes`，并保证主工作区不被修改。
 推荐流程：
 
 ```text
-1. claude_implement 或 claude_review with background=true
-2. claude_jobs 或 claude_job_result 轮询状态
+1. claude_query / claude_review / claude_implement / claude_apply / claude_cleanup with background=true
+2. claude_job_wait，或用 claude_jobs / claude_job_result 轮询状态
 3. 必要时 claude_job_cancel
-4. inspect result, then claude_apply / claude_cleanup
+4. 周期性用 claude_job_cleanup 清理旧的终态任务记录
+5. inspect result, then claude_apply / claude_cleanup
 ```
 
 ### 8. 清理残留 worktree
@@ -354,6 +405,17 @@ preview 模式会返回 `planned_changes`，并保证主工作区不被修改。
   "cwd": "/path/to/repo",
   "older_than_hours": 0,
   "dry_run": false
+}
+```
+
+如需把 worktree cleanup 放到后台执行：
+
+```json
+{
+  "cwd": "/path/to/repo",
+  "older_than_hours": 24,
+  "dry_run": false,
+  "background": true
 }
 ```
 

@@ -383,7 +383,7 @@ describe("claude cli argument construction", () => {
     vi.resetModules();
   });
 
-  it("routes background review and implement requests through the job queue", async () => {
+  it("routes background query, review, implement, apply, and cleanup requests through the job queue", async () => {
     const { repo } = await createJobFixture();
     const spawned = createDetachedSpawnResult(5555);
 
@@ -393,6 +393,13 @@ describe("claude cli argument construction", () => {
     });
 
     const reloaded = await import("../src/claude-cli.js");
+    const query = await reloaded.startBackgroundQuery({
+      cwd: repo,
+      task: "explain this module",
+      background: true,
+    });
+    expect(query.job.type).toBe("query");
+
     const review = await reloaded.startBackgroundReview({
       cwd: repo,
       task: "review this",
@@ -406,6 +413,21 @@ describe("claude cli argument construction", () => {
       background: true,
     });
     expect(implement.job.type).toBe("implement");
+
+    const apply = await reloaded.startBackgroundApply({
+      cwd: repo,
+      worktree_path: ".claude/worktrees/codex-delegated-apply",
+      background: true,
+    });
+    expect(apply.job.type).toBe("apply");
+
+    const cleanup = await reloaded.startBackgroundCleanup({
+      cwd: repo,
+      older_than_hours: 24,
+      dry_run: true,
+      background: true,
+    });
+    expect(cleanup.job.type).toBe("cleanup");
 
     vi.doUnmock("node:child_process");
     delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
@@ -448,6 +470,139 @@ describe("claude cli argument construction", () => {
     const cancel = await reloaded.cancelBackgroundJob({ cwd: repo, job_id: "job-running" });
     expect(cancel.cancelled).toBe(true);
     expect(killSpy).toHaveBeenCalledWith(7777, "SIGTERM");
+
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("waits for a background job that is already terminal", async () => {
+    const { repo, store } = await createJobFixture();
+
+    await store.create({
+      job_id: "job-done",
+      type: "review",
+      status: "succeeded",
+      cwd: repo,
+      created_at: "2026-05-05T00:00:00.000Z",
+      updated_at: "2026-05-05T00:00:01.000Z",
+      payload: { cwd: repo, task: "review this" },
+      result: { status: "success", summary: "done" },
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const waitForBackgroundJob = (reloaded as {
+      waitForBackgroundJob?: (input: {
+        cwd: string;
+        job_id: string;
+        timeout_ms?: number;
+        poll_interval_ms?: number;
+      }) => Promise<{ job: { status: string } }>;
+    }).waitForBackgroundJob;
+
+    const result = await waitForBackgroundJob!({
+      cwd: repo,
+      job_id: "job-done",
+      timeout_ms: 1000,
+      poll_interval_ms: 10,
+    });
+
+    expect(result.job.status).toBe("succeeded");
+
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("dry-runs and removes old terminal background jobs without touching running jobs", async () => {
+    const { repo, store } = await createJobFixture();
+
+    await store.create({
+      job_id: "job-old-success",
+      type: "review",
+      status: "succeeded",
+      cwd: repo,
+      created_at: "2026-05-01T00:00:00.000Z",
+      updated_at: "2026-05-01T00:00:00.000Z",
+      payload: { cwd: repo, task: "review this" },
+      result: { status: "success" },
+    });
+    await store.create({
+      job_id: "job-old-cancelled",
+      type: "implement",
+      status: "cancelled",
+      cwd: repo,
+      created_at: "2026-05-01T00:00:00.000Z",
+      updated_at: "2026-05-01T00:10:00.000Z",
+      payload: { cwd: repo, task: "ship it" },
+    });
+    await store.create({
+      job_id: "job-running",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      created_at: "2026-05-01T00:00:00.000Z",
+      updated_at: "2026-05-01T00:20:00.000Z",
+      payload: { cwd: repo, task: "still running" },
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const dryRun = await reloaded.cleanupBackgroundJobs({
+      cwd: repo,
+      older_than_hours: 0,
+      dry_run: true,
+      limit: 10,
+    });
+    expect(dryRun.dry_run).toBe(true);
+    expect(dryRun.matched_count).toBe(2);
+    expect(dryRun.removed_count).toBe(0);
+    expect((await store.get("job-old-success"))?.job_id).toBe("job-old-success");
+
+    const removed = await reloaded.cleanupBackgroundJobs({
+      cwd: repo,
+      older_than_hours: 0,
+      dry_run: false,
+      limit: 1,
+    });
+    expect(removed.matched_count).toBe(1);
+    expect(removed.removed_count).toBe(1);
+    expect(await store.get("job-old-success")).toBeNull();
+    expect((await store.get("job-old-cancelled"))?.job_id).toBe("job-old-cancelled");
+    expect((await store.get("job-running"))?.job_id).toBe("job-running");
+
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("times out waiting for a background job that stays running", async () => {
+    const { repo, store } = await createJobFixture();
+
+    await store.create({
+      job_id: "job-running",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      created_at: "2026-05-05T00:01:00.000Z",
+      updated_at: "2026-05-05T00:01:00.000Z",
+      payload: { cwd: repo, task: "ship it" },
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const waitForBackgroundJob = (reloaded as {
+      waitForBackgroundJob?: (input: {
+        cwd: string;
+        job_id: string;
+        timeout_ms?: number;
+        poll_interval_ms?: number;
+      }) => Promise<unknown>;
+    }).waitForBackgroundJob;
+
+    await expect(
+      waitForBackgroundJob!({
+        cwd: repo,
+        job_id: "job-running",
+        timeout_ms: 50,
+        poll_interval_ms: 10,
+      })
+    ).rejects.toThrow(/Timed out/);
 
     delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
     vi.resetModules();

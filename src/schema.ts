@@ -16,6 +16,7 @@ export interface ClaudeQueryInput {
   cwd: string;
   timeout_sec?: number;
   max_turns?: number;
+  background?: boolean;
 }
 
 export interface ClaudeReviewInput {
@@ -44,7 +45,7 @@ export interface ClaudeImplementInput {
   background?: boolean;
 }
 
-export type BackgroundJobType = "review" | "implement";
+export type BackgroundJobType = "query" | "review" | "implement" | "apply" | "cleanup";
 export type BackgroundJobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 export interface BackgroundJobSummary {
@@ -77,9 +78,41 @@ export interface ClaudeJobResultInput {
   job_id: string;
 }
 
+export interface ClaudeJobWaitInput {
+  cwd: string;
+  job_id: string;
+  timeout_ms?: number;
+  poll_interval_ms?: number;
+}
+
 export interface ClaudeJobCancelInput {
   cwd: string;
   job_id: string;
+}
+
+export interface ClaudeJobCleanupInput {
+  cwd: string;
+  older_than_hours?: number;
+  dry_run?: boolean;
+  limit?: number;
+}
+
+export interface BackgroundJobCleanupEntry {
+  job_id: string;
+  type: BackgroundJobType;
+  status: BackgroundJobStatus;
+  updated_at: string;
+  removed: boolean;
+  summary?: string;
+  error?: string;
+}
+
+export interface ClaudeJobCleanupResult {
+  dry_run: boolean;
+  matched_count: number;
+  removed_count: number;
+  failed_count: number;
+  entries: BackgroundJobCleanupEntry[];
 }
 
 // ---- Structured output types ----
@@ -205,6 +238,7 @@ export interface ClaudeApplyInput {
   worktree_path: string;
   cleanup?: boolean;
   preview?: boolean;
+  background?: boolean;
 }
 
 export interface ApplyPlannedChange {
@@ -226,6 +260,7 @@ export interface ClaudeCleanupInput {
   cwd: string;
   older_than_hours?: number;
   dry_run?: boolean;
+  background?: boolean;
 }
 
 export interface CleanupEntry {
@@ -317,6 +352,7 @@ export const claudeQueryInputSchema = z.object({
   cwd: cwdSchema,
   timeout_sec: timeoutSchema.default(120),
   max_turns: maxTurnsSchema.default(8),
+  background: z.boolean().optional(),
 });
 
 export const claudeReviewInputSchema = z.object({
@@ -356,12 +392,14 @@ export const claudeApplyInputSchema = z.object({
   worktree_path: z.string().trim().min(1, "worktree_path is required"),
   cleanup: z.boolean().optional(),
   preview: z.boolean().optional(),
+  background: z.boolean().optional(),
 });
 
 export const claudeCleanupInputSchema = z.object({
   cwd: cwdSchema,
   older_than_hours: z.number().nonnegative().max(24 * 365).optional().default(24),
   dry_run: z.boolean().optional().default(true),
+  background: z.boolean().optional(),
 });
 
 export const claudeRunsInputSchema = z.object({
@@ -381,7 +419,7 @@ export const claudeJobsInputSchema = z.object({
   cwd: cwdSchema,
   limit: z.number().int().positive().max(200).optional().default(20),
   status: z.enum(["queued", "running", "succeeded", "failed", "cancelled"]).optional(),
-  type: z.enum(["review", "implement"]).optional(),
+  type: z.enum(["query", "review", "implement", "apply", "cleanup"]).optional(),
 });
 
 export const claudeJobResultInputSchema = z.object({
@@ -389,9 +427,23 @@ export const claudeJobResultInputSchema = z.object({
   job_id: z.string().trim().min(1, "job_id is required"),
 });
 
+export const claudeJobWaitInputSchema = z.object({
+  cwd: cwdSchema,
+  job_id: z.string().trim().min(1, "job_id is required"),
+  timeout_ms: z.number().int().positive().max(3_600_000).optional().default(30_000),
+  poll_interval_ms: z.number().int().positive().max(10_000).optional().default(1_000),
+});
+
 export const claudeJobCancelInputSchema = z.object({
   cwd: cwdSchema,
   job_id: z.string().trim().min(1, "job_id is required"),
+});
+
+export const claudeJobCleanupInputSchema = z.object({
+  cwd: cwdSchema,
+  older_than_hours: z.number().nonnegative().max(24 * 365).optional().default(24),
+  dry_run: z.boolean().optional().default(true),
+  limit: z.number().int().positive().max(200).optional().default(20),
 });
 
 export function validationErrorMessage(err: unknown): string {
