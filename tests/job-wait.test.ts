@@ -52,10 +52,45 @@ describe("claude_job_wait stale classification", () => {
     expect(result.do_not_start_duplicate_job).toBe(true);
     expect(result.stale_state).toBe("fresh");
     expect(result.recommended_delay_ms).toBe(10000);
+    expect(result.poll_too_soon).toBeUndefined();
+    expect(result.next_allowed_poll_at).toBe("2026-05-06T00:00:30.000Z");
     expect(result.next_actions[0]).toMatchObject({
       tool: "claude_job_wait",
-      args: { cwd: repo, job_id: "job-fresh" },
+      args: { cwd: repo, job_id: "job-fresh", not_before: "2026-05-06T00:00:30.000Z" },
     });
+    const stored = await store.get("job-fresh");
+    expect(stored?.last_wait_at).toBe("2026-05-06T00:00:20.000Z");
+  });
+
+  it("returns poll_too_soon when the same active job is checked before the recommended delay", async () => {
+    vi.setSystemTime(new Date("2026-05-06T00:00:20.000Z"));
+    const { repo, store, waitForBackgroundJob } = await createWaitFixture();
+    await store.create({
+      job_id: "job-fast-poll",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      created_at: "2026-05-06T00:00:00.000Z",
+      updated_at: "2026-05-06T00:00:10.000Z",
+      heartbeat_at: "2026-05-06T00:00:10.000Z",
+      last_wait_at: "2026-05-06T00:00:18.000Z",
+      payload: { cwd: repo, task: "ship it" },
+    });
+
+    const result = await waitForBackgroundJob({ cwd: repo, job_id: "job-fast-poll" });
+
+    expect(result.waiting).toBe(true);
+    expect(result.poll_too_soon).toBe(true);
+    expect(result.recommended_delay_ms).toBe(10000);
+    expect(result.remaining_delay_ms).toBe(8000);
+    expect(result.next_allowed_poll_at).toBe("2026-05-06T00:00:28.000Z");
+    expect(result.summary).toContain("was polled too soon");
+    expect(result.next_actions[0]).toMatchObject({
+      tool: "claude_job_wait",
+      args: { cwd: repo, job_id: "job-fast-poll", not_before: "2026-05-06T00:00:28.000Z" },
+    });
+    const stored = await store.get("job-fast-poll");
+    expect(stored?.last_wait_at).toBe("2026-05-06T00:00:18.000Z");
   });
 
   it("classifies delayed heartbeat as stale_candidate and recommends one more wait", async () => {
@@ -149,6 +184,7 @@ describe("claude_job_wait stale classification", () => {
 
     expect(result.waiting).toBe(false);
     expect(result.do_not_start_duplicate_job).toBe(false);
+    expect(result.poll_too_soon).toBeUndefined();
     expect(result.stale_state).toBe("fresh");
     expect(result.result).toEqual({ findings: "ok" });
   });

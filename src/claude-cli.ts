@@ -283,6 +283,7 @@ function toJobSummary(record: BackgroundJobRecord): BackgroundJobSummary {
     created_at: record.created_at,
     updated_at: record.updated_at,
     heartbeat_at: record.heartbeat_at,
+    last_wait_at: record.last_wait_at,
     fingerprint: record.fingerprint,
     pid: record.pid,
     run_id: record.run_id,
@@ -436,6 +437,7 @@ function buildActiveWaitActions(input: {
   cwd: string;
   job: BackgroundJobSummary;
   staleState: BackgroundJobStaleState;
+  nextAllowedPollAt?: string;
 }): WorkflowNextAction[] {
   if (input.staleState === "stale") {
     return [
@@ -463,7 +465,11 @@ function buildActiveWaitActions(input: {
       reason: input.staleState === "stale_candidate"
         ? "Job heartbeat is delayed but not stale yet. Wait once more before inspecting or cancelling; do not start a duplicate job."
         : "Job is active. Poll this same job_id again after the recommended delay; do not start a duplicate job.",
-      args: { cwd: input.cwd, job_id: input.job.job_id },
+      args: {
+        cwd: input.cwd,
+        job_id: input.job.job_id,
+        ...(input.nextAllowedPollAt ? { not_before: input.nextAllowedPollAt } : {}),
+      },
     },
   ];
 }
@@ -1637,10 +1643,15 @@ export async function getBackgroundJobResult(
 export async function waitForBackgroundJob(
   input: ClaudeJobWaitInput
 ): Promise<ClaudeJobWaitResult> {
-  const result = await getBackgroundJobResult({ cwd: input.cwd, job_id: input.job_id });
-  if (!result) {
+  const jobStore = await getJobStore();
+  const record = await jobStore.get(input.job_id);
+  if (!record || record.cwd !== input.cwd) {
     throw new Error(`Job not found: ${input.job_id}`);
   }
+  const result = {
+    job: toJobSummary(record),
+    result: record.result,
+  };
 
   const terminal = result.job.status === "succeeded" || result.job.status === "failed" || result.job.status === "cancelled";
   const nowMs = Date.now();
@@ -1654,24 +1665,46 @@ export async function waitForBackgroundJob(
     pidAlive: terminal ? undefined : isPidAlive(result.job.pid),
   });
   const delayMs = terminal ? undefined : recommendedDelayMs({ ageMs, staleState });
+  const lastWaitAgeMs = terminal ? undefined : ageMsSince(result.job.last_wait_at, nowMs);
+  const pollTooSoon = !terminal && staleState !== "stale" && delayMs !== undefined && lastWaitAgeMs !== undefined && lastWaitAgeMs < delayMs;
+  const remainingDelayMs = pollTooSoon && delayMs !== undefined && lastWaitAgeMs !== undefined
+    ? Math.max(0, delayMs - lastWaitAgeMs)
+    : undefined;
+  const nextAllowedPollAt = !terminal && staleState !== "stale" && delayMs !== undefined
+    ? new Date((result.job.last_wait_at ? Date.parse(result.job.last_wait_at) : nowMs) + delayMs).toISOString()
+    : undefined;
+
+  let job = result.job;
+  if (!terminal && !pollTooSoon) {
+    const updated = await jobStore.touchWait(input.job_id, new Date(nowMs).toISOString());
+    if (updated) {
+      job = toJobSummary(updated);
+    }
+  }
 
   return {
-    ...result,
+    job,
+    result: result.result,
     summary: terminal
       ? `Job ${result.job.job_id} is ${result.job.status}; use the returned result or claude_result for follow-up.`
       : staleState === "stale"
         ? `Job ${result.job.job_id} appears stale; inspect or cancel it before starting any replacement job.`
-        : `Job ${result.job.job_id} is still ${result.job.status}; do not duplicate this task locally. Poll claude_job_wait again after the recommended delay.`,
+        : pollTooSoon
+          ? `Job ${result.job.job_id} was polled too soon. Do not call claude_job_wait again before ${nextAllowedPollAt}; wait ${remainingDelayMs}ms and poll the same job_id.`
+          : `Job ${result.job.job_id} is still ${result.job.status}; do not duplicate this task locally. Poll claude_job_wait again after the recommended delay.`,
     waiting: !terminal,
     timed_out: false,
     do_not_start_duplicate_job: !terminal && staleState !== "stale",
+    poll_too_soon: pollTooSoon || undefined,
     recommended_delay_ms: delayMs,
+    remaining_delay_ms: remainingDelayMs,
+    next_allowed_poll_at: nextAllowedPollAt,
     age_ms: ageMs,
     heartbeat_age_ms: heartbeatAgeMs,
     stale_state: staleState,
     next_actions: terminal
-      ? buildNextActions({ cwd: input.cwd, job: result.job })
-      : buildActiveWaitActions({ cwd: input.cwd, job: result.job, staleState }),
+      ? buildNextActions({ cwd: input.cwd, job })
+      : buildActiveWaitActions({ cwd: input.cwd, job, staleState, nextAllowedPollAt }),
   };
 }
 

@@ -77,6 +77,7 @@ export interface BackgroundJobSummary {
   created_at: string;
   updated_at: string;
   heartbeat_at?: string;
+  last_wait_at?: string;
   fingerprint?: string;
   pid?: number;
   run_id?: string;
@@ -130,7 +131,10 @@ export interface ClaudeJobWaitResult {
   waiting: boolean;
   timed_out: boolean;
   do_not_start_duplicate_job: boolean;
+  poll_too_soon?: boolean;
   recommended_delay_ms?: number;
+  remaining_delay_ms?: number;
+  next_allowed_poll_at?: string;
   age_ms: number;
   heartbeat_age_ms?: number;
   stale_state: BackgroundJobStaleState;

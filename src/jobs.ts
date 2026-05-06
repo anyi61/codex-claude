@@ -181,6 +181,15 @@ export class JobStore {
     });
   }
 
+  async touchWait(jobId: string, waitAt = new Date().toISOString()): Promise<BackgroundJobRecord | null> {
+    const current = await this.get(jobId);
+    if (!current) return null;
+    if (TERMINAL_JOB_STATUSES.has(current.status)) return current;
+    return this.update(jobId, {
+      last_wait_at: waitAt,
+    });
+  }
+
   private getJobPath(jobId: string): string {
     return path.join(this.jobsDir, `${jobId}.json`);
   }
