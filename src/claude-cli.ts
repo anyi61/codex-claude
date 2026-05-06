@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { cp, rm, writeFile, mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { execCapture, sanitizeEnv, resolveRepoLocalPath } from "./guard.js";
@@ -10,6 +10,7 @@ import { JobStore, type BackgroundJobRecord } from "./jobs.js";
 import { SessionStore, computeRepoKey, RECENT_WINDOW_MINUTES, type Session } from "./session.js";
 import type {
   ApplyPlannedChange,
+  BackgroundJobEnqueueResult,
   BackgroundJobSummary,
   BackgroundJobType,
   ClaudeApplyInput,
@@ -299,6 +300,61 @@ function extractBackgroundResultStatus(result?: Record<string, unknown>): RunLog
 
 function isRunLogStatus(value: unknown): value is RunLogStatus {
   return value === "success" || value === "failed" || value === "partial" || value === "needs_user" || value === "unknown";
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, entryValue]) => entryValue !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right));
+    return `{${entries.map(([key, entryValue]) => `${JSON.stringify(key)}:${stableJson(entryValue)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function normalizeStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function buildFingerprintPayload(input: {
+  cwd: string;
+  type: BackgroundJobType;
+  payload: Record<string, unknown>;
+}): Record<string, unknown> {
+  return {
+    cwd: path.resolve(input.cwd),
+    tool: input.type,
+    mode: input.payload.mode,
+    task: typeof input.payload.task === "string" ? input.payload.task.trim() : undefined,
+    files: normalizeStringArray(input.payload.files),
+    dirty_policy: input.payload.dirty_policy ?? (input.type === "implement" ? "ask" : undefined),
+    session_key: input.payload.session_key,
+    resume_latest: input.payload.resume_latest,
+    fork_session: input.payload.fork_session,
+    max_changed_files: input.payload.max_changed_files,
+    max_cost_usd: input.payload.max_cost_usd,
+  };
+}
+
+export function createTaskFingerprint(input: {
+  cwd: string;
+  type: BackgroundJobType;
+  payload: Record<string, unknown>;
+}): string {
+  const normalized = buildFingerprintPayload(input);
+  return createHash("sha256").update(stableJson(normalized)).digest("hex");
+}
+
+function buildDuplicateJobMessage(job: BackgroundJobSummary): string {
+  return `An equivalent ${job.type} job is already ${job.status}: ${job.job_id}. Continue polling claude_job_wait for this job_id; do not restart or duplicate the task.`;
 }
 
 function summarizeWithOutcome(type: BackgroundJobType, result: Record<string, unknown>, summary: string): string {
@@ -1247,9 +1303,11 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
     });
     return {
       delegated_mode: delegatedMode,
-      summary: summarizeTaskDispatch(delegatedMode, true),
+      summary: queued.message ?? summarizeTaskDispatch(delegatedMode, true),
       job: queued.job,
-      next_actions: buildNextActions({ cwd: input.cwd, job: queued.job }),
+      deduped: queued.deduped,
+      do_not_start_duplicate_job: queued.do_not_start_duplicate_job,
+      next_actions: queued.next_actions ?? buildNextActions({ cwd: input.cwd, job: queued.job }),
     };
   }
 
@@ -1265,9 +1323,11 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
     });
     return {
       delegated_mode: delegatedMode,
-      summary: summarizeTaskDispatch(delegatedMode, true),
+      summary: queued.message ?? summarizeTaskDispatch(delegatedMode, true),
       job: queued.job,
-      next_actions: buildNextActions({ cwd: input.cwd, job: queued.job }),
+      deduped: queued.deduped,
+      do_not_start_duplicate_job: queued.do_not_start_duplicate_job,
+      next_actions: queued.next_actions ?? buildNextActions({ cwd: input.cwd, job: queued.job }),
     };
   }
 
@@ -1292,9 +1352,26 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
   }
   return {
     delegated_mode: delegatedMode,
-    summary: summarizeTaskDispatch(delegatedMode, true),
+    summary: queued.message ?? summarizeTaskDispatch(delegatedMode, true),
     job: queued.job,
-    next_actions: buildNextActions({ cwd: input.cwd, job: queued.job }),
+    deduped: queued.deduped,
+    do_not_start_duplicate_job: queued.do_not_start_duplicate_job,
+    next_actions: queued.next_actions ?? buildNextActions({ cwd: input.cwd, job: queued.job }),
+  };
+}
+
+function buildBackgroundJobResponse(input: {
+  cwd: string;
+  job: BackgroundJobSummary;
+  deduped?: boolean;
+}): BackgroundJobEnqueueResult {
+  const deduped = input.deduped === true;
+  return {
+    job: input.job,
+    deduped,
+    do_not_start_duplicate_job: deduped || input.job.status === "queued" || input.job.status === "running",
+    message: deduped ? buildDuplicateJobMessage(input.job) : undefined,
+    next_actions: buildNextActions({ cwd: input.cwd, job: input.job }),
   };
 }
 
@@ -1302,8 +1379,31 @@ export async function enqueueBackgroundJob(input: {
   cwd: string;
   type: BackgroundJobType;
   payload: Record<string, unknown>;
-}): Promise<{ job: BackgroundJobSummary }> {
-  const jobStore = await getJobStore();
+  dedupe?: boolean;
+}): Promise<BackgroundJobEnqueueResult> {
+  const stateDir = getBackgroundStateDir();
+  const jobStore = new JobStore(stateDir);
+  await jobStore.init();
+
+  const fingerprint = input.dedupe === true
+    ? createTaskFingerprint({ cwd: input.cwd, type: input.type, payload: input.payload })
+    : undefined;
+
+  if (fingerprint) {
+    const existing = await jobStore.findActiveByFingerprint({
+      cwd: input.cwd,
+      type: input.type,
+      fingerprint,
+    });
+    if (existing) {
+      return buildBackgroundJobResponse({
+        cwd: input.cwd,
+        job: toJobSummary(existing),
+        deduped: true,
+      });
+    }
+  }
+
   const now = new Date().toISOString();
   const jobId = `job-${randomUUID()}`;
   const record: BackgroundJobRecord = {
@@ -1313,6 +1413,7 @@ export async function enqueueBackgroundJob(input: {
     cwd: input.cwd,
     created_at: now,
     updated_at: now,
+    fingerprint,
     payload: input.payload,
   };
 
@@ -1334,30 +1435,33 @@ export async function enqueueBackgroundJob(input: {
     updated_at: new Date().toISOString(),
   });
 
-  return {
+  return buildBackgroundJobResponse({
+    cwd: input.cwd,
     job: toJobSummary(updated ?? { ...record, pid: child.pid ?? undefined }),
-  };
+  });
 }
 
-export async function startBackgroundReview(input: ClaudeReviewInput): Promise<{ job: BackgroundJobSummary }> {
+export async function startBackgroundReview(input: ClaudeReviewInput): Promise<BackgroundJobEnqueueResult> {
   const queued = await enqueueBackgroundJob({
     cwd: input.cwd,
     type: "review",
     payload: input as unknown as Record<string, unknown>,
+    dedupe: true,
   });
   await markReviewGatePending(input.cwd, false, "review").catch(() => {});
   return queued;
 }
 
-export async function startBackgroundQuery(input: ClaudeQueryInput): Promise<{ job: BackgroundJobSummary }> {
+export async function startBackgroundQuery(input: ClaudeQueryInput): Promise<BackgroundJobEnqueueResult> {
   return enqueueBackgroundJob({
     cwd: input.cwd,
     type: "query",
     payload: input as unknown as Record<string, unknown>,
+    dedupe: true,
   });
 }
 
-export async function startBackgroundImplement(input: ClaudeImplementInput): Promise<{ job: BackgroundJobSummary } | ClaudeResult> {
+export async function startBackgroundImplement(input: ClaudeImplementInput): Promise<BackgroundJobEnqueueResult | ClaudeResult> {
   if ((input.dirty_policy ?? "ask") === "ask") {
     const { requestedFiles, dirtyFiles } = await preflightImplementDirtyState(input);
     if (dirtyFiles.length > 0) {
@@ -1368,12 +1472,13 @@ export async function startBackgroundImplement(input: ClaudeImplementInput): Pro
     cwd: input.cwd,
     type: "implement",
     payload: input as unknown as Record<string, unknown>,
+    dedupe: true,
   });
   await markReviewGatePending(input.cwd, true, "write").catch(() => {});
   return queued;
 }
 
-export async function startBackgroundApply(input: ClaudeApplyInput): Promise<{ job: BackgroundJobSummary }> {
+export async function startBackgroundApply(input: ClaudeApplyInput): Promise<BackgroundJobEnqueueResult> {
   const queued = await enqueueBackgroundJob({
     cwd: input.cwd,
     type: "apply",
@@ -1383,7 +1488,7 @@ export async function startBackgroundApply(input: ClaudeApplyInput): Promise<{ j
   return queued;
 }
 
-export async function startBackgroundCleanup(input: ClaudeCleanupInput): Promise<{ job: BackgroundJobSummary }> {
+export async function startBackgroundCleanup(input: ClaudeCleanupInput): Promise<BackgroundJobEnqueueResult> {
   return enqueueBackgroundJob({
     cwd: input.cwd,
     type: "cleanup",
@@ -1423,6 +1528,8 @@ export async function waitForBackgroundJob(
   }
 
   const terminal = result.job.status === "succeeded" || result.job.status === "failed" || result.job.status === "cancelled";
+  const nowMs = Date.now();
+  const ageMs = Math.max(0, nowMs - new Date(result.job.created_at).getTime());
   return {
     ...result,
     summary: terminal
@@ -1430,7 +1537,11 @@ export async function waitForBackgroundJob(
       : `Job ${result.job.job_id} is still ${result.job.status}; do not duplicate this task locally. Wait about 60 seconds, then poll again with claude_job_wait. Do not cancel unless the user asks or the job exceeds its Claude timeout_sec budget.`,
     waiting: !terminal,
     timed_out: false,
+    do_not_start_duplicate_job: !terminal,
     recommended_delay_ms: terminal ? undefined : 60000,
+    age_ms: ageMs,
+    heartbeat_age_ms: undefined,
+    stale_state: "fresh",
     next_actions: buildNextActions({ cwd: input.cwd, job: result.job }),
   };
 }

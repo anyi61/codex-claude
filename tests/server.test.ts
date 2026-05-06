@@ -566,6 +566,10 @@ describe("server background job handlers", () => {
       summary: "Job job-1 is succeeded; use the returned result or claude_result for follow-up.",
       waiting: false,
       timed_out: false,
+      do_not_start_duplicate_job: false,
+      recommended_delay_ms: undefined,
+      age_ms: 1000,
+      stale_state: "fresh",
       result: { ok: true },
       next_actions: [],
     });

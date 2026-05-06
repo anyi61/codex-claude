@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { JobStore } from "../src/jobs.js";
+import { createTaskFingerprint } from "../src/claude-cli.js";
 
 const cleanupPaths: string[] = [];
 
@@ -130,5 +131,51 @@ describe("JobStore", () => {
     expect(result.matched_count).toBe(0);
     expect(result.removed_count).toBe(0);
     expect(await store.get("job-running")).not.toBeNull();
+  });
+});
+
+describe("createTaskFingerprint", () => {
+  it("creates the same fingerprint for the same normalized task", () => {
+    const left = createTaskFingerprint({
+      cwd: "/repo",
+      type: "implement",
+      payload: {
+        cwd: "/repo",
+        task: "  Add feature  ",
+        files: ["b.ts", "a.ts"],
+        dirty_policy: "snapshot",
+        max_cost_usd: 1,
+        max_changed_files: 10,
+      },
+    });
+    const right = createTaskFingerprint({
+      cwd: "/repo",
+      type: "implement",
+      payload: {
+        cwd: "/repo",
+        task: "Add feature",
+        files: ["a.ts", "b.ts"],
+        dirty_policy: "snapshot",
+        max_changed_files: 10,
+        max_cost_usd: 1,
+      },
+    });
+
+    expect(left).toBe(right);
+  });
+
+  it("creates different fingerprints for different tasks", () => {
+    const left = createTaskFingerprint({
+      cwd: "/repo",
+      type: "query",
+      payload: { cwd: "/repo", task: "Explain A" },
+    });
+    const right = createTaskFingerprint({
+      cwd: "/repo",
+      type: "query",
+      payload: { cwd: "/repo", task: "Explain B" },
+    });
+
+    expect(left).not.toBe(right);
   });
 });
