@@ -57,6 +57,7 @@ import {
   errorResult,
   jsonResult,
   localExecution,
+  StructuredToolError,
   validationErrorMessage,
 } from "./schema.js";
 
@@ -635,6 +636,10 @@ export async function handleToolCall(name: string, args: unknown, runId = random
         return errorResult(`Unknown tool: ${name}`);
     }
   } catch (err) {
+    if (err instanceof StructuredToolError) {
+      process.stderr.write(`[claude-delegate] ERROR (${name}): ${err.message}\n`);
+      return errorResult(err.payload);
+    }
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(`[claude-delegate] ERROR (${name}): ${msg}\n`);
     return errorResult(msg);

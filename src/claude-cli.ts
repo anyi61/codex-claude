@@ -66,6 +66,7 @@ import {
   buildImplementPrompt,
   buildQueryPrompt,
   buildReviewPrompt,
+  StructuredToolError,
 } from "./schema.js";
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
@@ -392,6 +393,10 @@ interface GenericRunLog {
     status?: unknown;
     summary?: unknown;
   };
+  execution?: {
+    exit_code?: unknown;
+    timed_out?: unknown;
+  };
   error?: unknown;
   preview?: unknown;
   applied_files?: unknown;
@@ -408,6 +413,7 @@ interface GenericRunLog {
   observed?: {
     worktree_path?: unknown;
     worktree_name?: unknown;
+    changed_files?: unknown;
   };
   session?: {
     requested_session_id?: unknown;
@@ -524,6 +530,12 @@ async function updateImplementLifecycleForWorktree(
 
 function parseRunStatus(raw: GenericRunLog): RunLogStatus {
   if (typeof raw.error === "string" && raw.error.length > 0) return "failed";
+  const exitCode = raw.execution?.exit_code;
+  const timedOut = raw.execution?.timed_out === true;
+  if (timedOut || (typeof exitCode === "number" && exitCode !== 0)) {
+    const changedFiles = Array.isArray(raw.observed?.changed_files) ? raw.observed.changed_files.length : 0;
+    return changedFiles > 0 ? "partial" : "failed";
+  }
   const status = raw.report?.status;
   if (status === "success" || status === "failed" || status === "partial" || status === "needs_user") {
     return status;
@@ -1700,8 +1712,8 @@ export function buildReviewArgs(input: ClaudeReviewInput): string[] {
   return buildClaudeArgs(createReviewOptions(input));
 }
 
-export function buildImplementArgs(input: ClaudeImplementInput, worktreeName = "codex-delegated-test"): string[] {
-  return buildClaudeArgs(createImplementOptions(input, worktreeName));
+export function buildImplementArgs(input: ClaudeImplementInput): string[] {
+  return buildClaudeArgs(createImplementOptions(input));
 }
 
 function successExecution(durationMs = 0): ExecutionMetadata {
@@ -1716,6 +1728,66 @@ function makeEnvelope<T>(
   extra: Pick<ToolEnvelope<T>, "claude_report" | "server_observed"> = {}
 ): ToolEnvelope<T> {
   return { status, data, execution, warnings, ...extra };
+}
+
+function reportIndicatesFailure(report: Record<string, unknown>, execution: ExecutionMetadata): boolean {
+  return (
+    (execution.exit_code !== null && execution.exit_code !== 0) ||
+    execution.timed_out ||
+    report.is_error === true ||
+    report.status === "failed"
+  );
+}
+
+function implementEnvelopeStatus(
+  report: Record<string, unknown>,
+  execution: ExecutionMetadata,
+  observed: ServerObserved
+): ToolEnvelope<undefined>["status"] {
+  if (!reportIndicatesFailure(report, execution)) {
+    if (report.status === "partial" || report.status === "needs_user") return report.status;
+    return "success";
+  }
+  return observed.changed_files.length > 0 ? "partial" : "failed";
+}
+
+function noOutputPayload(
+  message: string,
+  opts: ClaudeRunOptions,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+  stdout: string,
+  stderr: string,
+  stderrTail: string,
+  environmentDiagnostics?: EnvironmentDiagnostics
+): Record<string, unknown> {
+  return {
+    error: message,
+    diagnostics: {
+      exit_code: code,
+      signal: signal ?? "none",
+      timeout_sec: opts.timeoutSec,
+      stdout_len: stdout.length,
+      stderr_len: stderr.length,
+      stderr_tail: stderrTail,
+      environment_diagnostics: environmentDiagnostics,
+    },
+    next_actions: [
+      {
+        tool: "claude_review",
+        reason: "Retry with a higher timeout_sec if the review scope is broad or Claude was still starting.",
+      },
+      {
+        tool: "claude_review",
+        args: { background: true },
+        reason: "Run broad reviews in the background so Codex can poll the job instead of timing out foreground execution.",
+      },
+      {
+        tool: "claude_status",
+        reason: "Check Claude CLI auth, PATH, proxy, and local environment diagnostics before retrying.",
+      },
+    ],
+  };
 }
 
 function spawnClaude(opts: ClaudeRunOptions): Promise<ClaudeSpawnResult> {
@@ -1764,14 +1836,18 @@ function spawnClaude(opts: ClaudeRunOptions): Promise<ClaudeSpawnResult> {
         const trimmed = stdout.trim();
         if (!trimmed) {
           const stderrTail = redactSensitive(stderr.slice(-1000));
+          let environmentDiagnostics: EnvironmentDiagnostics | undefined;
           let diagStr = "";
           try {
-            const diags = await getEnvironmentDiagnostics(safeEnv);
-            diagStr = ` environment_diagnostics=${JSON.stringify(diags)}`;
+            environmentDiagnostics = await getEnvironmentDiagnostics(safeEnv);
+            diagStr = ` environment_diagnostics=${JSON.stringify(environmentDiagnostics)}`;
           } catch {}
-          reject(new Error(
+          const message =
             `Claude produced no output (exit ${code}, signal ${signal ?? "none"}, timeout_sec=${opts.timeoutSec}, stdoutLen=${stdout.length}, stderrLen=${stderr.length}, stderrTail=${JSON.stringify(stderrTail)})` +
-            diagStr
+            diagStr;
+          reject(new StructuredToolError(
+            message,
+            noOutputPayload(message, opts, code, signal, stdout, stderr, stderrTail, environmentDiagnostics)
           ));
           return;
         }
@@ -2092,14 +2168,12 @@ function createReviewOptions(input: ClaudeReviewInput): ClaudeRunOptions {
 
 function createImplementOptions(
   input: ClaudeImplementInput,
-  worktreeName: string,
   resumeSessionId?: string,
   forked?: boolean
 ): ClaudeRunOptions {
   return {
     prompt: buildImplementPrompt(input),
     cwd: input.cwd,
-    worktree: worktreeName,
     tools: "Read,Glob,Grep,Edit,Write,Bash",
     allowedTools: [
       "Read",
@@ -2484,7 +2558,12 @@ export async function runClaudeImplement(
   const resumeSessionId = implementInput.session_key ?? undefined;
   const forked = implementInput.fork_session ?? false;
 
-  const opts = createImplementOptions(implementInput, worktreeName, resumeSessionId, forked);
+  const claudeInput: ClaudeImplementInput = {
+    ...implementInput,
+    cwd: worktreePath,
+    files: requestedFiles.length > 0 ? requestedFiles : undefined,
+  };
+  const opts = createImplementOptions(claudeInput, resumeSessionId, forked);
 
   let report: Record<string, unknown>;
   let returnedSessionId: string | null = null;
@@ -2554,18 +2633,30 @@ export async function runClaudeImplement(
     input: implementInput,
     report,
     observed,
+    execution,
     session: sessionLog,
     duration_ms: Date.now() - startTime,
   });
 
   store.prune();
+  const status = implementEnvelopeStatus(report, execution, observed);
+  const recoveryWarnings = status === "partial"
+    ? [
+        "Claude ended before a clean completion, but changed files were observed. Inspect the worktree with claude_result or claude_run_inspect before preview/apply, and consider resuming with claude_implement if needed.",
+      ]
+    : status === "failed"
+      ? [
+          "Claude ended before a clean completion and no changed files were observed. Inspect diagnostics, then retry or resume instead of applying this worktree.",
+        ]
+      : [];
   const warnings = [
     ...(observed.resource_limits?.warnings ?? []),
     ...(observed.scope?.warnings ?? []),
+    ...recoveryWarnings,
     "Worktree is retained for inspection. After applying results, call claude_cleanup to remove old delegated worktrees.",
   ];
   await markReviewGatePending(implementInput.cwd, true, "write").catch(() => {});
-  return makeEnvelope("success", undefined, execution, warnings, {
+  return makeEnvelope(status, undefined, execution, warnings, {
     claude_report: report,
     server_observed: observed,
   });

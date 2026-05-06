@@ -785,9 +785,20 @@ export function jsonResult(data: unknown): CallToolResult {
   };
 }
 
-export function errorResult(message: string): CallToolResult {
+export class StructuredToolError extends Error {
+  payload: Record<string, unknown>;
+
+  constructor(message: string, payload: Record<string, unknown>) {
+    super(message);
+    this.name = "StructuredToolError";
+    this.payload = payload;
+  }
+}
+
+export function errorResult(error: string | Record<string, unknown>): CallToolResult {
+  const payload = typeof error === "string" ? { error } : error;
   return {
-    content: [{ type: "text", text: JSON.stringify({ error: message }) }],
+    content: [{ type: "text", text: JSON.stringify(payload) }],
     isError: true,
   };
 }

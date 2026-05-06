@@ -8,7 +8,7 @@ MCP 服务器，让 Codex CLI 可以把查询、审查和实现任务委托给 C
 
 ```text
 Codex CLI
-  -> MCP tool: claude_setup / claude_runs / claude_run_inspect / claude_result / claude_workspace_status / claude_task / claude_review_gate / claude_query / claude_review / claude_implement / claude_jobs / claude_job_result / claude_job_cancel / claude_job_wait / claude_job_cleanup / claude_apply / claude_cleanup
+  -> MCP tool: claude_status / claude_setup / claude_runs / claude_run_inspect / claude_result / claude_workspace_status / claude_task / claude_review_gate / claude_query / claude_review / claude_implement / claude_jobs / claude_job_result / claude_job_cancel / claude_job_wait / claude_job_cleanup / claude_apply / claude_cleanup
   -> codex-claude-delegate-mcp (stdio)
   -> spawn("claude", args[]) with sanitized env and tool restrictions
   -> Claude Code returns structured JSON
@@ -19,26 +19,36 @@ Codex CLI
 
 ## 工具
 
-| 工具 | 模式 | 作用 |
+这 18 个工具可以按“入口、执行、检查、收尾”四类理解。日常优先用 `claude_task`、`claude_result` 和 `claude_workspace_status`，只有需要精确控制时再调用底层工具。
+
+| 工具 | 何时使用 | 关键参数 |
 |---|---|---|
-| `claude_status` | 只读 | 检查 Claude/Git/worktree/残留 delegated worktree 状态 |
-| `claude_setup` | 只读 | 检查高层工作流是否就绪，包括 review gate 配置、hook 资产和下一步建议 |
-| `claude_runs` | 只读 | 检查最近的 query/review/implement/apply/cleanup 运行记录 |
-| `claude_run_inspect` | 只读 | 按 run id 读取单条运行日志，返回规范化摘要、原始日志和关联 apply/cleanup run id |
-| `claude_result` | 只读 | 用单个入口解析当前工作区最相关的已完成 job/run，并返回摘要、session 和下一步建议 |
-| `claude_workspace_status` | 只读 | 以工作区视角聚合 running/queued jobs、recent runs、recent sessions、delegated worktrees 和 attention items |
-| `claude_task` | 高层入口 / background | 用单个入口把任务路由到 query、review 或 implement，支持 `mode=auto/read/review/write` |
-| `claude_review_gate` | 控制 | 查询、启用或关闭 repo-local review gate，并确保 stop-hook manifest 可用 |
-| `claude_query` | 只读 / background | 向 Claude 提问；同 repo query 会话 20 分钟内自动复用；也可排队后台执行 |
-| `claude_review` | 只读 / background | 审查 diff 或指定文件；禁用 session persistence；可用 `background: true` 排队后台执行 |
-| `claude_implement` | 写入 worktree / background | 在隔离 worktree 中实现任务，支持 `session_key`、`resume_latest`、`max_cost_usd`、`max_changed_files`；可用 `background: true` 排队后台执行 |
-| `claude_jobs` | 只读 | 列出当前仓库最近的后台 query/review/implement/apply/cleanup 任务 |
-| `claude_job_result` | 只读 | 按 `job_id` 读取单个后台任务状态和最终结果 |
-| `claude_job_cancel` | 控制 | 取消 queued/running 后台任务 |
-| `claude_job_wait` | 只读 | 阻塞等待后台任务进入终态，避免客户端自己轮询 |
-| `claude_job_cleanup` | 控制 | dry-run 或删除当前仓库较旧的终态后台任务记录 |
-| `claude_apply` | 写入主工作区 / preview / background | 将 delegated worktree 中经过服务端观测和范围校验的变更安全应用到主工作区，或先 preview，也可排队后台执行 |
-| `claude_cleanup` | worktree 管理 / background | dry-run 或清理 `.claude/worktrees/codex-delegated-*`，也可排队后台执行 |
+| `claude_status` | 快速检查 Claude CLI、Git、worktree、允许根目录和残留状态 | `cwd` |
+| `claude_setup` | 第一次接入或怀疑环境没配好时做完整就绪检查 | `cwd` |
+| `claude_task` | 推荐的高层入口，让服务端自动或按模式委托 query/review/implement | `cwd`, `task`, `mode=auto/read/review/write`, `background` |
+| `claude_query` | 只读问答、架构解释、代码定位；不会改文件 | `cwd`, `task`, `timeout_sec`, `background` |
+| `claude_review` | 审查 diff 或文件风险；不会改文件 | `cwd`, `task`, `diff`, `files`, `background` |
+| `claude_implement` | 让 Claude 在隔离 worktree 中改代码；不会直接改主工作区 | `cwd`, `task`, `files`, `constraints`, `max_changed_files`, `max_cost_usd`, `background` |
+| `claude_result` | 不想记具体 run/job 时，直接取当前工作区最相关的完成结果 | `cwd`, `job_id`, `run_id`, `prefer` |
+| `claude_workspace_status` | 看当前 repo 全局状态：后台任务、run、session、worktree 和待处理项 | `cwd`, `limit`, `include_terminal` |
+| `claude_runs` | 列出历史 run log，用于追踪 query/review/implement/apply/cleanup | `cwd`, `type`, `status`, `limit` |
+| `claude_run_inspect` | 按 run id 深入查看单次运行的原始记录和关联 apply/cleanup | `cwd`, `run_id` |
+| `claude_jobs` | 列出后台任务 | `cwd`, `type`, `status`, `limit` |
+| `claude_job_result` | 按 job id 读取后台任务结果 | `cwd`, `job_id` |
+| `claude_job_wait` | 等后台任务进入终态，适合替代手写轮询 | `cwd`, `job_id`, `timeout_ms`, `poll_interval_ms` |
+| `claude_job_cancel` | 取消自己启动的 queued/running 后台任务 | `cwd`, `job_id` |
+| `claude_job_cleanup` | 清理当前仓库旧的终态后台任务记录，默认先 dry-run | `cwd`, `older_than_hours`, `dry_run`, `limit` |
+| `claude_apply` | 预览或合并 delegated worktree 的变更到主工作区 | `cwd`, `worktree_path`, `preview`, `cleanup`, `background` |
+| `claude_cleanup` | 清理 `.claude/worktrees/codex-delegated-*` worktree，默认 dry-run | `cwd`, `older_than_hours`, `dry_run`, `background` |
+| `claude_review_gate` | 查询、启用或关闭 repo-local review gate | `cwd`, `action=status/enable/disable` |
+
+常见闭环：
+
+```text
+只读分析：claude_task mode=read -> claude_result
+代码审查：claude_review background=true -> claude_job_wait -> claude_result
+代码实现：claude_implement -> claude_result -> claude_apply preview=true -> claude_apply cleanup=true -> claude_cleanup
+```
 
 ## 设置
 
@@ -80,6 +90,28 @@ startup_timeout_sec = 20
 enabled_tools = ["claude_status", "claude_setup", "claude_runs", "claude_run_inspect", "claude_result", "claude_workspace_status", "claude_task", "claude_review_gate", "claude_query", "claude_review", "claude_implement", "claude_jobs", "claude_job_result", "claude_job_cancel", "claude_job_wait", "claude_job_cleanup", "claude_apply", "claude_cleanup"]
 ```
 
+如果你不需要限制工具，推荐直接省略 `enabled_tools`，让 Codex 自动读取 MCP server 暴露的完整工具列表。若保留 `enabled_tools`，必须包含上面全部 18 个工具；旧配置常只包含 `claude_status`、`claude_query`、`claude_review`、`claude_implement`、`claude_apply`、`claude_cleanup`，会导致后台任务、run 检查、review gate 和高层工作流工具不可用。
+
+如果 `codex mcp get claude_delegate` 只显示 6 个工具，通常是旧白名单导致的。最简单修复方式是重建 MCP 配置并省略 `enabled_tools`：
+
+```bash
+codex mcp remove claude_delegate
+codex mcp add claude_delegate -- node /path/to/codex-claude-delegate-mcp/dist/server.js
+```
+
+检查当前 Codex 配置实际暴露的工具：
+
+```bash
+codex mcp get claude_delegate
+```
+
+零成本检查 server 自身工具列表，不会调用 Claude：
+
+```bash
+npm run build
+npx tsx debug/mcp-list-tools.ts
+```
+
 ### 4. 使用 Codex Plugin
 
 Repo-local 插件位于：
@@ -102,7 +134,7 @@ plugins/codex-claude-delegate/
 
 ```toml
 # ~/.codex/config.toml
-[shell_environment_policy.set]
+[mcp_servers.claude_delegate.env]
 CODEX_CLAUDE_ALLOW_ROOTS = "/Users/you/projects:/Users/you/work:/Users/you/my-repo"
 ```
 

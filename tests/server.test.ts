@@ -73,7 +73,7 @@ vi.mock("../src/claude-cli.js", () => ({
   waitForBackgroundJob: waitForBackgroundJobMock,
 }));
 
-const { handleToolCall } = await import("../src/server.js");
+const { handleToolCall, registerToolDefinitions } = await import("../src/server.js");
 
 function parsePayload(result: Awaited<ReturnType<typeof handleToolCall>>) {
   expect(result.content[0]?.type).toBe("text");
@@ -89,6 +89,39 @@ describe("server background job handlers", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("registers the complete MCP tool surface", async () => {
+    let listToolsHandler: (() => Promise<{ tools: Array<{ name: string }> }>) | undefined;
+    const fakeServer = {
+      setRequestHandler: vi.fn((_schema: unknown, handler: () => Promise<{ tools: Array<{ name: string }> }>) => {
+        listToolsHandler = handler;
+      }),
+    };
+
+    registerToolDefinitions(fakeServer as never);
+
+    const result = await listToolsHandler!();
+    expect(result.tools.map((tool) => tool.name)).toEqual([
+      "claude_status",
+      "claude_setup",
+      "claude_runs",
+      "claude_run_inspect",
+      "claude_result",
+      "claude_workspace_status",
+      "claude_task",
+      "claude_review_gate",
+      "claude_query",
+      "claude_review",
+      "claude_implement",
+      "claude_jobs",
+      "claude_job_result",
+      "claude_job_cancel",
+      "claude_job_wait",
+      "claude_job_cleanup",
+      "claude_apply",
+      "claude_cleanup",
+    ]);
   });
 
   it("routes claude_jobs through listBackgroundJobs with resolved cwd", async () => {
@@ -167,6 +200,24 @@ describe("server background job handlers", () => {
     expect(getClaudeResultMock).not.toHaveBeenCalled();
     expect(result.isError).toBe(true);
     expect(String(payload.error)).toContain("cannot be combined");
+  });
+
+  it("returns a shaped error when claude_result cannot resolve an artifact", async () => {
+    getClaudeResultMock.mockRejectedValue(new Error("No matching finished job or run found for this workspace."));
+
+    const result = await handleToolCall("claude_result", {
+      cwd: "/repo/input",
+      prefer: "latest-job",
+    });
+    const payload = parsePayload(result);
+
+    expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
+    expect(getClaudeResultMock).toHaveBeenCalledWith({
+      cwd: "/repo/resolved",
+      prefer: "latest-job",
+    });
+    expect(result.isError).toBe(true);
+    expect(payload).toEqual({ error: "No matching finished job or run found for this workspace." });
   });
 
   it("routes claude_workspace_status through getWorkspaceStatus with resolved cwd", async () => {
@@ -258,6 +309,21 @@ describe("server background job handlers", () => {
     });
     expect(payload.enabled).toBe(true);
     expect(result.isError).toBeUndefined();
+  });
+
+  it("returns a validation error for claude_review_gate when cwd is invalid", async () => {
+    validateCwdMock.mockResolvedValueOnce({ ok: false, error: "cwd is outside allowed roots" });
+
+    const result = await handleToolCall("claude_review_gate", {
+      cwd: "/repo/input",
+      action: "enable",
+    });
+    const payload = parsePayload(result);
+
+    expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
+    expect(manageClaudeReviewGateMock).not.toHaveBeenCalled();
+    expect(result.isError).toBe(true);
+    expect(payload).toEqual({ error: "cwd is outside allowed roots" });
   });
 
   it("routes claude_query background requests through startBackgroundQuery", async () => {

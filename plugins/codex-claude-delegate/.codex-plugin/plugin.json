@@ -21,7 +21,7 @@
   "interface": {
     "displayName": "Claude Code Delegate",
     "shortDescription": "Run tasks via Claude Code in isolated worktrees",
-    "longDescription": "Codex CLI plans the task, then delegates execution to Claude Code through MCP tools. Claude works in an isolated git worktree with security constraints, runs tests, and returns structured results. Codex reviews the diff before applying changes to the main workspace.\n\nTools: claude_status, claude_query, claude_review, claude_implement, claude_apply, claude_cleanup",
+    "longDescription": "Codex CLI plans the task, then delegates execution to Claude Code through MCP tools. Claude works in an isolated git worktree with security constraints, runs tests, and returns structured results. Codex reviews the diff before applying changes to the main workspace.\n\nTools: claude_status, claude_setup, claude_runs, claude_run_inspect, claude_result, claude_workspace_status, claude_task, claude_review_gate, claude_query, claude_review, claude_implement, claude_jobs, claude_job_result, claude_job_cancel, claude_job_wait, claude_job_cleanup, claude_apply, claude_cleanup",
     "developerName": "anyi",
     "category": "Coding",
     "capabilities": [
