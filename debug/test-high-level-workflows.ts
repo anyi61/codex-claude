@@ -186,23 +186,37 @@ async function main(): Promise<void> {
     }
     process.stderr.write("  ✓ claude_task auto routed to review\n");
 
-    process.stderr.write("\n=== background implement for claude_result ===\n");
+    process.stderr.write("\n=== claude_task mode=write background for claude_result ===\n");
     const implementStart = payload(await req(child, "tools/call", {
-      name: "claude_implement",
+      name: "claude_task",
       arguments: {
         cwd: fixtureRepo,
         task: "Append exactly one line 'High-level workflow test.' to README.md and do not modify other files.",
-        files: ["README.md"],
-        max_changed_files: 1,
-        timeout_sec: 180,
+        mode: "write",
         background: true,
+        files: ["README.md"],
+        timeout_sec: 180,
       },
     }));
     const implementJob = implementStart.job as Record<string, unknown> | undefined;
     const implementJobId = String(implementJob?.job_id ?? "");
-    if (!implementJobId || implementJob?.status !== "queued") {
-      throw new Error(`background implement did not return a queued job: ${JSON.stringify(implementStart)}`);
+    if (implementStart.delegated_mode !== "write" || String(implementJob?.type ?? "") !== "implement") {
+      throw new Error(`claude_task write did not route to implement: ${JSON.stringify(implementStart)}`);
     }
+    if (!implementJobId || implementJob?.status !== "queued") {
+      throw new Error(`claude_task write background did not return a queued job: ${JSON.stringify(implementStart)}`);
+    }
+
+    const workspaceDuringJob = payload(await req(child, "tools/call", {
+      name: "claude_workspace_status",
+      arguments: { cwd: fixtureRepo, limit: 10, include_terminal: true },
+    }));
+    const duringCounts = workspaceDuringJob.counts as Record<string, unknown> | undefined;
+    const activeJobCount = Number(duringCounts?.queued_jobs ?? 0) + Number(duringCounts?.running_jobs ?? 0);
+    if (activeJobCount < 1) {
+      throw new Error(`claude_workspace_status did not surface queued/running job counts: ${JSON.stringify(workspaceDuringJob)}`);
+    }
+    process.stderr.write("  ✓ claude_task write queued an implement job and workspace status surfaced active counts\n");
 
     const implementResult = await waitForJob(child, fixtureRepo, implementJobId);
     const finishedImplementJob = implementResult.job as Record<string, unknown> | undefined;
