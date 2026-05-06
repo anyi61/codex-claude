@@ -15,7 +15,7 @@ Codex CLI
   -> Codex reviews, applies, or cleans up worktrees
 ```
 
-返回结果现在统一包含 `status`、`execution` 和 `warnings`。`execution` 记录 Claude CLI 的 `exit_code`、`duration_ms`、`timed_out`、截断后的 `stdout_tail` 和脱敏后的 `stderr_tail`，避免把完整日志塞进 MCP 响应。
+返回结果现在统一包含 `status`、`execution` 和 `warnings`。`execution` 记录 Claude CLI 的 `exit_code`、`duration_ms`、`timed_out`、截断后的 `stdout_tail` 和脱敏后的 `stderr_tail`。`claude_query` 额外返回 `execution.timings`（如 `session_lookup_ms`、`claude_run_ms`、`log_write_ms`、`total_ms`），用于定位慢查询链路。
 
 ## 工具
 
@@ -26,7 +26,7 @@ Codex CLI
 | `claude_status` | 快速检查 Claude CLI、Git、worktree、允许根目录和残留状态 | `cwd` |
 | `claude_setup` | 第一次接入或怀疑环境没配好时做完整就绪检查；也可显式把当前项目加入允许目录 | `cwd`, `configure_allow_root` |
 | `claude_task` | 推荐的高层入口，让服务端自动或按模式委托 query/review/implement | `cwd`, `task`, `mode=auto/read/review/write`, `background` |
-| `claude_query` | 只读问答、架构解释、代码定位；不会改文件 | `cwd`, `task`, `timeout_sec`, `background` |
+| `claude_query` | 只读问答、架构解释、代码定位；不会改文件 | `cwd`, `task`, `timeout_sec`, `max_turns`, `fast`, `resume`, `background` |
 | `claude_review` | 审查 diff 或文件风险；不会改文件 | `cwd`, `task`, `diff`, `files`, `background` |
 | `claude_implement` | 让 Claude 在隔离 worktree 中改代码；不会直接改主工作区 | `cwd`, `task`, `files`, `constraints`, `max_changed_files`, `max_cost_usd`, `background` |
 | `claude_result` | 不想记具体 run/job 时，直接取当前工作区最相关的完成结果 | `cwd`, `job_id`, `run_id`, `prefer` |
@@ -349,6 +349,21 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 ```
 
 `claude_query` 会自动复用最近 20 分钟内同 repo 的 query session。不要用它要求 Claude 修改文件。
+
+如果你要优先缩短等待时间（例如“这个项目有哪些代码模块”这类问题），建议：
+
+```json
+{
+  "cwd": "/path/to/repo",
+  "task": "当前项目有什么代码，都是什么作用。",
+  "fast": true,
+  "resume": false,
+  "background": false
+}
+```
+
+- `fast=true`：默认用更小 turn budget（2）和更短 timeout（45s），并引导 Claude 先做最小读取。
+- `resume=false`：避免自动挂载旧 query session 上下文，减少陈旧上下文导致的尾延迟。
 
 如需把只读分析放到后台执行：
 
