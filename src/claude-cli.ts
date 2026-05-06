@@ -284,6 +284,7 @@ function toJobSummary(record: BackgroundJobRecord): BackgroundJobSummary {
     updated_at: record.updated_at,
     heartbeat_at: record.heartbeat_at,
     last_wait_at: record.last_wait_at,
+    last_wait_recommended_delay_ms: record.last_wait_recommended_delay_ms,
     fingerprint: record.fingerprint,
     pid: record.pid,
     run_id: record.run_id,
@@ -341,6 +342,7 @@ function buildFingerprintPayload(input: {
     mode: input.payload.mode,
     task: typeof input.payload.task === "string" ? input.payload.task.trim() : undefined,
     files: normalizeStringArray(input.payload.files),
+    instruction_files: normalizeStringArray(input.payload.instruction_files),
     dirty_policy: input.payload.dirty_policy ?? (input.type === "implement" ? "ask" : undefined),
     session_key: input.payload.session_key,
     resume_latest: input.payload.resume_latest,
@@ -462,9 +464,11 @@ function buildActiveWaitActions(input: {
   return [
     {
       tool: "claude_job_wait",
-      reason: input.staleState === "stale_candidate"
-        ? "Job heartbeat is delayed but not stale yet. Wait once more before inspecting or cancelling; do not start a duplicate job."
-        : "Job is active. Poll this same job_id again after the recommended delay; do not start a duplicate job.",
+      reason: input.nextAllowedPollAt
+        ? "Poll again only after next_allowed_poll_at. Do not start a duplicate task."
+        : input.staleState === "stale_candidate"
+          ? "Job heartbeat is delayed but not stale yet. Wait once more before inspecting or cancelling; do not start a duplicate job."
+          : "Job is active. Poll this same job_id again after the recommended delay; do not start a duplicate job.",
       args: {
         cwd: input.cwd,
         job_id: input.job.job_id,
@@ -1411,13 +1415,29 @@ function summarizeTaskDispatch(mode: Exclude<ClaudeTaskMode, "auto">, background
   return `Delegated ${mode} task and returned the current result.`;
 }
 
+const CLAUDE_TASK_FILES_DEPRECATED_WARNING =
+  "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use advanced claude_implement allowed_files/scope options for strict file modification limits.";
+
+function resolveTaskInstructionFiles(input: ClaudeTaskInput): { instructionFiles?: string[]; warnings: string[] } {
+  const merged = [...(input.instruction_files ?? []), ...(input.files ?? [])]
+    .map((file) => file.trim())
+    .filter((file) => file.length > 0);
+  const instructionFiles = [...new Set(merged)].sort((a, b) => a.localeCompare(b));
+  return {
+    instructionFiles: instructionFiles.length > 0 ? instructionFiles : undefined,
+    warnings: input.files?.length ? [CLAUDE_TASK_FILES_DEPRECATED_WARNING] : [],
+  };
+}
+
 export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Promise<ClaudeTaskResult> {
   const delegatedMode = inferClaudeTaskMode(input);
+  const { instructionFiles, warnings } = resolveTaskInstructionFiles(input);
 
   if (delegatedMode === "read") {
     const queued = await startBackgroundQuery({
       cwd: input.cwd,
       task: input.task,
+      instruction_files: instructionFiles,
       timeout_sec: input.timeout_sec,
       max_turns: input.max_turns,
       background: true,
@@ -1428,6 +1448,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
       job: queued.job,
       deduped: queued.deduped,
       do_not_start_duplicate_job: queued.do_not_start_duplicate_job,
+      warnings,
       next_actions: queued.next_actions ?? buildNextActions({ cwd: input.cwd, job: queued.job }),
     };
   }
@@ -1437,7 +1458,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
       cwd: input.cwd,
       task: input.task,
       diff: input.diff,
-      files: input.files,
+      instruction_files: instructionFiles,
       timeout_sec: input.timeout_sec,
       max_turns: input.max_turns,
       background: true,
@@ -1448,6 +1469,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
       job: queued.job,
       deduped: queued.deduped,
       do_not_start_duplicate_job: queued.do_not_start_duplicate_job,
+      warnings,
       next_actions: queued.next_actions ?? buildNextActions({ cwd: input.cwd, job: queued.job }),
     };
   }
@@ -1455,7 +1477,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
   const queued = await startBackgroundImplement({
     cwd: input.cwd,
     task: input.task,
-    files: input.files,
+    instruction_files: instructionFiles,
     constraints: input.constraints,
     timeout_sec: input.timeout_sec,
     max_turns: input.max_turns,
@@ -1468,6 +1490,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
       delegated_mode: delegatedMode,
       summary: "Write task needs a dirty-workspace decision before it can be delegated.",
       result: queued as unknown as Record<string, unknown>,
+      warnings,
       next_actions: [],
     };
   }
@@ -1477,6 +1500,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
     job: queued.job,
     deduped: queued.deduped,
     do_not_start_duplicate_job: queued.do_not_start_duplicate_job,
+    warnings,
     next_actions: queued.next_actions ?? buildNextActions({ cwd: input.cwd, job: queued.job }),
   };
 }
@@ -1665,18 +1689,21 @@ export async function waitForBackgroundJob(
     pidAlive: terminal ? undefined : isPidAlive(result.job.pid),
   });
   const delayMs = terminal ? undefined : recommendedDelayMs({ ageMs, staleState });
+  const previousDelayMs = typeof result.job.last_wait_recommended_delay_ms === "number"
+    ? result.job.last_wait_recommended_delay_ms
+    : delayMs;
   const lastWaitAgeMs = terminal ? undefined : ageMsSince(result.job.last_wait_at, nowMs);
-  const pollTooSoon = !terminal && staleState !== "stale" && delayMs !== undefined && lastWaitAgeMs !== undefined && lastWaitAgeMs < delayMs;
-  const remainingDelayMs = pollTooSoon && delayMs !== undefined && lastWaitAgeMs !== undefined
-    ? Math.max(0, delayMs - lastWaitAgeMs)
+  const pollTooSoon = !terminal && staleState !== "stale" && previousDelayMs !== undefined && lastWaitAgeMs !== undefined && lastWaitAgeMs < previousDelayMs;
+  const remainingDelayMs = pollTooSoon && previousDelayMs !== undefined && lastWaitAgeMs !== undefined
+    ? Math.max(0, previousDelayMs - lastWaitAgeMs)
     : undefined;
   const nextAllowedPollAt = !terminal && staleState !== "stale" && delayMs !== undefined
-    ? new Date((result.job.last_wait_at ? Date.parse(result.job.last_wait_at) : nowMs) + delayMs).toISOString()
+    ? new Date((result.job.last_wait_at ? Date.parse(result.job.last_wait_at) : nowMs) + (pollTooSoon ? previousDelayMs ?? delayMs : delayMs)).toISOString()
     : undefined;
 
   let job = result.job;
   if (!terminal && !pollTooSoon) {
-    const updated = await jobStore.touchWait(input.job_id, new Date(nowMs).toISOString());
+    const updated = await jobStore.touchWait(input.job_id, new Date(nowMs).toISOString(), delayMs);
     if (updated) {
       job = toJobSummary(updated);
     }
@@ -1685,6 +1712,7 @@ export async function waitForBackgroundJob(
   return {
     job,
     result: result.result,
+    status: job.status,
     summary: terminal
       ? `Job ${result.job.job_id} is ${result.job.status}; use the returned result or claude_result for follow-up.`
       : staleState === "stale"

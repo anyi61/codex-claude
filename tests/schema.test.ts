@@ -19,6 +19,7 @@ import {
   claudeRunsInputSchema,
   claudeReviewInputSchema,
   claudeWorkspaceStatusInputSchema,
+  buildImplementPrompt,
 } from "../src/schema.js";
 
 describe("schema definitions", () => {
@@ -99,11 +100,37 @@ describe("schema definitions", () => {
     expect(claudeJobCancelInputSchema.safeParse({ cwd: "/repo", job_id: "job-123" }).success).toBe(true);
     expect(claudeJobCleanupInputSchema.safeParse({ cwd: "/repo", dry_run: true, older_than_hours: 12, limit: 5 }).success).toBe(true);
     expect(claudeJobWaitInputSchema.safeParse({ cwd: "/repo", job_id: "job-1" }).success).toBe(true);
+    expect(claudeJobWaitInputSchema.safeParse({ cwd: "/repo", job_id: "job-1", not_before: "2026-05-06T00:00:30.000Z" }).success).toBe(true);
     expect(claudeJobResultInputSchema.safeParse({ cwd: "/repo", job_id: "" }).success).toBe(false);
     expect(claudeJobCleanupInputSchema.safeParse({ cwd: "/repo", limit: 0 }).success).toBe(false);
     expect(claudeJobCleanupInputSchema.safeParse({ cwd: "/repo", older_than_hours: -1 }).success).toBe(false);
     expect(claudeJobWaitInputSchema.safeParse({ cwd: "/repo", job_id: "" }).success).toBe(false);
     expect(claudeJobWaitInputSchema.safeParse({ cwd: "/repo", job_id: "job-1", timeout_ms: 5000 }).success).toBe(false);
+  });
+
+  it("accepts claude_task instruction files and deprecated files", () => {
+    const parsed = claudeTaskInputSchema.safeParse({
+      cwd: "/repo",
+      task: "execute PROJECT_EXPANSION_PLAN.md",
+      mode: "write",
+      instruction_files: ["PROJECT_EXPANSION_PLAN.md"],
+      files: ["LEGACY_PLAN.md"],
+    });
+
+    expect(parsed.success).toBe(true);
+  });
+
+  it("adds instruction files to implement prompts without making them relevant scope files", () => {
+    const prompt = buildImplementPrompt({
+      cwd: "/repo",
+      task: "execute the plan",
+      instruction_files: ["PROJECT_EXPANSION_PLAN.md"],
+    });
+
+    expect(prompt).toContain("## Instruction Files");
+    expect(prompt).toContain("not a modification scope limit");
+    expect(prompt).toContain("PROJECT_EXPANSION_PLAN.md");
+    expect(prompt).not.toContain("## Relevant Files");
   });
 
   it("accepts high-level result inputs and rejects ambiguous selectors", () => {

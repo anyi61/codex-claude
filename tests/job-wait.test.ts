@@ -54,12 +54,14 @@ describe("claude_job_wait stale classification", () => {
     expect(result.recommended_delay_ms).toBe(10000);
     expect(result.poll_too_soon).toBeUndefined();
     expect(result.next_allowed_poll_at).toBe("2026-05-06T00:00:30.000Z");
+    expect(result.status).toBe("running");
     expect(result.next_actions[0]).toMatchObject({
       tool: "claude_job_wait",
       args: { cwd: repo, job_id: "job-fresh", not_before: "2026-05-06T00:00:30.000Z" },
     });
     const stored = await store.get("job-fresh");
     expect(stored?.last_wait_at).toBe("2026-05-06T00:00:20.000Z");
+    expect(stored?.last_wait_recommended_delay_ms).toBe(10000);
   });
 
   it("returns poll_too_soon when the same active job is checked before the recommended delay", async () => {
@@ -74,6 +76,7 @@ describe("claude_job_wait stale classification", () => {
       updated_at: "2026-05-06T00:00:10.000Z",
       heartbeat_at: "2026-05-06T00:00:10.000Z",
       last_wait_at: "2026-05-06T00:00:18.000Z",
+      last_wait_recommended_delay_ms: 10000,
       payload: { cwd: repo, task: "ship it" },
     });
 
@@ -91,6 +94,32 @@ describe("claude_job_wait stale classification", () => {
     });
     const stored = await store.get("job-fast-poll");
     expect(stored?.last_wait_at).toBe("2026-05-06T00:00:18.000Z");
+    expect(stored?.last_wait_recommended_delay_ms).toBe(10000);
+  });
+
+  it("refreshes last_wait_at after the previous recommended delay has elapsed", async () => {
+    vi.setSystemTime(new Date("2026-05-06T00:00:30.000Z"));
+    const { repo, store, waitForBackgroundJob } = await createWaitFixture();
+    await store.create({
+      job_id: "job-after-delay",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      created_at: "2026-05-06T00:00:00.000Z",
+      updated_at: "2026-05-06T00:00:20.000Z",
+      heartbeat_at: "2026-05-06T00:00:20.000Z",
+      last_wait_at: "2026-05-06T00:00:18.000Z",
+      last_wait_recommended_delay_ms: 10000,
+      payload: { cwd: repo, task: "ship it" },
+    });
+
+    const result = await waitForBackgroundJob({ cwd: repo, job_id: "job-after-delay" });
+
+    expect(result.poll_too_soon).toBeUndefined();
+    expect(result.status).toBe("running");
+    const stored = await store.get("job-after-delay");
+    expect(stored?.last_wait_at).toBe("2026-05-06T00:00:30.000Z");
+    expect(stored?.last_wait_recommended_delay_ms).toBe(20000);
   });
 
   it("classifies delayed heartbeat as stale_candidate and recommends one more wait", async () => {
@@ -183,6 +212,7 @@ describe("claude_job_wait stale classification", () => {
     const result = await waitForBackgroundJob({ cwd: repo, job_id: "job-done" });
 
     expect(result.waiting).toBe(false);
+    expect(result.status).toBe("succeeded");
     expect(result.do_not_start_duplicate_job).toBe(false);
     expect(result.poll_too_soon).toBeUndefined();
     expect(result.stale_state).toBe("fresh");

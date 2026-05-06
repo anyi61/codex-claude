@@ -2,6 +2,8 @@
 
 Rescue workflows may use Advanced / Debug tools such as `claude_workspace_status`, `claude_job_result`, `claude_runs`, `claude_run_inspect`, and `claude_job_cancel`. Use them only after the default `claude_job_wait` / `claude_result` path is insufficient or the user explicitly asks for diagnosis.
 
+If an apply was refused because a high-level `claude_task` was given a plan file through deprecated `files`, retry the high-level task with `instruction_files` instead. Strict file scope belongs to Advanced / Debug `claude_implement.files`.
+
 ## When to use rescue procedures
 
 Use these steps when `claude_implement` fails or produces unexpected results:

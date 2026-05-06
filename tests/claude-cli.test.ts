@@ -444,6 +444,115 @@ describe("claude cli argument construction", () => {
     vi.resetModules();
   });
 
+  it("does not treat claude_task instruction files as apply scope", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-instruction-files-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "PROJECT_EXPANSION_PLAN.md"), "# plan\n");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+    const worktreeRel = ".claude/worktrees/codex-delegated-instruction-files";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await mkdir(path.join(worktree, "src"), { recursive: true });
+    await mkdir(path.join(worktree, "tests"), { recursive: true });
+    await writeFile(path.join(worktree, "src", "arrays.js"), "export const unique = (items) => [...new Set(items)];\n");
+    await writeFile(path.join(worktree, "tests", "arrays.test.js"), "import '../src/arrays.js';\n");
+    await writeFile(path.join(worktree, "README.md"), "# main\n\nArray utilities.\n");
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(logDir, "implement-instruction-files.json"), JSON.stringify({
+      type: "implement",
+      input: {
+        cwd: repo,
+        task: "Execute PROJECT_EXPANSION_PLAN.md",
+        instruction_files: ["PROJECT_EXPANSION_PLAN.md"],
+      },
+      report: { status: "success", summary: "Implemented plan" },
+      observed: {
+        worktree_path: worktreeRel,
+        worktree_name: "codex-delegated-instruction-files",
+        base_commit: baseCommit,
+        changed_files: ["README.md", "src/arrays.js", "tests/arrays.test.js"],
+        scope: { requested_files: undefined, out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 3, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const applied = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+    }, "apply-instruction-files");
+
+    expect(applied.error).toBeUndefined();
+    expect(applied.conflicts).toEqual([]);
+    expect(applied.applied_files.sort()).toEqual(["README.md", "src/arrays.js", "tests/arrays.test.js"].sort());
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("still refuses apply when an advanced implement run explicitly records scope violations", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-explicit-scope-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+    const worktreeRel = ".claude/worktrees/codex-delegated-explicit-scope";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await mkdir(path.join(worktree, "src"), { recursive: true });
+    await writeFile(path.join(worktree, "src", "arrays.js"), "export const unique = (items) => [...new Set(items)];\n");
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(logDir, "implement-explicit-scope.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo, task: "Only change README.", files: ["README.md"] },
+      report: { status: "success", summary: "Changed src instead" },
+      observed: {
+        worktree_path: worktreeRel,
+        worktree_name: "codex-delegated-explicit-scope",
+        base_commit: baseCommit,
+        changed_files: ["src/arrays.js"],
+        scope: {
+          requested_files: ["README.md"],
+          out_of_scope_files: ["src/arrays.js"],
+          scope_exceeded: true,
+          warnings: ["Changed src/arrays.js outside requested files: README.md"],
+        },
+        resource_limits: { actual_changed_files: 1, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const applied = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+    }, "apply-explicit-scope");
+
+    expect(applied.error).toBe("Worktree contains changes outside requested files; apply refused");
+    expect(applied.conflicts).toEqual(["Changed src/arrays.js outside requested files: README.md"]);
+    expect(applied.applied_files).toEqual([]);
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
   it("updates implement lifecycle after apply and cleanup", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-lifecycle-"));
     cleanupPaths.push(root);
@@ -1549,6 +1658,11 @@ describe("claude cli argument construction", () => {
     expect(result.job?.status).toBe("queued");
     const stored = await jobStore.get(result.job!.job_id);
     expect(stored?.payload.max_turns).toBeUndefined();
+    expect(stored?.payload.files).toBeUndefined();
+    expect(stored?.payload.instruction_files).toEqual(["README.md"]);
+    expect(result.warnings).toEqual([
+      "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use advanced claude_implement allowed_files/scope options for strict file modification limits.",
+    ]);
     expect(Array.isArray(result.next_actions)).toBe(true);
   });
 
@@ -1580,7 +1694,9 @@ describe("claude cli argument construction", () => {
       cwd: repo,
       task: "Implement input validation for README updates.",
       background: true,
+      instruction_files: ["README.md"],
     });
+    expect(stored?.payload.files).toBeUndefined();
     expect(stored?.payload.max_turns).toBeUndefined();
     expect(result.next_actions.map((action) => action.tool)).toEqual([
       "claude_job_wait",
@@ -1605,7 +1721,7 @@ describe("claude cli argument construction", () => {
   });
 
   it("routes claude_task auto mode to review when diff is provided", async () => {
-    const { repo } = await createWorkflowFixture();
+    const { repo, jobStore } = await createWorkflowFixture();
     const spawned = createDetachedSpawnResult(6003);
 
     vi.doMock("node:child_process", async () => {
@@ -1625,6 +1741,9 @@ describe("claude cli argument construction", () => {
 
     expect(result.delegated_mode).toBe("review");
     expect(result.job?.type).toBe("review");
+    const stored = await jobStore.get(result.job!.job_id);
+    expect(stored?.payload.files).toBeUndefined();
+    expect(stored?.payload.instruction_files).toEqual(["README.md"]);
     expect(result.next_actions.map((action) => action.tool)).toEqual(["claude_job_wait"]);
   });
 });

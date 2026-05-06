@@ -325,7 +325,7 @@ describe("server background job handlers", () => {
     const payload = parsePayload(result);
 
     expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
-    expect(validateFilesWithinCwdMock).toHaveBeenCalledWith("/repo/resolved", undefined);
+    expect(validateFilesWithinCwdMock).toHaveBeenCalledWith("/repo/resolved", []);
     expect(runClaudeTaskMock).toHaveBeenCalledWith({
       cwd: "/repo/resolved",
       task: "Explain auth flow",
@@ -334,6 +334,44 @@ describe("server background job handlers", () => {
     }, expect.any(String));
     expect(payload.delegated_mode).toBe("read");
     expect(result.isError).toBeUndefined();
+  });
+
+  it("validates claude_task instruction files and deprecated files before routing", async () => {
+    runClaudeTaskMock.mockResolvedValue({
+      delegated_mode: "write",
+      summary: "Delegated write task as a background job.",
+      job: { job_id: "job-write", type: "implement", status: "queued" },
+      warnings: [
+        "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use advanced claude_implement allowed_files/scope options for strict file modification limits.",
+      ],
+      next_actions: [],
+    });
+
+    const result = await handleToolCall("claude_task", {
+      cwd: "/repo/input",
+      task: "Execute PROJECT_EXPANSION_PLAN.md",
+      mode: "write",
+      instruction_files: ["PROJECT_EXPANSION_PLAN.md"],
+      files: ["LEGACY_PLAN.md"],
+      dirty_policy: "committed",
+    });
+    const payload = parsePayload(result);
+
+    expect(validateFilesWithinCwdMock).toHaveBeenCalledWith("/repo/resolved", [
+      "PROJECT_EXPANSION_PLAN.md",
+      "LEGACY_PLAN.md",
+    ]);
+    expect(runClaudeTaskMock).toHaveBeenCalledWith({
+      cwd: "/repo/resolved",
+      task: "Execute PROJECT_EXPANSION_PLAN.md",
+      mode: "write",
+      instruction_files: ["PROJECT_EXPANSION_PLAN.md"],
+      files: ["LEGACY_PLAN.md"],
+      dirty_policy: "committed",
+    }, expect.any(String));
+    expect(payload.warnings).toEqual([
+      "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use advanced claude_implement allowed_files/scope options for strict file modification limits.",
+    ]);
   });
 
   it("routes claude_review_gate through manageClaudeReviewGate with resolved cwd", async () => {
@@ -563,6 +601,7 @@ describe("server background job handlers", () => {
   it("routes claude_job_wait through waitForBackgroundJob with resolved cwd", async () => {
     waitForBackgroundJobMock.mockResolvedValue({
       job: { job_id: "job-1", status: "succeeded" },
+      status: "succeeded",
       summary: "Job job-1 is succeeded; use the returned result or claude_result for follow-up.",
       waiting: false,
       timed_out: false,

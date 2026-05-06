@@ -27,7 +27,7 @@ Codex CLI
 |---|---|---|
 | `claude_status` | 快速检查 Claude CLI、Git、worktree、允许根目录和残留状态 | `cwd` |
 | `claude_setup` | 第一次接入或怀疑环境没配好时做完整就绪检查；也可显式把当前项目加入允许目录 | `cwd`, `configure_allow_root` |
-| `claude_task` | 推荐的高层入口，让服务端自动或按模式委托 query/review/implement，默认返回后台 job | `cwd`, `task`, `mode=auto/read/review/write`, `background` |
+| `claude_task` | 推荐的高层入口，让服务端自动或按模式委托 query/review/implement，默认返回后台 job | `cwd`, `task`, `mode=auto/read/review/write`, `instruction_files`, `background` |
 | `claude_query` | 只读问答、架构解释、代码定位；不会改文件，默认返回后台 job | `cwd`, `task`, `timeout_sec`, `max_turns`, `fast`, `resume`, `background` |
 | `claude_review` | 审查 diff 或文件风险；不会改文件，默认返回后台 job | `cwd`, `task`, `diff`, `files`, `background` |
 | `claude_implement` | 让 Claude 在隔离 worktree 中改代码；不会直接改主工作区，默认返回后台 job | `cwd`, `task`, `files`, `constraints`, `max_changed_files`, `max_cost_usd`, `background` |
@@ -48,8 +48,8 @@ Codex CLI
 
 ```text
 只读分析：claude_task mode=read -> claude_job_wait -> claude_result
-代码审查：claude_review -> claude_job_wait -> claude_result
-代码实现：claude_implement -> claude_job_wait -> claude_result -> claude_apply preview=true -> claude_apply cleanup=true -> claude_cleanup
+代码审查：claude_task mode=review -> claude_job_wait -> claude_result
+代码实现：claude_task mode=write -> claude_job_wait -> claude_result -> claude_apply preview=true -> claude_apply cleanup=true -> claude_cleanup
 ```
 
 ## 设置
@@ -258,6 +258,19 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 }
 ```
 
+如果任务来自规划或需求文件，用 `instruction_files` 表达“请阅读这些文件作为任务说明”。不要给普通 `claude_task` 传 `files`：
+
+```json
+{
+  "cwd": "/path/to/repo",
+  "task": "Execute PROJECT_EXPANSION_PLAN.md and implement the first priority milestone.",
+  "mode": "write",
+  "instruction_files": ["PROJECT_EXPANSION_PLAN.md"]
+}
+```
+
+`claude_task.files` 仍兼容旧调用，但会被当作 `instruction_files`，不会作为 `claude_apply` 的修改范围限制。返回结果会带 warning。需要严格限制修改范围时，使用 Advanced / Debug 工具 `claude_implement` 的 `files`。
+
 也可以让服务端自己选型：
 
 ```json
@@ -411,7 +424,7 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 }
 ```
 
-`claude_job_wait` 不做长时间阻塞等待，也没有 `timeout_ms`。它只查看当前 job 状态：如果后台进程已经 `succeeded`、`failed` 或 `cancelled`，返回完整 job/result；如果仍是 `queued` 或 `running`，返回 `waiting=true`、`recommended_delay_ms`（默认 60000）、当前 `job` 和 `next_actions`。此时调用方不要在本地重复执行同一任务，也不要因为几十秒无结果就取消；应按建议间隔继续调用 `claude_job_wait`、用 `claude_job_result` 查看持久化状态，或在用户要求/超过 Claude `timeout_sec` 预算时再 `claude_job_cancel`。注意 `job.status` 表示后台进程状态，不等于 Claude 任务质量。终态 job 可能同时返回 `job.status="succeeded"` 和 `job.result_status="partial"`，这表示进程正常结束，但 Claude 达到 `max_turns` 或只完成了部分工作。遇到 `partial` / `needs_user` 时，应先用 `claude_result` 或 `claude_run_inspect` 查看，再决定 `resume_latest`、`claude_apply preview=true` 或清理 worktree。
+`claude_job_wait` 不做长时间阻塞等待，也没有 `timeout_ms`。它只查看当前 job 状态：如果后台进程已经 `succeeded`、`failed` 或 `cancelled`，返回完整 job/result；如果仍是 `queued` 或 `running`，返回 `waiting=true`、`recommended_delay_ms`、`next_allowed_poll_at`、当前 `job` 和 `next_actions`。服务端会记录 `last_wait_at` 和上一次推荐间隔；如果调用方早于 `next_allowed_poll_at` 再次轮询，会返回普通成功结果并设置 `poll_too_soon=true`、`remaining_delay_ms`，不会刷新 `last_wait_at`，也不会改变 job 状态。此时调用方不要在本地重复执行同一任务，也不要因为几十秒无结果就取消；应按建议间隔继续调用 `claude_job_wait`、用 `claude_job_result` 查看持久化状态，或在用户要求/超过 Claude `timeout_sec` 预算时再 `claude_job_cancel`。注意 `job.status` 表示后台进程状态，不等于 Claude 任务质量。终态 job 可能同时返回 `job.status="succeeded"` 和 `job.result_status="partial"`，这表示进程正常结束，但 Claude 达到 `max_turns` 或只完成了部分工作。遇到 `partial` / `needs_user` 时，应先用 `claude_result` 或 `claude_run_inspect` 查看，再决定 `resume_latest`、`claude_apply preview=true` 或清理 worktree。
 
 如果后台任务历史积累较多，可以先 dry-run 看看哪些终态任务会被清理：
 
@@ -451,7 +464,10 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 
 `files` 行为补充：
 
+- `claude_task` 是高层自然语言工作流。`instruction_files` 是任务说明/上下文文件，不是修改范围限制；`files` 在 `claude_task` 中已 deprecated，并按 `instruction_files` 处理。
+- “执行 `PROJECT_EXPANSION_PLAN.md`” 应写在 `task` 文本中，或放入 `instruction_files`。不要把它理解为只能修改该规划文件。
 - `claude_implement` 在创建 worktree 前会检查 `files` 对应路径在主工作区是否 dirty（`git status --porcelain=v1 -z`）。
+- `claude_implement.files` 是 Advanced / Debug 严格范围能力，会影响 `server_observed.scope` 和 `claude_apply` 是否拒绝越界改动。
 - 未传 `files` 时，写任务会检查整个主工作区的用户改动；会忽略工具自身的 `.claude/` 和 `.codex-claude-delegate/` 元数据目录。
 - 若存在未提交改动，默认 `dirty_policy="ask"` 会返回 `status="needs_user"`，不创建 worktree、不入队、不调用 Claude。返回结果会提示三个选择：先提交/暂存/清理后重试；用 `dirty_policy="committed"` 明确按 `HEAD` 旧提交执行；或用 `dirty_policy="snapshot"` 把当前未提交文件复制进 delegated worktree，让 Claude 基于当前状态继续。
 - `dirty_policy="committed"` 适合你明确想忽略当前工作区改动的场景；`dirty_policy="snapshot"` 适合把真实用户当前未提交状态交给 Claude，但结果仍保留在隔离 worktree，合并前仍需 review/apply。

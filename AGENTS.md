@@ -42,7 +42,9 @@ Default Codex workflows should use only:
 
 Do not call `claude_query`, `claude_review`, or `claude_implement` directly for ordinary work. Do not call `claude_jobs`, `claude_job_result`, or `claude_runs` directly for ordinary polling. These are Advanced / Debug tools for diagnostics, rescue, or explicit expert workflows.
 
-When `claude_task` returns a job, that job is the single execution source for the request. Continue with `claude_job_wait` until the job reaches a terminal state or is explicitly cancelled. If `claude_job_wait` returns `waiting=true`, do not implement the same task locally and do not create another job for the same task.
+When `claude_task` returns a job, that job is the single execution source for the request. Continue with `claude_job_wait` until the job reaches a terminal state or is explicitly cancelled. If `claude_job_wait` returns `waiting=true`, do not implement the same task locally and do not create another job for the same task. If it returns `poll_too_soon=true`, wait until `next_allowed_poll_at` before polling the same `job_id` again.
+
+For ordinary `claude_task` calls, do not pass `files`. If Claude should read a plan, checklist, or requirements file, pass it as `instruction_files` or mention it in `task`. `claude_task.files` is deprecated and is treated only as instruction context, not as apply scope. Use Advanced / Debug `claude_implement.files` only when strict file modification limits are explicitly required.
 
 ## 安全与配置提示
 不要向 Claude 子进程传递密钥。保持环境清理、危险命令拦截以及 `BRIDGE_DEPTH` 递归保护。在配置允许根目录时，尽量使用 `CODEX_CLAUDE_ALLOW_ROOTS` 环境变量，而非硬编码本地路径。

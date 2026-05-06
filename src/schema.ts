@@ -14,6 +14,7 @@ export interface ClaudeStatusInput {
 export interface ClaudeQueryInput {
   task: string;
   cwd: string;
+  instruction_files?: string[];
   timeout_sec?: number;
   max_turns?: number;
   background?: boolean;
@@ -25,6 +26,7 @@ export interface ClaudeReviewInput {
   task: string;
   cwd: string;
   diff?: string;
+  instruction_files?: string[];
   files?: string[];
   timeout_sec?: number;
   max_turns?: number;
@@ -34,6 +36,7 @@ export interface ClaudeReviewInput {
 export interface ClaudeImplementInput {
   task: string;
   cwd: string;
+  instruction_files?: string[];
   files?: string[];
   constraints?: string[];
   timeout_sec?: number;
@@ -56,6 +59,8 @@ export interface ClaudeTaskInput {
   mode?: ClaudeTaskMode;
   background?: boolean;
   resume_latest?: boolean;
+  instruction_files?: string[];
+  /** @deprecated claude_task treats files as instruction_files, not apply scope. */
   files?: string[];
   constraints?: string[];
   diff?: string;
@@ -78,6 +83,7 @@ export interface BackgroundJobSummary {
   updated_at: string;
   heartbeat_at?: string;
   last_wait_at?: string;
+  last_wait_recommended_delay_ms?: number;
   fingerprint?: string;
   pid?: number;
   run_id?: string;
@@ -122,11 +128,13 @@ export interface ClaudeResultInput {
 export interface ClaudeJobWaitInput {
   cwd: string;
   job_id: string;
+  not_before?: string;
 }
 
 export interface ClaudeJobWaitResult {
   job: BackgroundJobSummary;
   result?: Record<string, unknown>;
+  status: BackgroundJobStatus;
   summary: string;
   waiting: boolean;
   timed_out: boolean;
@@ -305,6 +313,7 @@ export interface ClaudeTaskResult {
   session?: WorkflowSessionSummary;
   deduped?: boolean;
   do_not_start_duplicate_job?: boolean;
+  warnings?: string[];
   next_actions: WorkflowNextAction[];
 }
 
@@ -596,6 +605,7 @@ export const claudeTaskInputSchema = z.object({
   mode: z.enum(["auto", "read", "review", "write"]).optional().default("auto"),
   background: z.boolean().optional(),
   resume_latest: z.boolean().optional(),
+  instruction_files: filesSchema,
   files: filesSchema,
   constraints: constraintsSchema,
   diff: z.string().optional(),
@@ -663,6 +673,7 @@ export const claudeResultInputSchema = z.object({
 export const claudeJobWaitInputSchema = z.object({
   cwd: cwdSchema,
   job_id: z.string().trim().min(1, "job_id is required"),
+  not_before: z.string().trim().min(1).optional(),
 }).strict();
 
 export const claudeJobCancelInputSchema = z.object({
@@ -767,6 +778,12 @@ export const RESULT_SCHEMA = IMPLEMENT_SCHEMA;
 export function buildImplementPrompt(input: ClaudeImplementInput): string {
   let prompt = `## Task\n\n${input.task}\n\n`;
 
+  if (input.instruction_files?.length) {
+    prompt += `## Instruction Files\n\n`;
+    prompt += `These files are task instructions or context, not a modification scope limit. Read them when useful, then modify the relevant source, tests, and documentation required by the task.\n\n`;
+    prompt += input.instruction_files.map((f) => `- \`${f}\``).join("\n") + "\n\n";
+  }
+
   if (input.files?.length) {
     prompt += `## Relevant Files\n\n${input.files.map((f) => `- \`${f}\``).join("\n")}\n\n`;
   }
@@ -789,6 +806,12 @@ export function buildImplementPrompt(input: ClaudeImplementInput): string {
 
 export function buildReviewPrompt(input: ClaudeReviewInput): string {
   let prompt = `## Review Request\n\n${input.task}\n\n`;
+
+  if (input.instruction_files?.length) {
+    prompt += `## Instruction Files\n\n`;
+    prompt += `These files are task instructions or context, not a modification scope limit.\n\n`;
+    prompt += input.instruction_files.map((f) => `- \`${f}\``).join("\n") + "\n\n";
+  }
 
   if (input.diff) {
     prompt += `## Diff to Review\n\n\`\`\`diff\n${input.diff}\n\`\`\`\n\n`;
@@ -813,6 +836,12 @@ export function buildReviewPrompt(input: ClaudeReviewInput): string {
 
 export function buildQueryPrompt(input: ClaudeQueryInput): string {
   let prompt = `## Question\n\n${input.task}\n\n`;
+
+  if (input.instruction_files?.length) {
+    prompt += `## Instruction Files\n\n`;
+    prompt += `These files are task instructions or context for answering the question.\n\n`;
+    prompt += input.instruction_files.map((f) => `- \`${f}\``).join("\n") + "\n\n";
+  }
 
   prompt += `## Instructions\n\n`;
   prompt += `- You are in read-only mode. Do NOT modify any files.\n`;

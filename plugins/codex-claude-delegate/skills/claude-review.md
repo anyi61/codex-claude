@@ -1,6 +1,6 @@
 # Claude Code Review
 
-For ordinary review requests, prefer `claude_task mode=review` and poll with `claude_job_wait`. Use direct `claude_review` only for Advanced / Debug workflows or when the user explicitly asks for the bottom-level tool.
+For ordinary review requests, prefer `claude_task mode=review` and poll with `claude_job_wait`. Use `instruction_files` for plan/checklist context. Use direct `claude_review` only for Advanced / Debug workflows or when the user explicitly asks for the bottom-level tool.
 
 ## When to use review
 

@@ -157,10 +157,11 @@ const TOOL_DEFINITIONS = [
       properties: {
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
         task: { type: "string", description: "High-level task to delegate" },
-        mode: { type: "string", enum: ["auto", "read", "review", "write"], description: "Routing mode. auto infers from diff/files/task wording." },
+        mode: { type: "string", enum: ["auto", "read", "review", "write"], description: "Routing mode. auto infers from diff/task wording." },
         background: { type: "boolean", description: "Queue the delegated task as a persistent background job" },
         resume_latest: { type: "boolean", description: "For write mode, resume the latest implement session for this repository." },
-        files: { type: "array", items: { type: "string" }, description: "Relevant files for review or implementation context" },
+        instruction_files: { type: "array", items: { type: "string" }, description: "Task instruction/context files. These are not apply scope limits." },
+        files: { type: "array", items: { type: "string" }, description: "Deprecated for claude_task: treated as instruction_files, not apply scope." },
         constraints: { type: "array", items: { type: "string" }, description: "Implementation constraints for write mode" },
         diff: { type: "string", description: "Diff to review. Presence strongly biases auto mode toward review." },
         timeout_sec: { type: "number", description: "Timeout in seconds for the delegated task" },
@@ -458,10 +459,13 @@ export async function handleToolCall(name: string, args: unknown, runId = random
       case "claude_task": {
         const parsed = claudeTaskInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { cwd, mode, files } = parsed.data;
+        const { cwd, mode, files, instruction_files } = parsed.data;
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
-        const fileCheck = await validateFilesWithinCwd(check.resolved, files);
+        const fileCheck = await validateFilesWithinCwd(check.resolved, [
+          ...(instruction_files ?? []),
+          ...(files ?? []),
+        ]);
         if (!fileCheck.ok) return errorResult(fileCheck.error!);
 
         if (mode === "write" || (mode === "auto" && (parsed.data.resume_latest || (parsed.data.constraints?.length ?? 0) > 0))) {
