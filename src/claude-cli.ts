@@ -11,6 +11,7 @@ import { SessionStore, computeRepoKey, RECENT_WINDOW_MINUTES, type Session } fro
 import type {
   ApplyPlannedChange,
   BackgroundJobEnqueueResult,
+  BackgroundJobStaleState,
   BackgroundJobSummary,
   BackgroundJobType,
   ClaudeApplyInput,
@@ -79,6 +80,10 @@ const SESSION_DIR = path.join(process.cwd(), ".codex-claude-delegate");
 const JOB_STATE_DIR_ENV = "CODEX_CLAUDE_BACKGROUND_STATE_DIR";
 const REVIEW_GATE_RELATIVE_PATH = path.join(".codex-claude-delegate", "review-gate.json");
 const REVIEW_GATE_HOOK_COMMAND = "node '${CLAUDE_PLUGIN_ROOT}/hooks/review-gate-stop.mjs'";
+
+const JOB_HEARTBEAT_INTERVAL_MS = 15000;
+const STALE_CANDIDATE_HEARTBEAT_MS = 90_000;
+const STALE_HEARTBEAT_MS = 300_000;
 
 // ---- Session store (lazy init) ----
 
@@ -355,6 +360,112 @@ export function createTaskFingerprint(input: {
 
 function buildDuplicateJobMessage(job: BackgroundJobSummary): string {
   return `An equivalent ${job.type} job is already ${job.status}: ${job.job_id}. Continue polling claude_job_wait for this job_id; do not restart or duplicate the task.`;
+}
+
+function startJobHeartbeat(jobStore: JobStore, jobId: string, intervalMs = JOB_HEARTBEAT_INTERVAL_MS): () => void {
+  let stopped = false;
+  const touch = () => {
+    if (stopped) return;
+    void jobStore.touchHeartbeat(jobId).catch(() => {});
+  };
+  touch();
+  const timer = setInterval(touch, intervalMs);
+  timer.unref?.();
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
+}
+
+function ageMsSince(timestamp: string | undefined, nowMs = Date.now()): number | undefined {
+  if (!timestamp) return undefined;
+  const parsed = Date.parse(timestamp);
+  if (!Number.isFinite(parsed)) return undefined;
+  return Math.max(0, nowMs - parsed);
+}
+
+function isPidAlive(pid: number | undefined): boolean | undefined {
+  if (!pid) return undefined;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === "EPERM";
+  }
+}
+
+function classifyJobStaleState(input: {
+  job: BackgroundJobSummary;
+  heartbeatAgeMs?: number;
+  pidAlive?: boolean;
+}): BackgroundJobStaleState {
+  if (input.job.status !== "queued" && input.job.status !== "running") {
+    return "fresh";
+  }
+  if (input.pidAlive === false) {
+    return "stale";
+  }
+  const heartbeatAgeMs = input.heartbeatAgeMs;
+  if (heartbeatAgeMs === undefined) {
+    return "fresh";
+  }
+  if (heartbeatAgeMs > STALE_HEARTBEAT_MS) {
+    return "stale";
+  }
+  if (heartbeatAgeMs > STALE_CANDIDATE_HEARTBEAT_MS) {
+    return "stale_candidate";
+  }
+  return "fresh";
+}
+
+function recommendedDelayMs(input: {
+  ageMs: number;
+  staleState: BackgroundJobStaleState;
+}): number | undefined {
+  if (input.staleState === "stale") return undefined;
+  if (input.staleState === "stale_candidate") return 30_000;
+  if (input.ageMs < 30_000) return 10_000;
+  if (input.ageMs < 120_000) return 20_000;
+  if (input.ageMs < 600_000) return 45_000;
+  if (input.ageMs < 1_800_000) return 60_000;
+  return 90_000;
+}
+
+function buildActiveWaitActions(input: {
+  cwd: string;
+  job: BackgroundJobSummary;
+  staleState: BackgroundJobStaleState;
+}): WorkflowNextAction[] {
+  if (input.staleState === "stale") {
+    return [
+      {
+        tool: "claude_job_cancel",
+        reason: "Job appears stale because heartbeat is too old or its pid is gone. Cancel only after inspecting or when intentionally abandoning this run.",
+        args: { cwd: input.cwd, job_id: input.job.job_id },
+      },
+      {
+        tool: "claude_workspace_status",
+        reason: "Inspect workspace-level state before deciding whether to cancel, apply, cleanup, or retry.",
+        args: { cwd: input.cwd },
+      },
+      {
+        tool: "claude_job_result",
+        reason: "Inspect persisted job details before starting a replacement job.",
+        args: { cwd: input.cwd, job_id: input.job.job_id },
+      },
+    ];
+  }
+
+  return [
+    {
+      tool: "claude_job_wait",
+      reason: input.staleState === "stale_candidate"
+        ? "Job heartbeat is delayed but not stale yet. Wait once more before inspecting or cancelling; do not start a duplicate job."
+        : "Job is active. Poll this same job_id again after the recommended delay; do not start a duplicate job.",
+      args: { cwd: input.cwd, job_id: input.job.job_id },
+    },
+  ];
 }
 
 function summarizeWithOutcome(type: BackgroundJobType, result: Record<string, unknown>, summary: string): string {
@@ -1529,20 +1640,34 @@ export async function waitForBackgroundJob(
 
   const terminal = result.job.status === "succeeded" || result.job.status === "failed" || result.job.status === "cancelled";
   const nowMs = Date.now();
-  const ageMs = Math.max(0, nowMs - new Date(result.job.created_at).getTime());
+  const ageMs = ageMsSince(result.job.created_at, nowMs) ?? 0;
+  const heartbeatAgeMs = terminal
+    ? undefined
+    : ageMsSince(result.job.heartbeat_at ?? result.job.updated_at, nowMs);
+  const staleState = classifyJobStaleState({
+    job: result.job,
+    heartbeatAgeMs,
+    pidAlive: terminal ? undefined : isPidAlive(result.job.pid),
+  });
+  const delayMs = terminal ? undefined : recommendedDelayMs({ ageMs, staleState });
+
   return {
     ...result,
     summary: terminal
       ? `Job ${result.job.job_id} is ${result.job.status}; use the returned result or claude_result for follow-up.`
-      : `Job ${result.job.job_id} is still ${result.job.status}; do not duplicate this task locally. Wait about 60 seconds, then poll again with claude_job_wait. Do not cancel unless the user asks or the job exceeds its Claude timeout_sec budget.`,
+      : staleState === "stale"
+        ? `Job ${result.job.job_id} appears stale; inspect or cancel it before starting any replacement job.`
+        : `Job ${result.job.job_id} is still ${result.job.status}; do not duplicate this task locally. Poll claude_job_wait again after the recommended delay.`,
     waiting: !terminal,
     timed_out: false,
-    do_not_start_duplicate_job: !terminal,
-    recommended_delay_ms: terminal ? undefined : 60000,
+    do_not_start_duplicate_job: !terminal && staleState !== "stale",
+    recommended_delay_ms: delayMs,
     age_ms: ageMs,
-    heartbeat_age_ms: undefined,
-    stale_state: "fresh",
-    next_actions: buildNextActions({ cwd: input.cwd, job: result.job }),
+    heartbeat_age_ms: heartbeatAgeMs,
+    stale_state: staleState,
+    next_actions: terminal
+      ? buildNextActions({ cwd: input.cwd, job: result.job })
+      : buildActiveWaitActions({ cwd: input.cwd, job: result.job, staleState }),
   };
 }
 
@@ -2753,15 +2878,18 @@ export async function executeBackgroundJob(jobId: string): Promise<void> {
     return;
   }
 
+  const runningAt = new Date().toISOString();
   const running = await jobStore.update(jobId, {
     status: "running",
-    updated_at: new Date().toISOString(),
+    updated_at: runningAt,
+    heartbeat_at: runningAt,
   });
   if (!running || running.status === "cancelled") {
     return;
   }
 
   const runId = randomUUID();
+  const stopHeartbeat = startJobHeartbeat(jobStore, jobId);
 
   try {
     let result: Record<string, unknown>;
@@ -2799,6 +2927,8 @@ export async function executeBackgroundJob(jobId: string): Promise<void> {
       summary: `Background ${running.type} job failed`,
     });
     throw err;
+  } finally {
+    stopHeartbeat();
   }
 }
 

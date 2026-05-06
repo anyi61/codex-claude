@@ -1180,14 +1180,17 @@ describe("claude cli argument construction", () => {
 
   it("returns a waiting status while a background job stays running", async () => {
     const { repo, store } = await createJobFixture();
+    const now = new Date().toISOString();
 
     await store.create({
       job_id: "job-running",
       type: "implement",
       status: "running",
       cwd: repo,
-      created_at: "2026-05-05T00:01:00.000Z",
-      updated_at: "2026-05-05T00:01:00.000Z",
+      created_at: now,
+      updated_at: now,
+      heartbeat_at: now,
+      pid: 99999,
       payload: { cwd: repo, task: "ship it" },
     });
 
@@ -1208,31 +1211,29 @@ describe("claude cli argument construction", () => {
       summary: expect.stringContaining("do not duplicate this task locally"),
       waiting: true,
       timed_out: false,
-      recommended_delay_ms: 60000,
       job: {
         job_id: "job-running",
         status: "running",
       },
     });
-    expect((result as { next_actions?: Array<{ reason: string }> }).next_actions?.[0]?.reason).toContain("Wait about 60 seconds");
-    expect((result as { next_actions?: Array<{ reason: string }> }).next_actions?.find((action) => action.reason.includes("Cancel"))?.reason).toContain("exceeds its Claude timeout_sec budget");
     expect((result as { next_actions?: Array<{ tool: string }> }).next_actions?.map((action) => action.tool)).toEqual([
       "claude_job_wait",
-      "claude_job_result",
-      "claude_job_cancel",
     ]);
   });
 
   it("returns a waiting status while a background job stays queued", async () => {
     const { repo, store } = await createJobFixture();
+    const now = new Date().toISOString();
 
     await store.create({
       job_id: "job-queued",
       type: "review",
       status: "queued",
       cwd: repo,
-      created_at: "2026-05-05T00:01:00.000Z",
-      updated_at: "2026-05-05T00:01:00.000Z",
+      created_at: now,
+      updated_at: now,
+      heartbeat_at: now,
+      pid: 99998,
       payload: { cwd: repo, task: "review it" },
     });
 
@@ -1253,7 +1254,6 @@ describe("claude cli argument construction", () => {
       summary: expect.stringContaining("do not duplicate this task locally"),
       waiting: true,
       timed_out: false,
-      recommended_delay_ms: 60000,
       job: {
         job_id: "job-queued",
         status: "queued",
