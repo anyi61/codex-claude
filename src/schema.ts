@@ -69,6 +69,7 @@ export interface BackgroundJobSummary {
   job_id: string;
   type: BackgroundJobType;
   status: BackgroundJobStatus;
+  result_status?: RunLogStatus;
   cwd: string;
   created_at: string;
   updated_at: string;

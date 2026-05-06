@@ -278,7 +278,7 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 
 - `mode=read` 适合解释、分析、定位
 - `mode=review` 适合 diff/风险审查
-- `mode=write` 适合真实改代码
+- `mode=write` 适合真实改代码；未显式传 `max_turns` 时会使用比底层 `claude_implement` 更高的默认轮数，适合高层任务描述
 - `mode=auto` 会根据 `diff`、`constraints`、`files` 和任务措辞推断
 
 ### 6. Setup 与 Review Gate
@@ -413,7 +413,7 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 }
 ```
 
-`claude_job_wait` 会在任务变为 `succeeded`、`failed` 或 `cancelled` 时返回完整 job/result；超时则报错。
+`claude_job_wait` 会在后台进程变为 `succeeded`、`failed` 或 `cancelled` 时返回完整 job/result；超时则报错。注意 `job.status` 表示后台进程状态，不等于 Claude 任务质量。终态 job 可能同时返回 `job.status="succeeded"` 和 `job.result_status="partial"`，这表示进程正常结束，但 Claude 达到 `max_turns` 或只完成了部分工作。遇到 `partial` / `needs_user` 时，应先用 `claude_result` 或 `claude_run_inspect` 查看，再决定 `resume_latest`、`claude_apply preview=true` 或清理 worktree。
 
 如果后台任务历史积累较多，可以先 dry-run 看看哪些终态任务会被清理：
 
@@ -481,7 +481,7 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 }
 ```
 
-后台实现同样可配合 `claude_job_wait` 使用；如果只想做非阻塞轮询，仍可继续使用 `claude_jobs` 和 `claude_job_result`。
+后台实现同样可配合 `claude_job_wait` 使用；如果只想做非阻塞轮询，仍可继续使用 `claude_jobs` 和 `claude_job_result`。读取后台结果时优先看 `job.result_status`：`success` 才代表 Claude 任务完整完成，`partial` 代表有可检查的部分改动但不能直接视为完成，`needs_user` 代表 Claude 停下来要求用户决策。
 
 如果只是继续当前仓库最近一次可续接的 implement session，可直接让服务端解析最近日志：
 

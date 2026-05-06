@@ -917,13 +917,15 @@ describe("claude cli argument construction", () => {
 
     await store.create({
       job_id: "job-done",
-      type: "review",
+      type: "implement",
       status: "succeeded",
+      result_status: "partial",
       cwd: repo,
       created_at: "2026-05-05T00:00:00.000Z",
       updated_at: "2026-05-05T00:00:01.000Z",
       payload: { cwd: repo, task: "review this" },
-      result: { status: "success", summary: "done" },
+      summary: "Implement partial: Hit max turns after editing README.",
+      result: { status: "partial", claude_report: { status: "partial", summary: "Hit max turns after editing README." } },
     });
 
     const reloaded = await import("../src/claude-cli.js");
@@ -933,7 +935,7 @@ describe("claude cli argument construction", () => {
         job_id: string;
         timeout_ms?: number;
         poll_interval_ms?: number;
-      }) => Promise<{ job: { status: string } }>;
+      }) => Promise<{ job: { status: string; result_status?: string; summary?: string } }>;
     }).waitForBackgroundJob;
 
     const result = await waitForBackgroundJob!({
@@ -944,8 +946,63 @@ describe("claude cli argument construction", () => {
     });
 
     expect(result.job.status).toBe("succeeded");
+    expect(result.job.result_status).toBe("partial");
+    expect(result.job.summary).toContain("Implement partial");
 
     delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("records partial Claude outcomes separately from successful background process completion", async () => {
+    const { repo, stateDir } = await createGitRepoFixture("codex-bg-partial-");
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+    const stdout = JSON.stringify({
+      session_id: "sess-bg-partial",
+      subtype: "max_turns",
+      structured_output: {
+        status: "success",
+        summary: "Hit max turns after editing README.",
+        is_error: true,
+        terminal_reason: "max_turns",
+      },
+    });
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return {
+        ...actual,
+        spawn: vi.fn((bin: string, args: string[], options: { cwd?: string }) => {
+          if (bin !== "claude") return actual.spawn(bin, args, options as never);
+          writeFileSync(path.join(options.cwd!, "README.md"), "# changed\n");
+          return createClaudeSpawnResult(stdout, "", 1);
+        }),
+      };
+    });
+
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const jobs = await import("../src/jobs.js");
+    const store = new jobs.JobStore(stateDir);
+    await store.init();
+    await store.create({
+      job_id: "job-bg-partial",
+      status: "queued",
+      cwd: repo,
+      type: "implement",
+      created_at: "2026-05-05T00:00:00.000Z",
+      updated_at: "2026-05-05T00:00:00.000Z",
+      payload: { cwd: repo, task: "Change README.", worktreeName: "codex-delegated-bg-partial", max_turns: 1 },
+    });
+
+    await reloaded.executeBackgroundJob("job-bg-partial");
+    const result = await reloaded.getBackgroundJobResult({ cwd: repo, job_id: "job-bg-partial" });
+
+    expect(result?.job.status).toBe("succeeded");
+    expect(result?.job.result_status).toBe("partial");
+    expect(result?.job.summary).toContain("Implement partial");
+    expect(result?.result?.status).toBe("partial");
+
+    vi.doUnmock("node:child_process");
     vi.resetModules();
   });
 
@@ -1304,7 +1361,7 @@ describe("claude cli argument construction", () => {
   });
 
   it("routes claude_task write mode to a background implement job", async () => {
-    const { repo } = await createWorkflowFixture();
+    const { repo, jobStore } = await createWorkflowFixture();
     const spawned = createDetachedSpawnResult(6002);
 
     vi.doMock("node:child_process", async () => {
@@ -1326,6 +1383,8 @@ describe("claude cli argument construction", () => {
     expect(result.delegated_mode).toBe("write");
     expect(result.job?.type).toBe("implement");
     expect(result.job?.status).toBe("queued");
+    const stored = await jobStore.get(result.job!.job_id);
+    expect(stored?.payload.max_turns).toBe(25);
     expect(Array.isArray(result.next_actions)).toBe(true);
   });
 

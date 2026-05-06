@@ -77,6 +77,7 @@ const SESSION_DIR = path.join(process.cwd(), ".codex-claude-delegate");
 const JOB_STATE_DIR_ENV = "CODEX_CLAUDE_BACKGROUND_STATE_DIR";
 const REVIEW_GATE_RELATIVE_PATH = path.join(".codex-claude-delegate", "review-gate.json");
 const REVIEW_GATE_HOOK_COMMAND = "node '${CLAUDE_PLUGIN_ROOT}/hooks/review-gate-stop.mjs'";
+const TASK_WRITE_DEFAULT_MAX_TURNS = 25;
 
 // ---- Session store (lazy init) ----
 
@@ -271,6 +272,7 @@ function toJobSummary(record: BackgroundJobRecord): BackgroundJobSummary {
     job_id: record.job_id,
     type: record.type,
     status: record.status,
+    result_status: record.result_status ?? extractBackgroundResultStatus(record.result),
     cwd: record.cwd,
     created_at: record.created_at,
     updated_at: record.updated_at,
@@ -282,20 +284,46 @@ function toJobSummary(record: BackgroundJobRecord): BackgroundJobSummary {
   };
 }
 
+function extractBackgroundResultStatus(result?: Record<string, unknown>): RunLogStatus | undefined {
+  if (!result) return undefined;
+  if (isRunLogStatus(result.status)) return result.status;
+  const claudeReport = result.claude_report;
+  if (claudeReport && typeof claudeReport === "object") {
+    const reportStatus = (claudeReport as { status?: unknown }).status;
+    if (isRunLogStatus(reportStatus)) return reportStatus;
+  }
+  return undefined;
+}
+
+function isRunLogStatus(value: unknown): value is RunLogStatus {
+  return value === "success" || value === "failed" || value === "partial" || value === "needs_user" || value === "unknown";
+}
+
+function summarizeWithOutcome(type: BackgroundJobType, result: Record<string, unknown>, summary: string): string {
+  const status = extractBackgroundResultStatus(result);
+  if (!status || status === "success") return summary;
+  const label =
+    type === "query" ? "Query" :
+      type === "review" ? "Review" :
+        type === "implement" ? "Implement" :
+          type === "apply" ? "Apply" : "Cleanup";
+  return `${label} ${status}: ${summary}`;
+}
+
 function summarizeBackgroundResult(type: BackgroundJobType, result: Record<string, unknown>): string | undefined {
   if (type === "query") {
     const data = result.data;
     if (data && typeof data === "object" && typeof (data as { answer?: unknown }).answer === "string") {
-      return `Query completed: ${String((data as { answer: string }).answer).slice(0, 80)}`;
+      return summarizeWithOutcome(type, result, `Query completed: ${String((data as { answer: string }).answer).slice(0, 80)}`);
     }
-    return "Query completed";
+    return summarizeWithOutcome(type, result, "Query completed");
   }
   if (type === "implement") {
     const claudeReport = result.claude_report;
     if (claudeReport && typeof claudeReport === "object" && typeof (claudeReport as { summary?: unknown }).summary === "string") {
-      return (claudeReport as { summary: string }).summary;
+      return summarizeWithOutcome(type, result, (claudeReport as { summary: string }).summary);
     }
-    return "Implement job completed";
+    return summarizeWithOutcome(type, result, "Implement job completed");
   }
   if (type === "apply") {
     const data = result.data;
@@ -313,9 +341,9 @@ function summarizeBackgroundResult(type: BackgroundJobType, result: Record<strin
   }
   const data = result.data;
   if (data && typeof data === "object" && typeof (data as { severity?: unknown }).severity === "string") {
-    return `Review completed (${(data as { severity: string }).severity})`;
+    return summarizeWithOutcome(type, result, `Review completed (${(data as { severity: string }).severity})`);
   }
-  return "Review completed";
+  return summarizeWithOutcome(type, result, "Review completed");
 }
 
 function getBackgroundWorktreeName(type: BackgroundJobType, payload: Record<string, unknown>, result: Record<string, unknown>): string | undefined {
@@ -1284,7 +1312,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, runId: string): Prom
       files: input.files,
       constraints: input.constraints,
       timeout_sec: input.timeout_sec,
-      max_turns: input.max_turns,
+      max_turns: input.max_turns ?? TASK_WRITE_DEFAULT_MAX_TURNS,
       resume_latest: input.resume_latest,
       background: true,
     });
@@ -1302,7 +1330,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, runId: string): Prom
     files: input.files,
     constraints: input.constraints,
     timeout_sec: input.timeout_sec,
-    max_turns: input.max_turns,
+    max_turns: input.max_turns ?? TASK_WRITE_DEFAULT_MAX_TURNS,
     resume_latest: input.resume_latest,
   }, runId);
   const workflow = await getClaudeResult({ cwd: input.cwd, run_id: runId }).catch(() => null);
@@ -2589,6 +2617,7 @@ export async function executeBackgroundJob(jobId: string): Promise<void> {
 
     await jobStore.update(jobId, {
       status: "succeeded",
+      result_status: extractBackgroundResultStatus(result),
       updated_at: new Date().toISOString(),
       result,
       summary: summarizeBackgroundResult(running.type, result),

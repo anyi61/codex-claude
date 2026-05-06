@@ -143,9 +143,9 @@ src/
 | `claude_review` | 只读审查，可同步执行或 `background=true` 入队 |
 | `claude_implement` | 在隔离 worktree 中实现任务，可同步执行或 `background=true` 入队 |
 | `claude_jobs` | 列出后台 query/review/implement/apply/cleanup 任务 |
-| `claude_job_result` | 按 `job_id` 读取后台任务状态和结果 |
+| `claude_job_result` | 按 `job_id` 读取后台进程状态、Claude 任务结果状态和结果 |
 | `claude_job_cancel` | 取消 queued/running 后台任务 |
-| `claude_job_wait` | 阻塞等待后台任务进入终态 |
+| `claude_job_wait` | 阻塞等待后台进程进入终态 |
 | `claude_job_cleanup` | dry-run 或删除当前仓库较旧的终态后台任务记录 |
 | `claude_apply` | 将 delegated worktree 变更 preview/apply 到主工作区，也可后台入队 |
 | `claude_cleanup` | dry-run 或清理 delegated worktree，也可后台入队 |
@@ -532,6 +532,8 @@ Claude CLI 的 `--json-schema` 必须放在 `--allowedTools` 和 `--disallowedTo
 implement 模式需要读文件、编辑、运行构建等多项操作。`maxTurns: 8` 时 Claude 往往未完成任务就达到上限，退出码为 1 (`error_max_turns`)。但此时 stdout 中仍有有效的结构化输出，不应直接丢弃。
 
 修复：implement maxTurns → 15；非零退出时仍尝试解析 stdout 中的 structured_output。
+
+后台任务需要区分两层状态：`job.status` 表示后台进程是否结束，`job.result_status` 表示 Claude 任务语义结果。进程可以是 `succeeded`，同时任务是 `partial`，例如 Claude 达到 `max_turns` 但已经写入部分代码。UI 和调用方必须优先展示 `result_status`，避免把“进程正常退出”误判为“需求完整完成”。`claude_task mode=write` 的高层入口默认使用更高的 turn budget，用户显式传入 `max_turns` 时保持用户值。
 
 ### 8.3 `claude auth status` 返回 JSON
 

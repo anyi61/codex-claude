@@ -268,7 +268,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_job_result",
     description:
-      "Load one background job record, including final result when available.",
+      "Load one background job record, including process status, Claude result_status, and final result when available.",
     inputSchema: {
       type: "object",
       required: ["cwd", "job_id"],
@@ -294,7 +294,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_job_wait",
     description:
-      "Wait for a background job to reach a terminal state or timeout.",
+      "Wait for a background job process to reach a terminal state or timeout; inspect job.result_status for the Claude task outcome.",
     inputSchema: {
       type: "object",
       required: ["cwd", "job_id"],
