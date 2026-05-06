@@ -10,7 +10,8 @@
     "dev": "tsx src/server.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "audit:docs": "node --import tsx debug/doc-audit.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
