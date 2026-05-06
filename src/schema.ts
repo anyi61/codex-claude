@@ -198,10 +198,11 @@ export interface DelegatedWorktreeSummary {
   worktree_path: string;
   updated_at?: string;
   stale: boolean;
+  orphaned?: boolean;
 }
 
 export interface WorkspaceAttentionItem {
-  kind: "queued_job" | "apply_blocked" | "stale_worktree";
+  kind: "queued_job" | "apply_blocked" | "stale_worktree" | "orphan_worktree";
   severity: "info" | "warning";
   message: string;
 }
@@ -221,6 +222,7 @@ export interface ClaudeWorkspaceStatusResult {
     recent_runs: number;
     delegated_worktrees: number;
     stale_worktrees: number;
+    orphan_worktrees: number;
     apply_blocked_runs: number;
   };
   attention_items: WorkspaceAttentionItem[];

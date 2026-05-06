@@ -1,5 +1,5 @@
 import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
@@ -130,6 +130,7 @@ describe("claude cli argument construction", () => {
     expect(args).toContain("--output-format");
     expect(args).toContain("json");
     expect(args).toContain("--json-schema");
+    expect(args.join("\0")).toContain("Bash(mkdir -p *)");
   });
 
   it("keeps read-only modes from seeing Edit or Write", () => {
@@ -639,6 +640,94 @@ describe("claude cli argument construction", () => {
     vi.resetModules();
   });
 
+  it("precreates common project directories before handing an implement worktree to Claude", async () => {
+    const { repo } = await createGitRepoFixture("codex-impl-scaffold-");
+    const stdout = JSON.stringify({
+      session_id: "sess-scaffold",
+      structured_output: {
+        status: "success",
+        summary: "Inspected prepared workspace.",
+        changed_files: [],
+        commands_run: [],
+        tests: { ran: false },
+        risks: [],
+        next_steps: [],
+      },
+    });
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return {
+        ...actual,
+        spawn: vi.fn((bin: string, args: string[], options: { cwd?: string }) => {
+          if (bin !== "claude") return actual.spawn(bin, args, options as never);
+          expect(options.cwd).toBe(path.join(repo, ".claude", "worktrees", "codex-delegated-scaffold"));
+          expect(existsSync(path.join(options.cwd!, "src"))).toBe(true);
+          expect(existsSync(path.join(options.cwd!, "tests"))).toBe(true);
+          expect(existsSync(path.join(options.cwd!, ".github", "workflows"))).toBe(true);
+          return createClaudeSpawnResult(stdout, "", 0);
+        }),
+      };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeImplement({
+      cwd: repo,
+      task: "Prepare a project layout.",
+      worktreeName: "codex-delegated-scaffold",
+      max_turns: 1,
+    }, "run-scaffold");
+
+    expect(result.status).toBe("success");
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  });
+
+  it("returns a structured failed implement result when a resumed Claude session is unavailable", async () => {
+    const { repo, logDir, stateDir } = await createGitRepoFixture("codex-impl-resume-missing-");
+    await writeFile(path.join(logDir, "run-implement-prev.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "success", summary: "Previous implementation" },
+      session: { returned_session_id: "sess-missing" },
+    }));
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return {
+        ...actual,
+        spawn: vi.fn((bin: string, args: string[], options: unknown) => {
+          if (bin !== "claude") return actual.spawn(bin, args, options as never);
+          return createClaudeSpawnResult("", "No conversation found with session ID: sess-missing\n", 1);
+        }),
+      };
+    });
+
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeImplement({
+      cwd: repo,
+      task: "Continue latest implementation.",
+      resume_latest: true,
+      worktreeName: "codex-delegated-resume-missing",
+      max_turns: 1,
+    }, "run-resume-missing");
+
+    expect(result.status).toBe("failed");
+    expect(result.execution.exit_code).toBe(1);
+    expect(result.warnings.join("\n")).toContain("session");
+    expect(result.claude_report).toMatchObject({
+      status: "failed",
+      summary: expect.stringContaining("session"),
+    });
+    expect((result.server_observed as { worktree_name: string }).worktree_name).toBe("codex-delegated-resume-missing");
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  });
+
   it("throws structured diagnostics and next actions when review produces no output", async () => {
     const { repo } = await createGitRepoFixture("codex-review-no-output-");
 
@@ -1024,6 +1113,32 @@ describe("claude cli argument construction", () => {
     expect(result.next_actions.map((action) => action.tool)).toContain("claude_review");
   });
 
+  it("exposes inspection and cleanup next actions for needs_user implement runs", async () => {
+    const { repo, logDir } = await createWorkflowFixture();
+    await writeFile(path.join(logDir, "run-needs-user.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "needs_user", summary: "Claude needs a directory created." },
+      observed: {
+        worktree_path: ".claude/worktrees/codex-delegated-needs-user",
+        worktree_name: "codex-delegated-needs-user",
+        changed_files: [],
+      },
+    }));
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.getClaudeResult({ cwd: repo, run_id: "run-needs-user" });
+
+    expect(result.run?.status).toBe("needs_user");
+    expect(result.next_actions.map((action) => action.tool)).toEqual(
+      expect.arrayContaining(["claude_run_inspect", "claude_cleanup", "claude_implement"])
+    );
+    expect(result.next_actions.find((action) => action.tool === "claude_run_inspect")?.args).toEqual({
+      cwd: repo,
+      run_id: "run-needs-user",
+    });
+  });
+
   it("reports a shaped claude_result miss when no finished jobs or runs exist", async () => {
     const { repo } = await createWorkflowFixture();
 
@@ -1126,12 +1241,15 @@ describe("claude cli argument construction", () => {
     expect(result.counts.queued_jobs).toBe(1);
     expect(result.counts.terminal_jobs).toBeGreaterThanOrEqual(1);
     expect(result.counts.apply_blocked_runs).toBe(1);
+    expect(result.counts.orphan_worktrees).toBe(1);
     expect(result.latest_sessions[0]?.session_id).toBe("sess-query");
     expect(result.delegated_worktrees.map((worktree) => worktree.worktree_name)).toEqual(
       expect.arrayContaining(["codex-delegated-stale", "codex-delegated-fresh"])
     );
+    expect(result.delegated_worktrees.find((worktree) => worktree.worktree_name === "codex-delegated-fresh")?.orphaned).toBe(true);
+    expect(result.delegated_worktrees.find((worktree) => worktree.worktree_name === "codex-delegated-stale")?.orphaned).toBe(false);
     expect(result.attention_items.map((item) => item.kind)).toEqual(
-      expect.arrayContaining(["queued_job", "apply_blocked", "stale_worktree"])
+      expect.arrayContaining(["queued_job", "apply_blocked", "stale_worktree", "orphan_worktree"])
     );
   });
 
@@ -1155,6 +1273,7 @@ describe("claude cli argument construction", () => {
       recent_runs: 0,
       delegated_worktrees: 0,
       stale_worktrees: 0,
+      orphan_worktrees: 0,
       apply_blocked_runs: 0,
     });
     expect(result.attention_items).toEqual([]);

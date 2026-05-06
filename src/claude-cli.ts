@@ -833,6 +833,26 @@ function buildNextActions(input: {
     });
   }
 
+  if (run?.status === "needs_user") {
+    actions.push({
+      tool: "claude_run_inspect",
+      reason: "Claude stopped for user input; inspect the run before deciding whether to resume, apply, or discard it.",
+      args: { cwd: input.cwd, run_id: run.run_id },
+    });
+    if (worktreePath) {
+      actions.push({
+        tool: "claude_cleanup",
+        reason: "If the needs_user worktree is not useful, clean delegated worktrees after inspection.",
+        args: { cwd: input.cwd, dry_run: true },
+      });
+    }
+    actions.push({
+      tool: "claude_implement",
+      reason: "If the Claude session cannot be resumed, start a fresh implementation with the same task.",
+      args: { cwd: input.cwd },
+    });
+  }
+
   if (input.related_runs?.cleanup_run_id) {
     actions.push({
       tool: "claude_run_inspect",
@@ -989,6 +1009,17 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
   const terminalJobs = [...succeededJobs.entries, ...failedJobs.entries, ...cancelledJobs.entries]
     .sort((a, b) => compareRecency(b.updated_at, a.updated_at))
     .slice(0, limit);
+  const referencedWorktreeNames = new Set<string>();
+  for (const run of recentRuns.entries) {
+    if (run.worktree_name) referencedWorktreeNames.add(run.worktree_name);
+  }
+  for (const job of [...runningJobs.entries, ...queuedJobs.entries, ...terminalJobs]) {
+    if (job.worktree_name) referencedWorktreeNames.add(job.worktree_name);
+  }
+  const summarizedWorktrees = worktrees.map((worktree) => ({
+    ...worktree,
+    orphaned: !referencedWorktreeNames.has(worktree.worktree_name),
+  }));
 
   const store = await getStore();
   const repoKey = await computeRepoKey(input.cwd);
@@ -1019,12 +1050,19 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
     }
   }
 
-  for (const worktree of worktrees) {
+  for (const worktree of summarizedWorktrees) {
     if (worktree.stale) {
       attentionItems.push({
         kind: "stale_worktree",
         severity: "info",
         message: `Delegated worktree ${worktree.worktree_name} looks stale and may be ready for cleanup.`,
+      });
+    }
+    if (worktree.orphaned) {
+      attentionItems.push({
+        kind: "orphan_worktree",
+        severity: "info",
+        message: `Delegated worktree ${worktree.worktree_name} is not referenced by recent runs or jobs.`,
       });
     }
   }
@@ -1036,14 +1074,15 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
     recent_terminal_jobs: terminalJobs,
     recent_runs: recentRuns.entries,
     latest_sessions: latestSessions,
-    delegated_worktrees: worktrees,
+    delegated_worktrees: summarizedWorktrees,
     counts: {
       running_jobs: runningJobs.entries.length,
       queued_jobs: queuedJobs.entries.length,
       terminal_jobs: terminalJobs.length,
       recent_runs: recentRuns.entries.length,
-      delegated_worktrees: worktrees.length,
-      stale_worktrees: worktrees.filter((worktree) => worktree.stale).length,
+      delegated_worktrees: summarizedWorktrees.length,
+      stale_worktrees: summarizedWorktrees.filter((worktree) => worktree.stale).length,
+      orphan_worktrees: summarizedWorktrees.filter((worktree) => worktree.orphaned).length,
       apply_blocked_runs: recentRuns.entries.filter((run) => run.lifecycle === "apply_blocked").length,
     },
     attention_items: attentionItems,
@@ -1471,6 +1510,14 @@ export async function resolveLatestImplementSession(input: { cwd: string }): Pro
     }
   }
   return null;
+}
+
+async function ensureImplementWorkspaceScaffold(worktreePath: string): Promise<void> {
+  await Promise.all([
+    mkdir(path.join(worktreePath, "src"), { recursive: true }),
+    mkdir(path.join(worktreePath, "tests"), { recursive: true }),
+    mkdir(path.join(worktreePath, ".github", "workflows"), { recursive: true }),
+  ]);
 }
 
 async function findDirtyFiles(cwd: string, requestedFiles: string[]): Promise<string[]> {
@@ -2247,6 +2294,7 @@ function createImplementOptions(
       "Bash(echo *)",
       "Bash(date *)",
       "Bash(mkdir *)",
+      "Bash(mkdir -p *)",
       "Bash(cp *)",
       "Bash(mv *)",
       "Bash(node *)",
@@ -2501,7 +2549,7 @@ export async function runClaudeQuery(
 // ---- Session failure detection ----
 
 function isSessionNotFoundError(msg: string): boolean {
-  const patterns = ["session not found", "not found", "session.*expired", "invalid session"];
+  const patterns = ["session not found", "no conversation found", "not found", "session.*expired", "invalid session"];
   return patterns.some((p) => new RegExp(p, "i").test(msg));
 }
 
@@ -2630,6 +2678,7 @@ export async function runClaudeImplement(
     }
     const resolvedBase = await execCapture("git", ["rev-parse", "HEAD"], { cwd: worktreePath });
     baseCommit = resolvedBase.trim() || undefined;
+    await ensureImplementWorkspaceScaffold(worktreePath);
   } catch (err) {
     await logRun(runId, {
       type: "implement",
@@ -2663,10 +2712,54 @@ export async function runClaudeImplement(
   } catch (err) {
     const errorMsg = (err as Error).message;
 
-    // If explicit resume failed, mark session expired
     if (resumeSessionId && isSessionNotFoundError(errorMsg)) {
       store.markExpired(resumeSessionId);
       log(`Session ${resumeSessionId} not found, marked expired`);
+      const durationMs = Date.now() - startTime;
+      const failedExecution: ExecutionMetadata = {
+        exit_code: 1,
+        duration_ms: durationMs,
+        timed_out: false,
+        stdout_tail: "",
+        stderr_tail: errorMsg.slice(-4000),
+      };
+      const warnings = [
+        `Claude session ${resumeSessionId} is unavailable and was marked expired. Start a fresh claude_implement run instead of resume_latest.`,
+      ];
+      const failedReport = {
+        status: "failed",
+        summary: `Claude session ${resumeSessionId} is unavailable.`,
+        changed_files: [],
+        commands_run: [],
+        tests: { ran: false },
+        risks: ["The delegated worktree may still exist and should be inspected or cleaned up."],
+        next_steps: [
+          "Inspect the failed run with claude_run_inspect.",
+          "Start a fresh claude_implement run if the task still needs to continue.",
+          "Clean up the delegated worktree if it is not useful.",
+        ],
+      };
+      const observed = await observeResult(implementInput.cwd, worktreeName, baseCommit, requestedFiles).catch(() => undefined);
+      const sessionLog: SessionLog = {
+        requested_session_id: resumeSessionId,
+        resumed: true,
+        forked,
+        returned_session_id: null,
+      };
+      await logRun(runId, {
+        type: "implement",
+        input: implementInput,
+        report: failedReport,
+        observed,
+        execution: failedExecution,
+        session: sessionLog,
+        error: errorMsg,
+        duration_ms: durationMs,
+      });
+      return makeEnvelope("failed", undefined, failedExecution, warnings, {
+        claude_report: failedReport,
+        server_observed: observed,
+      });
     }
 
     await logRun(runId, { type: "implement", input: implementInput, error: errorMsg, duration_ms: Date.now() - startTime });
