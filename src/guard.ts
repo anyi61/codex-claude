@@ -5,10 +5,15 @@ import path from "node:path";
 
 // Allowlist of directories that MCP tools may operate within.
 // Override via CODEX_CLAUDE_ALLOW_ROOTS (colon-separated paths on macOS/Linux).
-function dangerousRoot(raw: string): boolean {
+export function dangerousRoot(raw: string): boolean {
   const resolved = path.resolve(raw);
   const home = process.env.HOME ? path.resolve(process.env.HOME) : "";
   return resolved === "/" || resolved === "/etc" || resolved === "/tmp" || (!!home && resolved === home);
+}
+
+function splitAllowRootsEnv(raw: string): string[] {
+  const delimiterPattern = path.delimiter === ";" ? /[;,]/g : /[:,]/g;
+  return raw.split(delimiterPattern).map((part) => part.trim()).filter(Boolean);
 }
 
 export function getAllowRoots(): string[] {
@@ -22,7 +27,7 @@ export function getAllowRoots(): string[] {
   };
   const env = process.env.CODEX_CLAUDE_ALLOW_ROOTS;
   if (env) {
-    return env.split(":").filter(Boolean).map(normalizeRoot);
+    return splitAllowRootsEnv(env).map(normalizeRoot);
   }
   const home = process.env.HOME;
   return [

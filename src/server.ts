@@ -9,6 +9,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { validateCwd, validateFilesWithinCwd, checkRecursion, MAX_BRIDGE_DEPTH } from "./guard.js";
+import { configureCodexAllowRoot, type CodexAllowRootConfiguration } from "./codex-config.js";
 import {
   cancelBackgroundJob,
   checkClaudeStatus,
@@ -83,6 +84,11 @@ const TOOL_DEFINITIONS = [
       required: ["cwd"],
       properties: {
         cwd: { type: "string", description: "Working directory to inspect and prepare" },
+        configure_allow_root: {
+          type: "boolean",
+          description:
+            "When true, add cwd to CODEX_CLAUDE_ALLOW_ROOTS in the Codex MCP config and update this MCP process so setup can continue.",
+        },
       },
     },
   },
@@ -381,9 +387,32 @@ export async function handleToolCall(name: string, args: unknown, runId = random
       case "claude_setup": {
         const parsed = claudeSetupInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const check = await validateCwd(parsed.data.cwd);
-        if (!check.ok) return errorResult(check.error!);
-        return jsonResult(await runClaudeSetup({ cwd: check.resolved }));
+        let check = await validateCwd(parsed.data.cwd);
+        let allowRootConfiguration: CodexAllowRootConfiguration | undefined;
+        if (!check.ok && parsed.data.configure_allow_root) {
+          allowRootConfiguration = await configureCodexAllowRoot(parsed.data.cwd);
+          check = await validateCwd(parsed.data.cwd);
+        }
+        if (!check.ok) {
+          return errorResult({
+            error: check.error!,
+            next_actions: [
+              {
+                tool: "claude_setup",
+                args: { cwd: parsed.data.cwd, configure_allow_root: true },
+                reason:
+                  "Add this cwd to CODEX_CLAUDE_ALLOW_ROOTS in the Codex MCP config, then retry setup in the same MCP process.",
+              },
+            ],
+            config_hint: {
+              env_key: "CODEX_CLAUDE_ALLOW_ROOTS",
+              separator: process.platform === "win32" ? ";" : ":",
+              example: `/path/to/repo${process.platform === "win32" ? ";" : ":"}/path/to/another-repo`,
+            },
+          });
+        }
+        const result = await runClaudeSetup({ cwd: check.resolved });
+        return jsonResult(allowRootConfiguration ? { ...result, allow_root_configuration: allowRootConfiguration } : result);
       }
 
       case "claude_runs": {

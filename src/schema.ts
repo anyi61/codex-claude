@@ -181,6 +181,7 @@ export interface ClaudeWorkspaceStatusInput {
 
 export interface ClaudeSetupInput {
   cwd: string;
+  configure_allow_root?: boolean;
 }
 
 export type ClaudeReviewGateAction = "status" | "enable" | "disable";
@@ -246,6 +247,7 @@ export interface ClaudeReviewGateResult extends ReviewGateState {
 
 export interface ClaudeSetupResult {
   workspace_root: string;
+  allow_root_configuration?: Record<string, unknown>;
   review_gate: ReviewGateState;
   claude_available: boolean;
   claude_version: string | null;
@@ -501,6 +503,7 @@ export const claudeStatusInputSchema = z.object({
 
 export const claudeSetupInputSchema = z.object({
   cwd: cwdSchema,
+  configure_allow_root: z.boolean().optional().default(false),
 });
 
 export const claudeQueryInputSchema = z.object({

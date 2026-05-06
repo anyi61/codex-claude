@@ -14,6 +14,7 @@ const {
   getBackgroundJobResultMock,
   cancelBackgroundJobMock,
   cleanupBackgroundJobsMock,
+  configureCodexAllowRootMock,
   startBackgroundApplyMock,
   startBackgroundCleanupMock,
   startBackgroundQueryMock,
@@ -32,6 +33,7 @@ const {
   getBackgroundJobResultMock: vi.fn(),
   cancelBackgroundJobMock: vi.fn(),
   cleanupBackgroundJobsMock: vi.fn(),
+  configureCodexAllowRootMock: vi.fn(),
   startBackgroundApplyMock: vi.fn(),
   startBackgroundCleanupMock: vi.fn(),
   startBackgroundQueryMock: vi.fn(),
@@ -44,6 +46,10 @@ vi.mock("../src/guard.js", () => ({
   supportsWorktree: supportsWorktreeMock,
   validateCwd: validateCwdMock,
   validateFilesWithinCwd: validateFilesWithinCwdMock,
+}));
+
+vi.mock("../src/codex-config.js", () => ({
+  configureCodexAllowRoot: configureCodexAllowRootMock,
 }));
 
 vi.mock("../src/claude-cli.js", () => ({
@@ -185,6 +191,46 @@ describe("server background job handlers", () => {
     expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
     expect(runClaudeSetupMock).toHaveBeenCalledWith({ cwd: "/repo/resolved" });
     expect(payload.workspace_root).toBe("/repo/resolved");
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("can configure the requested cwd as an allow root before running claude_setup", async () => {
+    validateCwdMock
+      .mockResolvedValueOnce({ ok: false, resolved: "/repo/input", error: "outside allowed roots" })
+      .mockResolvedValueOnce({ ok: true, resolved: "/repo/input" });
+    configureCodexAllowRootMock.mockResolvedValue({
+      config_path: "/home/user/.codex/config.toml",
+      changed: true,
+      allow_roots: ["/repo/input"],
+      env_value: "/repo/input",
+    });
+    runClaudeSetupMock.mockResolvedValue({
+      workspace_root: "/repo/input",
+      review_gate: { enabled: false, pending_review: false },
+      claude_available: true,
+      claude_version: "1.0.0",
+      auth_status: "ok",
+      git_available: true,
+      worktree_capable: true,
+      cwd_valid: true,
+      cwd_is_git_repo: true,
+      errors: [],
+      next_steps: [],
+    });
+
+    const result = await handleToolCall("claude_setup", {
+      cwd: "/repo/input",
+      configure_allow_root: true,
+    });
+    const payload = parsePayload(result);
+
+    expect(configureCodexAllowRootMock).toHaveBeenCalledWith("/repo/input");
+    expect(validateCwdMock).toHaveBeenCalledTimes(2);
+    expect(runClaudeSetupMock).toHaveBeenCalledWith({ cwd: "/repo/input" });
+    expect(payload.allow_root_configuration).toMatchObject({
+      changed: true,
+      env_value: "/repo/input",
+    });
     expect(result.isError).toBeUndefined();
   });
 

@@ -32,6 +32,17 @@ describe("guard safety checks", () => {
     await expect(validateCwd(path.dirname(root))).resolves.toMatchObject({ ok: false });
   });
 
+  it("accepts comma-separated allow roots from legacy Codex config edits", async () => {
+    const secondRoot = await mkdtemp(path.join(os.tmpdir(), "codex-guard-second-"));
+    const secondRepo = path.join(secondRoot, "repo");
+    await import("node:fs/promises").then((fs) => fs.mkdir(secondRepo));
+    process.env.CODEX_CLAUDE_ALLOW_ROOTS = `${root},${secondRoot}`;
+
+    await expect(validateCwd(secondRepo)).resolves.toMatchObject({ ok: true });
+
+    await rm(secondRoot, { recursive: true, force: true });
+  });
+
   it("rejects traversal through symlinks", async () => {
     const outside = await mkdtemp(path.join(os.tmpdir(), "codex-outside-"));
     const link = path.join(repo, "escape");

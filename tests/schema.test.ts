@@ -122,6 +122,7 @@ describe("schema definitions", () => {
 
   it("accepts setup and review-gate inputs", () => {
     expect(claudeSetupInputSchema.safeParse({ cwd: "/repo" }).success).toBe(true);
+    expect(claudeSetupInputSchema.safeParse({ cwd: "/repo", configure_allow_root: true }).success).toBe(true);
     expect(claudeReviewGateInputSchema.safeParse({ cwd: "/repo", action: "status" }).success).toBe(true);
     expect(claudeReviewGateInputSchema.safeParse({ cwd: "/repo", action: "enable" }).success).toBe(true);
     expect(claudeReviewGateInputSchema.safeParse({ cwd: "/repo", action: "disable" }).success).toBe(true);

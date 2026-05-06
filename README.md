@@ -24,7 +24,7 @@ Codex CLI
 | 工具 | 何时使用 | 关键参数 |
 |---|---|---|
 | `claude_status` | 快速检查 Claude CLI、Git、worktree、允许根目录和残留状态 | `cwd` |
-| `claude_setup` | 第一次接入或怀疑环境没配好时做完整就绪检查 | `cwd` |
+| `claude_setup` | 第一次接入或怀疑环境没配好时做完整就绪检查；也可显式把当前项目加入允许目录 | `cwd`, `configure_allow_root` |
 | `claude_task` | 推荐的高层入口，让服务端自动或按模式委托 query/review/implement | `cwd`, `task`, `mode=auto/read/review/write`, `background` |
 | `claude_query` | 只读问答、架构解释、代码定位；不会改文件 | `cwd`, `task`, `timeout_sec`, `background` |
 | `claude_review` | 审查 diff 或文件风险；不会改文件 | `cwd`, `task`, `diff`, `files`, `background` |
@@ -299,6 +299,19 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 - `git_available`
 - `worktree_capable`
 - `next_steps`
+
+如果当前项目还不在允许目录内，`claude_setup` 会返回结构化 `next_actions`，提示你用显式开关初始化当前目录：
+
+```json
+{
+  "cwd": "/path/to/repo",
+  "configure_allow_root": true
+}
+```
+
+这会把该目录写入 `~/.codex/config.toml` 的 `[mcp_servers.claude_delegate.env] CODEX_CLAUDE_ALLOW_ROOTS`，并更新当前 MCP 进程环境，让后续工具调用在同一会话里也能继续使用。出于安全考虑，只有显式传 `configure_allow_root: true` 才会扩大允许目录；危险根目录如 `/`、`/tmp` 和用户 home 根目录仍会被拒绝。
+
+`CODEX_CLAUDE_ALLOW_ROOTS` 推荐使用系统路径分隔符：macOS/Linux 使用 `:`，Windows 使用 `;`。为了兼容真实调试中常见的误配置，服务端也会容忍逗号分隔的旧值，并在下一次写配置时规范化为正确分隔符。
 
 如需启用或关闭 review gate：
 
