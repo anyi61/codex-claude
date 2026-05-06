@@ -29,6 +29,14 @@ interface JobCleanupInput {
 
 const TERMINAL_JOB_STATUSES = new Set<BackgroundJobStatus>(["succeeded", "failed", "cancelled"]);
 
+const ACTIVE_JOB_STATUSES = new Set<BackgroundJobStatus>(["queued", "running"]);
+
+interface ActiveFingerprintInput {
+  cwd: string;
+  type?: BackgroundJobType;
+  fingerprint: string;
+}
+
 export class JobStore {
   private readonly jobsDir: string;
 
@@ -149,6 +157,28 @@ export class JobStore {
       failed_count: failedCount,
       entries,
     };
+  }
+
+  async findActiveByFingerprint(input: ActiveFingerprintInput): Promise<BackgroundJobRecord | null> {
+    const jobs = await this.readAllRecords();
+    const match = jobs
+      .filter((entry): entry is BackgroundJobRecord => entry !== null)
+      .filter((entry) => entry.cwd === input.cwd)
+      .filter((entry) => !input.type || entry.type === input.type)
+      .filter((entry) => entry.fingerprint === input.fingerprint)
+      .filter((entry) => ACTIVE_JOB_STATUSES.has(entry.status))
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
+    return match ?? null;
+  }
+
+  async touchHeartbeat(jobId: string, heartbeatAt = new Date().toISOString()): Promise<BackgroundJobRecord | null> {
+    const current = await this.get(jobId);
+    if (!current) return null;
+    if (TERMINAL_JOB_STATUSES.has(current.status)) return current;
+    return this.update(jobId, {
+      heartbeat_at: heartbeatAt,
+      updated_at: heartbeatAt,
+    });
   }
 
   private getJobPath(jobId: string): string {
