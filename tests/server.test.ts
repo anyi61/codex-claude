@@ -17,7 +17,9 @@ const {
   configureCodexAllowRootMock,
   startBackgroundApplyMock,
   startBackgroundCleanupMock,
+  startBackgroundImplementMock,
   startBackgroundQueryMock,
+  startBackgroundReviewMock,
   waitForBackgroundJobMock,
 } = vi.hoisted(() => ({
   validateCwdMock: vi.fn(),
@@ -36,7 +38,9 @@ const {
   configureCodexAllowRootMock: vi.fn(),
   startBackgroundApplyMock: vi.fn(),
   startBackgroundCleanupMock: vi.fn(),
+  startBackgroundImplementMock: vi.fn(),
   startBackgroundQueryMock: vi.fn(),
+  startBackgroundReviewMock: vi.fn(),
   waitForBackgroundJobMock: vi.fn(),
 }));
 
@@ -73,9 +77,9 @@ vi.mock("../src/claude-cli.js", () => ({
   listRunLogs: vi.fn(),
   startBackgroundApply: startBackgroundApplyMock,
   startBackgroundCleanup: startBackgroundCleanupMock,
-  startBackgroundImplement: vi.fn(),
+  startBackgroundImplement: startBackgroundImplementMock,
   startBackgroundQuery: startBackgroundQueryMock,
-  startBackgroundReview: vi.fn(),
+  startBackgroundReview: startBackgroundReviewMock,
   waitForBackgroundJob: waitForBackgroundJobMock,
 }));
 
@@ -397,6 +401,31 @@ describe("server background job handlers", () => {
     expect((payload.job as Record<string, unknown>).type).toBe("query");
   });
 
+  it("routes claude_query default requests through startBackgroundQuery", async () => {
+    startBackgroundQueryMock.mockResolvedValue({
+      job: { job_id: "job-query-default", type: "query", status: "queued" },
+    });
+
+    const result = await handleToolCall("claude_query", {
+      cwd: "/repo/input",
+      task: "explain this without blocking",
+    });
+    const payload = parsePayload(result);
+
+    expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
+    expect(startBackgroundQueryMock).toHaveBeenCalledWith({
+      cwd: "/repo/resolved",
+      task: "explain this without blocking",
+      timeout_sec: 120,
+      max_turns: 8,
+      fast: undefined,
+      resume: undefined,
+      background: true,
+    });
+    expect((payload.job as Record<string, unknown>).job_id).toBe("job-query-default");
+    expect(result.isError).toBeUndefined();
+  });
+
   it("uses fast query defaults and passes resume override", async () => {
     startBackgroundQueryMock.mockResolvedValue({
       job: { job_id: "job-query-fast", type: "query", status: "queued" },
@@ -422,6 +451,69 @@ describe("server background job handlers", () => {
       background: true,
     });
     expect((payload.job as Record<string, unknown>).type).toBe("query");
+  });
+
+  it("routes claude_review default requests through startBackgroundReview", async () => {
+    startBackgroundReviewMock.mockResolvedValue({
+      job: { job_id: "job-review-default", type: "review", status: "queued" },
+    });
+
+    const result = await handleToolCall("claude_review", {
+      cwd: "/repo/input",
+      task: "review this",
+      files: ["README.md"],
+    });
+    const payload = parsePayload(result);
+
+    expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
+    expect(validateFilesWithinCwdMock).toHaveBeenCalledWith("/repo/resolved", ["README.md"]);
+    expect(startBackgroundReviewMock).toHaveBeenCalledWith({
+      cwd: "/repo/resolved",
+      task: "review this",
+      diff: undefined,
+      files: ["README.md"],
+      timeout_sec: 180,
+      max_turns: 10,
+      background: true,
+    });
+    expect((payload.job as Record<string, unknown>).job_id).toBe("job-review-default");
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("routes claude_implement default requests through startBackgroundImplement", async () => {
+    startBackgroundImplementMock.mockResolvedValue({
+      job: { job_id: "job-implement-default", type: "implement", status: "queued" },
+    });
+
+    const result = await handleToolCall("claude_implement", {
+      cwd: "/repo/input",
+      task: "implement this",
+      files: ["README.md"],
+      dirty_policy: "committed",
+    });
+    const payload = parsePayload(result);
+
+    expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
+    expect(validateFilesWithinCwdMock).toHaveBeenCalledWith("/repo/resolved", ["README.md"]);
+    expect(supportsWorktreeMock).toHaveBeenCalledWith("/repo/resolved");
+    expect(startBackgroundImplementMock).toHaveBeenCalledWith({
+      cwd: "/repo/resolved",
+      task: "implement this",
+      files: ["README.md"],
+      constraints: undefined,
+      timeout_sec: 600,
+      max_turns: 15,
+      session_key: undefined,
+      fork_session: undefined,
+      resume_latest: undefined,
+      max_cost_usd: undefined,
+      max_changed_files: undefined,
+      worktreeName: undefined,
+      background: true,
+      dirty_policy: "committed",
+    });
+    expect((payload.job as Record<string, unknown>).job_id).toBe("job-implement-default");
+    expect(result.isError).toBeUndefined();
   });
 
   it("returns validation errors for claude_job_result with empty job_id", async () => {
@@ -470,10 +562,11 @@ describe("server background job handlers", () => {
 
   it("routes claude_job_wait through waitForBackgroundJob with resolved cwd", async () => {
     waitForBackgroundJobMock.mockResolvedValue({
-      job_id: "job-1",
-      status: "succeeded",
-      completed: true,
+      job: { job_id: "job-1", status: "succeeded" },
+      waiting: false,
+      timed_out: false,
       result: { ok: true },
+      next_actions: [],
     });
 
     const result = await handleToolCall("claude_job_wait", {
@@ -491,7 +584,8 @@ describe("server background job handlers", () => {
       timeout_ms: 2000,
       poll_interval_ms: 100,
     });
-    expect(payload.status).toBe("succeeded");
+    expect((payload.job as Record<string, unknown>).status).toBe("succeeded");
+    expect(payload.timed_out).toBe(false);
     expect(result.isError).toBeUndefined();
   });
 

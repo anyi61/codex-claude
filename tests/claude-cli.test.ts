@@ -1046,7 +1046,7 @@ describe("claude cli argument construction", () => {
         job_id: string;
         timeout_ms?: number;
         poll_interval_ms?: number;
-      }) => Promise<{ job: { status: string; result_status?: string; summary?: string } }>;
+      }) => Promise<{ job: { status: string; result_status?: string; summary?: string }; waiting: boolean; timed_out: boolean; result?: Record<string, unknown> }>;
     }).waitForBackgroundJob;
 
     const result = await waitForBackgroundJob!({
@@ -1059,6 +1059,9 @@ describe("claude cli argument construction", () => {
     expect(result.job.status).toBe("succeeded");
     expect(result.job.result_status).toBe("partial");
     expect(result.job.summary).toContain("Implement partial");
+    expect(result.waiting).toBe(false);
+    expect(result.timed_out).toBe(false);
+    expect(result.result?.status).toBe("partial");
 
     delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
     vi.resetModules();
@@ -1177,7 +1180,7 @@ describe("claude cli argument construction", () => {
     vi.resetModules();
   });
 
-  it("times out waiting for a background job that stays running", async () => {
+  it("returns a structured timeout while a background job stays running", async () => {
     const { repo, store } = await createJobFixture();
 
     await store.create({
@@ -1200,14 +1203,66 @@ describe("claude cli argument construction", () => {
       }) => Promise<unknown>;
     }).waitForBackgroundJob;
 
-    await expect(
-      waitForBackgroundJob!({
-        cwd: repo,
+    const result = await waitForBackgroundJob!({
+      cwd: repo,
+      job_id: "job-running",
+      timeout_ms: 50,
+      poll_interval_ms: 10,
+    });
+
+    expect(result).toMatchObject({
+      waiting: true,
+      timed_out: true,
+      job: {
         job_id: "job-running",
-        timeout_ms: 50,
-        poll_interval_ms: 10,
-      })
-    ).rejects.toThrow(/Timed out/);
+        status: "running",
+      },
+    });
+    expect((result as { next_actions?: Array<{ tool: string }> }).next_actions?.map((action) => action.tool)).toEqual([
+      "claude_job_wait",
+      "claude_job_result",
+      "claude_job_cancel",
+    ]);
+  });
+
+  it("returns a structured timeout while a background job stays queued", async () => {
+    const { repo, store } = await createJobFixture();
+
+    await store.create({
+      job_id: "job-queued",
+      type: "review",
+      status: "queued",
+      cwd: repo,
+      created_at: "2026-05-05T00:01:00.000Z",
+      updated_at: "2026-05-05T00:01:00.000Z",
+      payload: { cwd: repo, task: "review it" },
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const waitForBackgroundJob = (reloaded as {
+      waitForBackgroundJob?: (input: {
+        cwd: string;
+        job_id: string;
+        timeout_ms?: number;
+        poll_interval_ms?: number;
+      }) => Promise<unknown>;
+    }).waitForBackgroundJob;
+
+    const result = await waitForBackgroundJob!({
+      cwd: repo,
+      job_id: "job-queued",
+      timeout_ms: 50,
+      poll_interval_ms: 10,
+    });
+
+    expect(result).toMatchObject({
+      waiting: true,
+      timed_out: true,
+      job: {
+        job_id: "job-queued",
+        status: "queued",
+      },
+    });
   });
 
   it("resolves claude_result from an explicit job id with run, session, and next actions", async () => {
@@ -1498,6 +1553,43 @@ describe("claude cli argument construction", () => {
     const stored = await jobStore.get(result.job!.job_id);
     expect(stored?.payload.max_turns).toBe(25);
     expect(Array.isArray(result.next_actions)).toBe(true);
+  });
+
+  it("routes claude_task write mode to a background implement job by default", async () => {
+    const { repo, jobStore } = await createWorkflowFixture();
+    const spawned = createDetachedSpawnResult(6004);
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => spawned) };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      task: "Implement input validation for README updates.",
+      mode: "write",
+      files: ["README.md"],
+      constraints: ["Only change README.md"],
+      dirty_policy: "committed",
+    }, "run-task-write-default");
+
+    expect(result.delegated_mode).toBe("write");
+    expect(result.summary).toBe("Delegated write task as a background job.");
+    expect(result.job?.type).toBe("implement");
+    expect(result.job?.status).toBe("queued");
+    const stored = await jobStore.get(result.job!.job_id);
+    expect(stored?.payload).toMatchObject({
+      cwd: repo,
+      task: "Implement input validation for README updates.",
+      background: true,
+      max_turns: 25,
+    });
+    expect(result.next_actions.map((action) => action.tool)).toEqual([
+      "claude_job_wait",
+      "claude_job_result",
+      "claude_job_cancel",
+    ]);
   });
 
   it("returns needs_user from claude_task write background jobs when unscoped user changes are dirty", async () => {

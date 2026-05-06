@@ -20,9 +20,6 @@ import {
   manageClaudeReviewGate,
   runClaudeSetup,
   runClaudeTask,
-  runClaudeQuery,
-  runClaudeReview,
-  runClaudeImplement,
   runClaudeApply,
   runClaudeCleanup,
   getRecentRunsSummary,
@@ -153,7 +150,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_task",
     description:
-      "High-level rescue/task entrypoint that routes to query, review, or implement and can run either synchronously or in the background.",
+      "High-level rescue/task entrypoint that routes to query, review, or implement and returns a background job for polling.",
     inputSchema: {
       type: "object",
       required: ["cwd", "task"],
@@ -188,7 +185,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_query",
     description:
-      "Ask Claude a read-only question. Claude can read files and run safe git commands but cannot modify anything. Use for code explanations, architecture questions, and analysis.",
+      "Ask Claude a read-only question as a persistent background job. Claude can read files and run safe git commands but cannot modify anything.",
     inputSchema: {
       type: "object",
       required: ["task", "cwd"],
@@ -212,7 +209,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_review",
     description:
-      "Have Claude Code review code changes. Claude runs in read-only mode. Provide a diff and/or file list for context. Set background=true to queue a persistent background job.",
+      "Have Claude Code review code changes as a persistent background job. Claude runs in read-only mode. Provide a diff and/or file list for context.",
     inputSchema: {
       type: "object",
       required: ["task", "cwd"],
@@ -230,7 +227,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_implement",
     description:
-      "Delegate an implementation task to Claude Code. Claude runs in an isolated git worktree, makes changes, runs tests, and returns a structured result with a diff. Does NOT modify the main working tree. Supports explicit session_key resume or resume_latest for the latest implement session in this repo. Set background=true to queue a persistent background job.",
+      "Delegate an implementation task to Claude Code as a persistent background job. Claude runs in an isolated git worktree and does NOT modify the main working tree.",
     inputSchema: {
       type: "object",
       required: ["task", "cwd"],
@@ -247,7 +244,7 @@ const TOOL_DEFINITIONS = [
         max_cost_usd: { type: "number", description: "Maximum USD budget for this task (passed as --max-budget-usd to Claude). Must be > 0 and <= 10." },
         max_changed_files: { type: "number", description: "Warn if Claude changes more than this many files. Must be a positive integer <= 100." },
         worktreeName: { type: "string", description: "Optional delegated worktree name override" },
-        background: { type: "boolean", description: "Queue the implementation as a persistent background job" },
+        background: { type: "boolean", description: "Queue the implementation as a persistent background job; execution tools queue by default" },
         dirty_policy: { type: "string", enum: ["ask", "committed", "snapshot"], description: "Handling for uncommitted main-workspace changes: ask (default), committed (ignore dirty changes and use HEAD), or snapshot (copy dirty files into the delegated worktree)." },
       },
     },
@@ -491,28 +488,14 @@ export async function handleToolCall(name: string, args: unknown, runId = random
       case "claude_query": {
         const parsed = claudeQueryInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, timeout_sec, max_turns, fast, resume, background } = parsed.data;
+        const { task, cwd, timeout_sec, max_turns, fast, resume } = parsed.data;
         const resolvedTimeout = timeout_sec ?? (fast ? 45 : 120);
         const resolvedMaxTurns = max_turns ?? (fast ? 2 : 8);
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
 
-        if (background === true) {
-          return jsonResult(await startBackgroundQuery(
-            {
-              task,
-              cwd: check.resolved,
-              timeout_sec: resolvedTimeout,
-              max_turns: resolvedMaxTurns,
-              fast,
-              resume,
-              background,
-            },
-          ));
-        }
-
-        const report = await runClaudeQuery(
+        return jsonResult(await startBackgroundQuery(
           {
             task,
             cwd: check.resolved,
@@ -520,39 +503,30 @@ export async function handleToolCall(name: string, args: unknown, runId = random
             max_turns: resolvedMaxTurns,
             fast,
             resume,
+            background: true,
           },
-          runId
-        );
-        return jsonResult(report);
+        ));
       }
 
       case "claude_review": {
         const parsed = claudeReviewInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, diff, files, timeout_sec, max_turns, background } = parsed.data;
+        const { task, cwd, diff, files, timeout_sec, max_turns } = parsed.data;
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
         const fileCheck = await validateFilesWithinCwd(check.resolved, files);
         if (!fileCheck.ok) return errorResult(fileCheck.error!);
 
-        if (background === true) {
-          return jsonResult(await startBackgroundReview(
-            { task, cwd: check.resolved, diff, files, timeout_sec, max_turns, background },
-          ));
-        }
-
-        const report = await runClaudeReview(
-          { task, cwd: check.resolved, diff, files, timeout_sec, max_turns },
-          runId
-        );
-        return jsonResult(report);
+        return jsonResult(await startBackgroundReview(
+          { task, cwd: check.resolved, diff, files, timeout_sec, max_turns, background: true },
+        ));
       }
 
       case "claude_implement": {
         const parsed = claudeImplementInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, files, constraints, timeout_sec, max_turns, session_key, fork_session, resume_latest, max_cost_usd, max_changed_files, worktreeName, background, dirty_policy } = parsed.data;
+        const { task, cwd, files, constraints, timeout_sec, max_turns, session_key, fork_session, resume_latest, max_cost_usd, max_changed_files, worktreeName, dirty_policy } = parsed.data;
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
@@ -566,30 +540,22 @@ export async function handleToolCall(name: string, args: unknown, runId = random
           return errorResult("claude_implement requires a git repository with worktree support");
         }
 
-        if (background === true) {
-          return jsonResult(await startBackgroundImplement({
-            task,
-            cwd: check.resolved,
-            files,
-            constraints,
-            timeout_sec,
-            max_turns,
-            session_key,
-            fork_session,
-            resume_latest,
-            max_cost_usd,
-            max_changed_files,
-            worktreeName,
-            background,
-            dirty_policy,
-          }));
-        }
-
-        const result = await runClaudeImplement(
-          { task, cwd: check.resolved, files, constraints, timeout_sec, max_turns, session_key, fork_session, resume_latest, max_cost_usd, max_changed_files, worktreeName, dirty_policy },
-          runId
-        );
-        return jsonResult(result);
+        return jsonResult(await startBackgroundImplement({
+          task,
+          cwd: check.resolved,
+          files,
+          constraints,
+          timeout_sec,
+          max_turns,
+          session_key,
+          fork_session,
+          resume_latest,
+          max_cost_usd,
+          max_changed_files,
+          worktreeName,
+          background: true,
+          dirty_policy,
+        }));
       }
 
       case "claude_jobs": {

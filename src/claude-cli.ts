@@ -24,6 +24,7 @@ import type {
   ClaudeResultInput,
   ClaudeResultResult,
   ClaudeJobWaitInput,
+  ClaudeJobWaitResult,
   ClaudeJobsInput,
   ClaudeJobsResult,
   ClaudeQueryInput,
@@ -1232,99 +1233,17 @@ function summarizeTaskDispatch(mode: Exclude<ClaudeTaskMode, "auto">, background
   return `Delegated ${mode} task and returned the current result.`;
 }
 
-export async function runClaudeTask(input: ClaudeTaskInput, runId: string): Promise<ClaudeTaskResult> {
+export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Promise<ClaudeTaskResult> {
   const delegatedMode = inferClaudeTaskMode(input);
 
   if (delegatedMode === "read") {
-    if (input.background === true) {
-      const queued = await startBackgroundQuery({
-        cwd: input.cwd,
-        task: input.task,
-        timeout_sec: input.timeout_sec,
-        max_turns: input.max_turns,
-        background: true,
-      });
-      return {
-        delegated_mode: delegatedMode,
-        summary: summarizeTaskDispatch(delegatedMode, true),
-        job: queued.job,
-        next_actions: buildNextActions({ cwd: input.cwd, job: queued.job }),
-      };
-    }
-
-    const result = await runClaudeQuery({
+    const queued = await startBackgroundQuery({
       cwd: input.cwd,
       task: input.task,
       timeout_sec: input.timeout_sec,
       max_turns: input.max_turns,
-    }, runId);
-    const workflow = await getClaudeResult({ cwd: input.cwd, run_id: runId }).catch(() => null);
-    return {
-      delegated_mode: delegatedMode,
-      summary: summarizeTaskDispatch(delegatedMode, false),
-      result: result as unknown as Record<string, unknown>,
-      session: workflow?.session,
-      next_actions: workflow?.next_actions ?? [],
-    };
-  }
-
-  if (delegatedMode === "review") {
-    if (input.background === true) {
-      const queued = await startBackgroundReview({
-        cwd: input.cwd,
-        task: input.task,
-        diff: input.diff,
-        files: input.files,
-        timeout_sec: input.timeout_sec,
-        max_turns: input.max_turns,
-        background: true,
-      });
-      return {
-        delegated_mode: delegatedMode,
-        summary: summarizeTaskDispatch(delegatedMode, true),
-        job: queued.job,
-        next_actions: buildNextActions({ cwd: input.cwd, job: queued.job }),
-      };
-    }
-
-    const result = await runClaudeReview({
-      cwd: input.cwd,
-      task: input.task,
-      diff: input.diff,
-      files: input.files,
-      timeout_sec: input.timeout_sec,
-      max_turns: input.max_turns,
-    }, runId);
-    const workflow = await getClaudeResult({ cwd: input.cwd, run_id: runId }).catch(() => null);
-    return {
-      delegated_mode: delegatedMode,
-      summary: summarizeTaskDispatch(delegatedMode, false),
-      result: result as unknown as Record<string, unknown>,
-      session: workflow?.session,
-      next_actions: workflow?.next_actions ?? [],
-    };
-  }
-
-  if (input.background === true) {
-    const queued = await startBackgroundImplement({
-      cwd: input.cwd,
-      task: input.task,
-      files: input.files,
-      constraints: input.constraints,
-      timeout_sec: input.timeout_sec,
-      max_turns: input.max_turns ?? TASK_WRITE_DEFAULT_MAX_TURNS,
-      resume_latest: input.resume_latest,
       background: true,
-      dirty_policy: input.dirty_policy,
     });
-    if (!("job" in queued)) {
-      return {
-        delegated_mode: delegatedMode,
-        summary: "Write task needs a dirty-workspace decision before it can be delegated.",
-        result: queued as unknown as Record<string, unknown>,
-        next_actions: [],
-      };
-    }
     return {
       delegated_mode: delegatedMode,
       summary: summarizeTaskDispatch(delegatedMode, true),
@@ -1333,7 +1252,25 @@ export async function runClaudeTask(input: ClaudeTaskInput, runId: string): Prom
     };
   }
 
-  const result = await runClaudeImplement({
+  if (delegatedMode === "review") {
+    const queued = await startBackgroundReview({
+      cwd: input.cwd,
+      task: input.task,
+      diff: input.diff,
+      files: input.files,
+      timeout_sec: input.timeout_sec,
+      max_turns: input.max_turns,
+      background: true,
+    });
+    return {
+      delegated_mode: delegatedMode,
+      summary: summarizeTaskDispatch(delegatedMode, true),
+      job: queued.job,
+      next_actions: buildNextActions({ cwd: input.cwd, job: queued.job }),
+    };
+  }
+
+  const queued = await startBackgroundImplement({
     cwd: input.cwd,
     task: input.task,
     files: input.files,
@@ -1341,15 +1278,22 @@ export async function runClaudeTask(input: ClaudeTaskInput, runId: string): Prom
     timeout_sec: input.timeout_sec,
     max_turns: input.max_turns ?? TASK_WRITE_DEFAULT_MAX_TURNS,
     resume_latest: input.resume_latest,
+    background: true,
     dirty_policy: input.dirty_policy,
-  }, runId);
-  const workflow = await getClaudeResult({ cwd: input.cwd, run_id: runId }).catch(() => null);
+  });
+  if (!("job" in queued)) {
+    return {
+      delegated_mode: delegatedMode,
+      summary: "Write task needs a dirty-workspace decision before it can be delegated.",
+      result: queued as unknown as Record<string, unknown>,
+      next_actions: [],
+    };
+  }
   return {
     delegated_mode: delegatedMode,
-    summary: summarizeTaskDispatch(delegatedMode, false),
-    result: result as unknown as Record<string, unknown>,
-    session: workflow?.session,
-    next_actions: workflow?.next_actions ?? [],
+    summary: summarizeTaskDispatch(delegatedMode, true),
+    job: queued.job,
+    next_actions: buildNextActions({ cwd: input.cwd, job: queued.job }),
   };
 }
 
@@ -1471,7 +1415,7 @@ export async function getBackgroundJobResult(
 
 export async function waitForBackgroundJob(
   input: ClaudeJobWaitInput
-): Promise<{ job: BackgroundJobSummary; result?: Record<string, unknown> }> {
+): Promise<ClaudeJobWaitResult> {
   const timeoutMs = input.timeout_ms ?? 30_000;
   const pollIntervalMs = input.poll_interval_ms ?? 1_000;
   const deadline = Date.now() + timeoutMs;
@@ -1483,11 +1427,21 @@ export async function waitForBackgroundJob(
     }
 
     if (result.job.status === "succeeded" || result.job.status === "failed" || result.job.status === "cancelled") {
-      return result;
+      return {
+        ...result,
+        waiting: false,
+        timed_out: false,
+        next_actions: buildNextActions({ cwd: input.cwd, job: result.job }),
+      };
     }
 
     if (Date.now() >= deadline) {
-      throw new Error(`Timed out waiting for job ${input.job_id}`);
+      return {
+        ...result,
+        waiting: true,
+        timed_out: true,
+        next_actions: buildNextActions({ cwd: input.cwd, job: result.job }),
+      };
     }
 
     await new Promise((resolve) => setTimeout(resolve, Math.min(pollIntervalMs, Math.max(deadline - Date.now(), 0))));

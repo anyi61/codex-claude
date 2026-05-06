@@ -15,7 +15,9 @@ Codex CLI
   -> Codex reviews, applies, or cleans up worktrees
 ```
 
-返回结果现在统一包含 `status`、`execution` 和 `warnings`。`execution` 记录 Claude CLI 的 `exit_code`、`duration_ms`、`timed_out`、截断后的 `stdout_tail` 和脱敏后的 `stderr_tail`。`claude_query` 额外返回 `execution.timings`（如 `session_lookup_ms`、`claude_run_ms`、`log_write_ms`、`total_ms`），用于定位慢查询链路。
+执行型入口 `claude_task`、`claude_query`、`claude_review` 和 `claude_implement` 默认都会快速返回后台 `job_id`，避免 Codex 单次 tool call 等待 Claude 子进程过久。`timeout_sec` 是 Claude 子进程预算，不是 Codex 等待这个 MCP tool call 的预算；拿到 `job_id` 后推荐用短周期 `claude_job_wait` / `claude_job_result` 轮询。
+
+完成后的 Claude 结果仍统一包含 `status`、`execution` 和 `warnings`。`execution` 记录 Claude CLI 的 `exit_code`、`duration_ms`、`timed_out`、截断后的 `stdout_tail` 和脱敏后的 `stderr_tail`。`claude_query` 额外返回 `execution.timings`（如 `session_lookup_ms`、`claude_run_ms`、`log_write_ms`、`total_ms`），用于定位慢查询链路。
 
 ## 工具
 
@@ -25,10 +27,10 @@ Codex CLI
 |---|---|---|
 | `claude_status` | 快速检查 Claude CLI、Git、worktree、允许根目录和残留状态 | `cwd` |
 | `claude_setup` | 第一次接入或怀疑环境没配好时做完整就绪检查；也可显式把当前项目加入允许目录 | `cwd`, `configure_allow_root` |
-| `claude_task` | 推荐的高层入口，让服务端自动或按模式委托 query/review/implement | `cwd`, `task`, `mode=auto/read/review/write`, `background` |
-| `claude_query` | 只读问答、架构解释、代码定位；不会改文件 | `cwd`, `task`, `timeout_sec`, `max_turns`, `fast`, `resume`, `background` |
-| `claude_review` | 审查 diff 或文件风险；不会改文件 | `cwd`, `task`, `diff`, `files`, `background` |
-| `claude_implement` | 让 Claude 在隔离 worktree 中改代码；不会直接改主工作区 | `cwd`, `task`, `files`, `constraints`, `max_changed_files`, `max_cost_usd`, `background` |
+| `claude_task` | 推荐的高层入口，让服务端自动或按模式委托 query/review/implement，默认返回后台 job | `cwd`, `task`, `mode=auto/read/review/write`, `background` |
+| `claude_query` | 只读问答、架构解释、代码定位；不会改文件，默认返回后台 job | `cwd`, `task`, `timeout_sec`, `max_turns`, `fast`, `resume`, `background` |
+| `claude_review` | 审查 diff 或文件风险；不会改文件，默认返回后台 job | `cwd`, `task`, `diff`, `files`, `background` |
+| `claude_implement` | 让 Claude 在隔离 worktree 中改代码；不会直接改主工作区，默认返回后台 job | `cwd`, `task`, `files`, `constraints`, `max_changed_files`, `max_cost_usd`, `background` |
 | `claude_result` | 不想记具体 run/job 时，直接取当前工作区最相关的完成结果 | `cwd`, `job_id`, `run_id`, `prefer` |
 | `claude_workspace_status` | 看当前 repo 全局状态：后台任务、run、session、worktree 和待处理项 | `cwd`, `limit`, `include_terminal` |
 | `claude_runs` | 列出历史 run log，用于追踪 query/review/implement/apply/cleanup | `cwd`, `type`, `status`, `limit` |
@@ -45,9 +47,9 @@ Codex CLI
 常见闭环：
 
 ```text
-只读分析：claude_task mode=read -> claude_result
-代码审查：claude_review background=true -> claude_job_wait -> claude_result
-代码实现：claude_implement -> claude_result -> claude_apply preview=true -> claude_apply cleanup=true -> claude_cleanup
+只读分析：claude_task mode=read -> claude_job_wait -> claude_result
+代码审查：claude_review -> claude_job_wait -> claude_result
+代码实现：claude_implement -> claude_job_wait -> claude_result -> claude_apply preview=true -> claude_apply cleanup=true -> claude_cleanup
 ```
 
 ## 设置
@@ -249,8 +251,7 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 {
   "cwd": "/path/to/repo",
   "task": "Explain how auth is wired in this repo.",
-  "mode": "read",
-  "background": true
+  "mode": "read"
 }
 ```
 
@@ -261,8 +262,7 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
   "cwd": "/path/to/repo",
   "task": "Review this patch for regressions.",
   "mode": "auto",
-  "diff": "<optional diff text>",
-  "background": true
+  "diff": "<optional diff text>"
 }
 ```
 
@@ -270,7 +270,7 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 
 - `delegated_mode`: 实际路由到 `read`、`review` 或 `write`
 - `summary`: 当前调度摘要
-- `job` 或 `result`
+- `job` 或 `result`（写任务遇到 dirty workspace 需要用户决策时会直接返回 `needs_user`，否则默认返回 `job`）
 - `session`
 - `next_actions`
 
@@ -350,28 +350,28 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 
 `claude_query` 会自动复用最近 20 分钟内同 repo 的 query session。不要用它要求 Claude 修改文件。
 
-如果你要优先缩短等待时间（例如“这个项目有哪些代码模块”这类问题），建议：
+调用会快速返回 `job.job_id`。如果你要优先缩短 Claude 子进程预算（例如“这个项目有哪些代码模块”这类问题），建议：
 
 ```json
 {
   "cwd": "/path/to/repo",
   "task": "当前项目有什么代码，都是什么作用。",
   "fast": true,
-  "resume": false,
-  "background": false
+  "resume": false
 }
 ```
 
-- `fast=true`：默认用更小 turn budget（2）和更短 timeout（45s），并引导 Claude 先做最小读取。
+- `fast=true`：默认用更小 turn budget（2）和更短 `timeout_sec`（45s），并引导 Claude 先做最小读取。
 - `resume=false`：避免自动挂载旧 query session 上下文，减少陈旧上下文导致的尾延迟。
 
-如需把只读分析放到后台执行：
+拿到 `job_id` 后，用短等待轮询：
 
 ```json
 {
-  "task": "Explain how the background job model works in this repo.",
   "cwd": "/path/to/repo",
-  "background": true
+  "job_id": "<job-id>",
+  "timeout_ms": 10000,
+  "poll_interval_ms": 1000
 }
 ```
 
@@ -391,14 +391,13 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 
 `claude_review` 不写文件，也不持久化 session。
 
-如需后台执行并稍后轮询结果：
+调用会快速返回 `job.job_id`，稍后轮询结果：
 
 ```json
 {
   "task": "Review this diff for correctness and regressions.",
   "cwd": "/path/to/repo",
-  "files": ["src/server.ts"],
-  "background": true
+  "files": ["src/server.ts"]
 }
 ```
 
@@ -413,7 +412,7 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 }
 ```
 
-`claude_job_wait` 会在后台进程变为 `succeeded`、`failed` 或 `cancelled` 时返回完整 job/result；超时则报错。注意 `job.status` 表示后台进程状态，不等于 Claude 任务质量。终态 job 可能同时返回 `job.status="succeeded"` 和 `job.result_status="partial"`，这表示进程正常结束，但 Claude 达到 `max_turns` 或只完成了部分工作。遇到 `partial` / `needs_user` 时，应先用 `claude_result` 或 `claude_run_inspect` 查看，再决定 `resume_latest`、`claude_apply preview=true` 或清理 worktree。
+`claude_job_wait` 会在后台进程变为 `succeeded`、`failed` 或 `cancelled` 时返回完整 job/result；如果 `timeout_ms` 到期但 job 仍是 `queued` 或 `running`，它不会作为 tool error 抛出，而是返回 `waiting=true`、`timed_out=true`、当前 `job` 和 `next_actions`。注意 `job.status` 表示后台进程状态，不等于 Claude 任务质量。终态 job 可能同时返回 `job.status="succeeded"` 和 `job.result_status="partial"`，这表示进程正常结束，但 Claude 达到 `max_turns` 或只完成了部分工作。遇到 `partial` / `needs_user` 时，应先用 `claude_result` 或 `claude_run_inspect` 查看，再决定 `resume_latest`、`claude_apply preview=true` 或清理 worktree。
 
 如果后台任务历史积累较多，可以先 dry-run 看看哪些终态任务会被清理：
 
@@ -471,19 +470,18 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 
 `fork_session` 必须和 `session_key` 一起使用。
 
-如需后台实现：
+实现入口默认快速返回后台 job：
 
 ```json
 {
   "task": "Add input validation for the new API path and update related types.",
   "cwd": "/path/to/repo",
   "files": ["src/server.ts", "src/schema.ts"],
-  "constraints": ["Run npm run build"],
-  "background": true
+  "constraints": ["Run npm run build"]
 }
 ```
 
-后台实现同样可配合 `claude_job_wait` 使用；如果只想做非阻塞轮询，仍可继续使用 `claude_jobs` 和 `claude_job_result`。读取后台结果时优先看 `job.result_status`：`success` 才代表 Claude 任务完整完成，`partial` 代表有可检查的部分改动但不能直接视为完成，`needs_user` 代表 Claude 停下来要求用户决策。
+实现 job 可配合 `claude_job_wait` 使用；如果只想做非阻塞轮询，仍可继续使用 `claude_jobs` 和 `claude_job_result`。读取后台结果时优先看 `job.result_status`：`success` 才代表 Claude 任务完整完成，`partial` 代表有可检查的部分改动但不能直接视为完成，`needs_user` 代表 Claude 停下来要求用户决策。
 
 如果只是继续当前仓库最近一次可续接的 implement session，可直接让服务端解析最近日志：
 
@@ -580,8 +578,8 @@ preview 模式会返回 `planned_changes`，并保证主工作区不被修改。
 推荐流程：
 
 ```text
-1. claude_query / claude_review / claude_implement / claude_apply / claude_cleanup with background=true
-2. claude_job_wait，或用 claude_jobs / claude_job_result 轮询状态
+1. claude_query / claude_review / claude_implement 直接返回 job_id；claude_apply / claude_cleanup 可按需传 background=true
+2. 短周期调用 claude_job_wait，或用 claude_jobs / claude_job_result 轮询状态
 3. 必要时 claude_job_cancel
 4. 周期性用 claude_job_cleanup 清理旧的终态任务记录
 5. inspect result, then claude_apply / claude_cleanup

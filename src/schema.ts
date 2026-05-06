@@ -114,6 +114,14 @@ export interface ClaudeJobWaitInput {
   poll_interval_ms?: number;
 }
 
+export interface ClaudeJobWaitResult {
+  job: BackgroundJobSummary;
+  result?: Record<string, unknown>;
+  waiting: boolean;
+  timed_out: boolean;
+  next_actions: WorkflowNextAction[];
+}
+
 export interface ClaudeJobCancelInput {
   cwd: string;
   job_id: string;

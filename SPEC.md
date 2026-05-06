@@ -95,30 +95,30 @@ src/
 
 ### 4.2 `claude_query`
 
-问 Claude 只读问题。Claude 可读文件、跑安全 git 命令，不可修改。
+问 Claude 只读问题。Claude 可读文件、跑安全 git 命令，不可修改。默认快速返回后台 job，调用方后续轮询。
 
 - **入参**: `{ task: string, cwd: string, timeout_sec?: number }`
-- **出参**: `ClaudeReport`（通过 `--json-schema` 约束）
+- **出参**: `{ job: BackgroundJobSummary }`；后台完成后结果为 `ClaudeReport`（通过 `--json-schema` 约束）
 - **工具**: `--tools "Read,Glob,Grep,Bash"`
 - **maxTurns**: 4
 - **不改文件**
 
 ### 4.3 `claude_review`
 
-让 Claude review 代码变更（diff 或当前工作区状态）。
+让 Claude review 代码变更（diff 或当前工作区状态）。默认快速返回后台 job，调用方后续轮询。
 
 - **入参**: `{ task: string, cwd: string, diff?: string, files?: string[], timeout_sec?: number }`
-- **出参**: `ClaudeReport`
+- **出参**: `{ job: BackgroundJobSummary }`；后台完成后结果为 `ClaudeReport`
 - **工具**: `--tools "Read,Glob,Grep,Bash"`
 - **maxTurns**: 6
 - **不改文件**
 
 ### 4.4 `claude_implement`
 
-让 Claude 在隔离 worktree 中实现代码变更，运行测试，返回结构化结果 + 实际 diff。
+让 Claude 在隔离 worktree 中实现代码变更，运行测试，返回结构化结果 + 实际 diff。默认快速返回后台 job，调用方后续轮询。
 
 - **入参**: `{ task: string, cwd: string, files?: string[], constraints?: string[], timeout_sec?: number, dirty_policy?: "ask" | "committed" | "snapshot" }`
-- **出参**: `{ claude_report: ClaudeReport, server_observed: ServerObserved }`
+- **出参**: `{ job: BackgroundJobSummary }`；dirty 前置决策可能直接返回 `needs_user`；后台完成后结果为 `{ claude_report: ClaudeReport, server_observed: ServerObserved }`
 - **工具**: `--tools "Read,Glob,Grep,Edit,Write,Bash"`
 - **maxTurns**: 8
 - **隔离**: `--worktree codex-delegated-<runId>`
@@ -139,13 +139,13 @@ src/
 | `claude_workspace_status` | 聚合 running/queued jobs、terminal jobs、recent runs、sessions、worktrees 和 attention items |
 | `claude_task` | 高层入口，按 `mode=auto/read/review/write` 路由到 query/review/implement |
 | `claude_review_gate` | 查询、启用或关闭 repo-local review gate |
-| `claude_query` | 只读查询，可同步执行或 `background=true` 入队 |
-| `claude_review` | 只读审查，可同步执行或 `background=true` 入队 |
-| `claude_implement` | 在隔离 worktree 中实现任务，可同步执行或 `background=true` 入队 |
+| `claude_query` | 只读查询，默认入队并快速返回 job |
+| `claude_review` | 只读审查，默认入队并快速返回 job |
+| `claude_implement` | 在隔离 worktree 中实现任务，默认入队并快速返回 job |
 | `claude_jobs` | 列出后台 query/review/implement/apply/cleanup 任务 |
 | `claude_job_result` | 按 `job_id` 读取后台进程状态、Claude 任务结果状态和结果 |
 | `claude_job_cancel` | 取消 queued/running 后台任务 |
-| `claude_job_wait` | 阻塞等待后台进程进入终态 |
+| `claude_job_wait` | 短周期等待后台进程进入终态；等待超时返回结构化 running/queued 状态而不是 tool error |
 | `claude_job_cleanup` | dry-run 或删除当前仓库较旧的终态后台任务记录 |
 | `claude_apply` | 将 delegated worktree 变更 preview/apply 到主工作区，也可后台入队 |
 | `claude_cleanup` | dry-run 或清理 delegated worktree，也可后台入队 |
@@ -534,6 +534,8 @@ implement 模式需要读文件、编辑、运行构建等多项操作。`maxTur
 修复：implement maxTurns → 15；非零退出时仍尝试解析 stdout 中的 structured_output。
 
 后台任务需要区分两层状态：`job.status` 表示后台进程是否结束，`job.result_status` 表示 Claude 任务语义结果。进程可以是 `succeeded`，同时任务是 `partial`，例如 Claude 达到 `max_turns` 但已经写入部分代码。UI 和调用方必须优先展示 `result_status`，避免把“进程正常退出”误判为“需求完整完成”。`claude_task mode=write` 的高层入口默认使用更高的 turn budget，用户显式传入 `max_turns` 时保持用户值。
+
+`claude_task`、`claude_query`、`claude_review`、`claude_implement` 这些会调用 Claude 的执行型入口默认都应入队并快速返回 `job_id`；`background=true` 保持兼容但不再是避免阻塞的必要条件。`timeout_sec` 表示 Claude 子进程预算，不是 Codex 单次 MCP tool call 的等待预算。推荐调用方用较短的 `claude_job_wait(timeout_ms=5000..30000)` 循环轮询；如果等待窗口到期但 job 仍 `queued`/`running`，`claude_job_wait` 返回 `{ waiting: true, timed_out: true, job, next_actions }`，不得抛出 tool error。
 
 ### 8.3 `claude auth status` 返回 JSON
 
