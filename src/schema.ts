@@ -66,6 +66,7 @@ export interface ClaudeTaskInput {
 
 export type BackgroundJobType = "query" | "review" | "implement" | "apply" | "cleanup";
 export type BackgroundJobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type BackgroundJobStaleState = "fresh" | "stale_candidate" | "stale";
 
 export interface BackgroundJobSummary {
   job_id: string;
@@ -75,11 +76,21 @@ export interface BackgroundJobSummary {
   cwd: string;
   created_at: string;
   updated_at: string;
+  heartbeat_at?: string;
+  fingerprint?: string;
   pid?: number;
   run_id?: string;
   worktree_name?: string;
   summary?: string;
   error?: string;
+}
+
+export interface BackgroundJobEnqueueResult {
+  job: BackgroundJobSummary;
+  deduped?: boolean;
+  do_not_start_duplicate_job?: boolean;
+  message?: string;
+  next_actions?: WorkflowNextAction[];
 }
 
 export interface ClaudeJobsInput {
@@ -118,7 +129,11 @@ export interface ClaudeJobWaitResult {
   summary: string;
   waiting: boolean;
   timed_out: boolean;
+  do_not_start_duplicate_job: boolean;
   recommended_delay_ms?: number;
+  age_ms: number;
+  heartbeat_age_ms?: number;
+  stale_state: BackgroundJobStaleState;
   next_actions: WorkflowNextAction[];
 }
 
@@ -183,6 +198,7 @@ export interface ClaudeResultResult {
     apply_run_id?: string;
     cleanup_run_id?: string;
   };
+  do_not_start_duplicate_job?: boolean;
   next_actions: WorkflowNextAction[];
 }
 
@@ -236,6 +252,8 @@ export interface ClaudeWorkspaceStatusResult {
     orphan_worktrees: number;
     apply_blocked_runs: number;
   };
+  do_not_start_duplicate_job?: boolean;
+  next_actions?: WorkflowNextAction[];
   attention_items: WorkspaceAttentionItem[];
 }
 
@@ -278,9 +296,11 @@ export interface ClaudeSetupResult {
 export interface ClaudeTaskResult {
   delegated_mode: Exclude<ClaudeTaskMode, "auto">;
   summary: string;
-  result?: Record<string, unknown>;
   job?: BackgroundJobSummary;
+  result?: Record<string, unknown>;
   session?: WorkflowSessionSummary;
+  deduped?: boolean;
+  do_not_start_duplicate_job?: boolean;
   next_actions: WorkflowNextAction[];
 }
 

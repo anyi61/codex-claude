@@ -276,6 +276,8 @@ function toJobSummary(record: BackgroundJobRecord): BackgroundJobSummary {
     cwd: record.cwd,
     created_at: record.created_at,
     updated_at: record.updated_at,
+    heartbeat_at: record.heartbeat_at,
+    fingerprint: record.fingerprint,
     pid: record.pid,
     run_id: record.run_id,
     worktree_name: record.worktree_name,
