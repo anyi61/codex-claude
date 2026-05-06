@@ -4,6 +4,8 @@
 
 **Goal:** Prioritize and complete the next round of background-job-model improvements without destabilizing the newly shipped queue/result/cancel flow.
 
+**Status calibration (2026-05-05):** Implemented; wait, cleanup, query backgrounding, apply/cleanup backgrounding, handler tests, and runner tests are now present. Remaining future work should be tracked in a new plan rather than this historical checklist.
+
 **Architecture:** Keep the existing background job design intact and improve it in thin vertical slices. Each slice must preserve synchronous tool behavior, reuse the current `jobs.ts` + `job-runner.ts` model, and add narrowly scoped tests and documentation before moving to the next priority.
 
 **Tech Stack:** TypeScript, Node.js child processes, MCP SDK, zod, Vitest, existing background job persistence under `.codex-claude-delegate/jobs`
@@ -66,7 +68,7 @@ This iteration executes **P0-1 only**:
 - Modify: `src/schema.ts`
 - Test: `tests/schema.test.ts`
 
-- [ ] **Step 1: Write the failing schema test**
+- [x] **Step 1: Write the failing schema test**
 
 Add a schema test that asserts:
 
@@ -77,13 +79,13 @@ expect(claudeJobWaitInputSchema.safeParse({ cwd: "/repo", job_id: "" }).success)
 expect(claudeJobWaitInputSchema.safeParse({ cwd: "/repo", job_id: "job-1", timeout_ms: 0 }).success).toBe(false);
 ```
 
-- [ ] **Step 2: Run the schema test to verify it fails**
+- [x] **Step 2: Run the schema test to verify it fails**
 
 Run: `npm test -- tests/schema.test.ts`
 
 Expected: FAIL because `claudeJobWaitInputSchema` does not exist yet.
 
-- [ ] **Step 3: Add wait-tool schema types**
+- [x] **Step 3: Add wait-tool schema types**
 
 In `src/schema.ts`, add:
 
@@ -107,7 +109,7 @@ export const claudeJobWaitInputSchema = z.object({
 });
 ```
 
-- [ ] **Step 4: Re-run the schema test**
+- [x] **Step 4: Re-run the schema test**
 
 Run: `npm test -- tests/schema.test.ts`
 
@@ -119,7 +121,7 @@ Expected: PASS.
 - Modify: `src/claude-cli.ts`
 - Test: `tests/claude-cli.test.ts`
 
-- [ ] **Step 1: Write failing wait-helper tests**
+- [x] **Step 1: Write failing wait-helper tests**
 
 Add tests that create persisted jobs and assert:
 
@@ -146,13 +148,13 @@ await expect(
 ).rejects.toThrow(/Timed out/);
 ```
 
-- [ ] **Step 2: Run the targeted CLI test to verify it fails**
+- [x] **Step 2: Run the targeted CLI test to verify it fails**
 
 Run: `npm test -- tests/claude-cli.test.ts`
 
 Expected: FAIL because `waitForBackgroundJob` does not exist.
 
-- [ ] **Step 3: Implement the polling helper**
+- [x] **Step 3: Implement the polling helper**
 
 In `src/claude-cli.ts`, add:
 
@@ -174,7 +176,7 @@ export async function waitForBackgroundJob(input: ClaudeJobWaitInput): Promise<{
 }
 ```
 
-- [ ] **Step 4: Re-run the targeted CLI test**
+- [x] **Step 4: Re-run the targeted CLI test**
 
 Run: `npm test -- tests/claude-cli.test.ts`
 
@@ -187,7 +189,7 @@ Expected: PASS.
 - Modify: `README.md`
 - Test: `tests/claude-cli.test.ts`
 
-- [ ] **Step 1: Add the MCP tool definition**
+- [x] **Step 1: Add the MCP tool definition**
 
 In `src/server.ts`, register:
 
@@ -208,7 +210,7 @@ In `src/server.ts`, register:
 }
 ```
 
-- [ ] **Step 2: Add the tool handler**
+- [x] **Step 2: Add the tool handler**
 
 In `src/server.ts`, route:
 
@@ -222,7 +224,7 @@ case "claude_job_wait": {
 }
 ```
 
-- [ ] **Step 3: Update README**
+- [x] **Step 3: Update README**
 
 Add one example:
 
@@ -236,7 +238,7 @@ Add one example:
 
 And update the recommended workflow so `claude_job_wait` appears before manual polling.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Run: `npm test -- tests/schema.test.ts tests/claude-cli.test.ts`
 
@@ -249,7 +251,7 @@ Expected: PASS.
 - Test: `tests/schema.test.ts`
 - Test: `tests/claude-cli.test.ts`
 
-- [ ] **Step 1: Run full verification**
+- [x] **Step 1: Run full verification**
 
 Run: `npm run build`
 Expected: PASS
@@ -260,7 +262,7 @@ Expected: PASS
 Run: `npm run typecheck`
 Expected: PASS
 
-- [ ] **Step 2: Review the scoped diff**
+- [x] **Step 2: Review the scoped diff**
 
 Run: `git diff -- src/schema.ts src/server.ts src/claude-cli.ts tests/schema.test.ts tests/claude-cli.test.ts README.md`
 

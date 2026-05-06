@@ -81,12 +81,11 @@ The low-level tools (`claude_job_result`, `claude_runs`, `claude_run_inspect`, `
     - `claude_cleanup`
     - `claude_review`
     - `claude_implement` with `resume_latest`
-- [ ] Add tests for:
+- [x] Add tests for:
   - explicit `job_id`
   - explicit `run_id`
   - latest implement result with resumable session
   - missing result returns a shaped error
-  - Still missing explicit coverage for the missing-result shaped error.
 - [x] Document `claude_result` in `README.md`
 
 ### Task 1.2: Real-flow verification for `claude_result`
@@ -139,11 +138,10 @@ The low-level tools (`claude_job_result`, `claude_runs`, `claude_run_inspect`, `
     - queued jobs older than N minutes
     - apply-blocked lifecycle
     - stale worktrees
-- [ ] Add tests covering:
+- [x] Add tests covering:
   - running + terminal jobs summary
   - stale worktree / apply-blocked signals
   - empty workspace view
-  - Still missing explicit empty workspace view coverage.
 - [x] Document the new workspace-centric status tool
 
 ### Task 2.2: Real-flow verification for workspace view
@@ -151,10 +149,9 @@ The low-level tools (`claude_job_result`, `claude_runs`, `claude_run_inspect`, `
 **Files:**
 - Modify: `debug/test-high-level-workflows.ts`
 
-- [ ] Verify:
+- [x] Verify:
   - queued/running/succeeded job counts
   - recent runs appear in one combined workspace view
-  - Real flow currently verifies terminal jobs and recent runs, but not queued/running counts.
 
 ## Phase 3: Unified Rescue/Task Entry Point
 
@@ -202,11 +199,10 @@ The low-level tools (`claude_job_result`, `claude_runs`, `claude_run_inspect`, `
 **Files:**
 - Modify: `debug/test-high-level-workflows.ts`
 
-- [ ] Verify:
+- [x] Verify:
   - `mode=read background=true`
   - `mode=write background=true`
   - `mode=auto` chooses review or implement appropriately
-  - Real flow currently covers read background and auto->review, but not write background.
 
 ## Phase 4: Review Gate / Stop Hook
 
@@ -238,11 +234,10 @@ The low-level tools (`claude_job_result`, `claude_runs`, `claude_run_inspect`, `
   - `action=disable`
   - `action=status`
 - [x] Enable path should install or update a concrete stop-hook helper/script for the current workspace.
-- [ ] Add tests for:
+- [x] Add tests for:
   - config persistence
   - enable/disable/status transitions
   - invalid workspace / duplicate install handling
-  - Still missing explicit invalid workspace coverage.
 
 ### Task 4.2: Real-flow verification for gate
 

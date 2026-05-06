@@ -33,25 +33,25 @@ It does not redesign the background worker model.
 **Files:**
 - Modify: `src/job-runner.ts`
 
-- [ ] Export `markCancelled(jobId)`
-- [ ] Export a small runner helper such as `runJobRunner(jobId, deps?)`
-- [ ] Export or isolate signal registration so tests can trigger the SIGTERM path without a real subprocess
-- [ ] Keep the current direct-start behavior when run as the entrypoint
+- [x] Export `markCancelled(jobId)`
+- [x] Export a small runner helper such as `runJobRunner(jobId, deps?)`
+- [x] Export or isolate signal registration so tests can trigger the SIGTERM path without a real subprocess
+- [x] Keep the current direct-start behavior when run as the entrypoint
 
 ## Task 2: Add Direct Runner Tests
 
 **Files:**
 - Create: `tests/job-runner.test.ts`
 
-- [ ] Add a test for missing `jobId`
-- [ ] Add a test asserting execute failure sets exit behavior or propagates correctly through the helper contract
-- [ ] Add a test asserting SIGTERM marks the job cancelled and calls `abortActiveClaudeRun("SIGTERM")`
-- [ ] Add a test ensuring duplicate SIGTERM does not double-run cleanup
+- [x] Add a test for missing `jobId`
+- [x] Add a test asserting execute failure sets exit behavior or propagates correctly through the helper contract
+- [x] Add a test asserting SIGTERM marks the job cancelled and calls `abortActiveClaudeRun("SIGTERM")`
+- [x] Add a test ensuring duplicate SIGTERM does not double-run cleanup
 
 ## Verification
 
-- [ ] Run: `npm test -- tests/job-runner.test.ts`
-- [ ] Run: `npm test`
-- [ ] Run: `npm run build`
-- [ ] Run: `npm run typecheck`
-- [ ] Review: `git diff -- src/job-runner.ts tests/job-runner.test.ts`
+- [x] Run: `npm test -- tests/job-runner.test.ts`
+- [x] Run: `npm test`
+- [x] Run: `npm run build`
+- [x] Run: `npm run typecheck`
+- [x] Review: `git diff -- src/job-runner.ts tests/job-runner.test.ts`

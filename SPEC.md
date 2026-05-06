@@ -125,7 +125,32 @@ src/
 - **会改文件**（仅在 worktree 内）
 - **前置校验**: 若传入 `files`，服务端先检查这些路径在主工作区是否 dirty；若 dirty 则拒绝执行（避免 worktree 基于 `HEAD` 丢失未提交上下文）
 
-### 4.5 结构化返回类型
+### 4.5 当前工具面
+
+当前实现已经从最初 4 个 MVP 工具扩展为完整工作流工具面：
+
+| 工具 | 作用 |
+|---|---|
+| `claude_status` | 检查 Claude/Git/worktree/允许根目录和近期运行状态 |
+| `claude_setup` | 检查高层工作流准备状态，包括 review gate 和 hook 资产 |
+| `claude_runs` | 列出近期 query/review/implement/apply/cleanup run logs |
+| `claude_run_inspect` | 按 run id 读取单条规范化 run log 和关联 apply/cleanup 信息 |
+| `claude_result` | 解析当前工作区最相关的已完成 job/run，并返回摘要、session 和 next actions |
+| `claude_workspace_status` | 聚合 running/queued jobs、terminal jobs、recent runs、sessions、worktrees 和 attention items |
+| `claude_task` | 高层入口，按 `mode=auto/read/review/write` 路由到 query/review/implement |
+| `claude_review_gate` | 查询、启用或关闭 repo-local review gate |
+| `claude_query` | 只读查询，可同步执行或 `background=true` 入队 |
+| `claude_review` | 只读审查，可同步执行或 `background=true` 入队 |
+| `claude_implement` | 在隔离 worktree 中实现任务，可同步执行或 `background=true` 入队 |
+| `claude_jobs` | 列出后台 query/review/implement/apply/cleanup 任务 |
+| `claude_job_result` | 按 `job_id` 读取后台任务状态和结果 |
+| `claude_job_cancel` | 取消 queued/running 后台任务 |
+| `claude_job_wait` | 阻塞等待后台任务进入终态 |
+| `claude_job_cleanup` | dry-run 或删除当前仓库较旧的终态后台任务记录 |
+| `claude_apply` | 将 delegated worktree 变更 preview/apply 到主工作区，也可后台入队 |
+| `claude_cleanup` | dry-run 或清理 delegated worktree，也可后台入队 |
+
+### 4.6 结构化返回类型
 
 ```ts
 interface ClaudeReport {

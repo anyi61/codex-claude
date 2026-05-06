@@ -4,6 +4,8 @@
 
 **Goal:** Add direct handler-level regression coverage for the background MCP tools without relying only on helper tests or full stdio debug scripts.
 
+**Status calibration (2026-05-05):** Implemented; `tests/server.test.ts` now covers routing, validation, and shaped errors for background and high-level MCP tools.
+
 **Architecture:** Refactor `src/server.ts` just enough to make tool registration and tool-call routing testable as pure module exports, while preserving the current stdio startup path for normal execution. Add a focused `tests/server.test.ts` suite that mocks guard/CLI dependencies and verifies validation, routing, and error shaping for `claude_jobs`, `claude_job_result`, `claude_job_cancel`, and `claude_job_wait`.
 
 **Tech Stack:** TypeScript, MCP SDK, Vitest, existing server helpers in `src/server.ts`, mocked `guard.ts` and `claude-cli.ts`
@@ -35,7 +37,7 @@ It does not add new user-facing capabilities.
 **Files:**
 - Modify: `src/server.ts`
 
-- [ ] **Step 1: Refactor bootstrap behind exported helpers**
+- [x] **Step 1: Refactor bootstrap behind exported helpers**
 
 Extract the current tool registration into exported functions such as:
 
@@ -47,7 +49,7 @@ export async function startServer(): Promise<void> { ... }
 
 Keep the direct startup path at the bottom, but make it call `startServer()`.
 
-- [ ] **Step 2: Export a pure handler helper for tool calls**
+- [x] **Step 2: Export a pure handler helper for tool calls**
 
 Export a helper used by the request handler, for example:
 
@@ -59,7 +61,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
 
 The MCP `CallToolRequestSchema` handler should become a thin wrapper that forwards into this helper.
 
-- [ ] **Step 3: Verify the refactor compiles**
+- [x] **Step 3: Verify the refactor compiles**
 
 Run: `npm run build`
 
@@ -70,7 +72,7 @@ Expected: PASS with unchanged runtime behavior.
 **Files:**
 - Create: `tests/server.test.ts`
 
-- [ ] **Step 1: Write tests for validation and routing**
+- [x] **Step 1: Write tests for validation and routing**
 
 Create `tests/server.test.ts` with mocked dependencies from `src/guard.ts` and `src/claude-cli.ts`.
 
@@ -90,13 +92,13 @@ Assertions should verify:
 - CLI helper receives the resolved cwd
 - error cases return `errorResult(...)` shaped content
 
-- [ ] **Step 2: Run the new server test to verify failure**
+- [x] **Step 2: Run the new server test to verify failure**
 
 Run: `npm test -- tests/server.test.ts`
 
 Expected: FAIL before the `src/server.ts` refactor is complete.
 
-- [ ] **Step 3: Re-run after refactor**
+- [x] **Step 3: Re-run after refactor**
 
 Run: `npm test -- tests/server.test.ts`
 
@@ -108,13 +110,13 @@ Expected: PASS.
 - Modify: `src/server.ts`
 - Create: `tests/server.test.ts`
 
-- [ ] **Step 1: Run focused regression suite**
+- [x] **Step 1: Run focused regression suite**
 
 Run: `npm test -- tests/server.test.ts tests/schema.test.ts tests/claude-cli.test.ts`
 
 Expected: PASS.
 
-- [ ] **Step 2: Run full verification**
+- [x] **Step 2: Run full verification**
 
 Run: `npm run build`
 Expected: PASS
@@ -125,7 +127,7 @@ Expected: PASS
 Run: `npm run typecheck`
 Expected: PASS
 
-- [ ] **Step 3: Review scoped diff**
+- [x] **Step 3: Review scoped diff**
 
 Run: `git diff -- src/server.ts tests/server.test.ts`
 

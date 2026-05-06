@@ -4,6 +4,8 @@
 
 **Goal:** Extend the background job model beyond review/implement so `claude_apply` and `claude_cleanup` can also run asynchronously when the caller prefers queueable workflows.
 
+**Status calibration (2026-05-05):** Implemented and covered by schema/CLI/server tests; `claude_apply` and `claude_cleanup` both support `background=true`.
+
 **Architecture:** Reuse the existing background job store and detached worker model. Expand `BackgroundJobType` to include `apply` and `cleanup`, add queue helpers in `src/claude-cli.ts`, and wire optional `background: true` through the existing MCP handlers. Keep synchronous behavior unchanged.
 
 **Tech Stack:** TypeScript, MCP SDK, existing `JobStore`, detached `job-runner`, Vitest
@@ -39,28 +41,28 @@ It does not add new top-level result/cancel/wait tools because the existing back
 
 ## Task 1: Extend Types And Schemas
 
-- [ ] Expand `BackgroundJobType` to `"review" | "implement" | "apply" | "cleanup"`
-- [ ] Add optional `background` to `ClaudeApplyInput` and `ClaudeCleanupInput`
-- [ ] Update zod schemas and schema tests
+- [x] Expand `BackgroundJobType` to `"review" | "implement" | "apply" | "cleanup"`
+- [x] Add optional `background` to `ClaudeApplyInput` and `ClaudeCleanupInput`
+- [x] Update zod schemas and schema tests
 
 ## Task 2: Extend Queue And Worker Execution
 
-- [ ] Add `startBackgroundApply(...)` and `startBackgroundCleanup(...)`
-- [ ] Teach `executeBackgroundJob(...)` to dispatch apply/cleanup jobs
-- [ ] Add summary/worktree extraction behavior that still makes sense for non-review/implement jobs
-- [ ] Add CLI tests for queueing apply/cleanup jobs
+- [x] Add `startBackgroundApply(...)` and `startBackgroundCleanup(...)`
+- [x] Teach `executeBackgroundJob(...)` to dispatch apply/cleanup jobs
+- [x] Add summary/worktree extraction behavior that still makes sense for non-review/implement jobs
+- [x] Add CLI tests for queueing apply/cleanup jobs
 
 ## Task 3: Wire MCP Handlers
 
-- [ ] Register `background` input fields for apply/cleanup tools
-- [ ] Route `background: true` into background enqueue helpers
-- [ ] Keep sync path unchanged when `background` is absent/false
-- [ ] Update README examples and workflow notes
+- [x] Register `background` input fields for apply/cleanup tools
+- [x] Route `background: true` into background enqueue helpers
+- [x] Keep sync path unchanged when `background` is absent/false
+- [x] Update README examples and workflow notes
 
 ## Verification
 
-- [ ] Run: `npm test -- tests/server.test.ts tests/schema.test.ts tests/claude-cli.test.ts`
-- [ ] Run: `npm test`
-- [ ] Run: `npm run build`
-- [ ] Run: `npm run typecheck`
-- [ ] Review: `git diff -- src/schema.ts src/claude-cli.ts src/server.ts tests README.md`
+- [x] Run: `npm test -- tests/server.test.ts tests/schema.test.ts tests/claude-cli.test.ts`
+- [x] Run: `npm test`
+- [x] Run: `npm run build`
+- [x] Run: `npm run typecheck`
+- [x] Review: `git diff -- src/schema.ts src/claude-cli.ts src/server.ts tests README.md`

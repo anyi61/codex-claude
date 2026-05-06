@@ -4,6 +4,8 @@
 
 **Goal:** Add an explicit cleanup path for persisted background jobs so terminal job records do not accumulate indefinitely.
 
+**Status calibration (2026-05-05):** Implemented and covered by schema/CLI/server tests; `claude_job_cleanup` supports dry-run, age filtering, limit handling, and terminal-job deletion.
+
 **Architecture:** Keep the current background job storage model in `src/jobs.ts`, but add a repo-scoped cleanup operation that only targets terminal jobs (`succeeded`, `failed`, `cancelled`). Expose it as a dedicated MCP tool instead of silently pruning on write, so behavior stays observable and reversible via `dry_run`.
 
 **Tech Stack:** TypeScript, Node.js fs/promises, MCP SDK, zod, Vitest
@@ -52,13 +54,13 @@ It does not add automatic retention-on-write in this iteration.
 - Modify: `src/schema.ts`
 - Modify: `tests/schema.test.ts`
 
-- [ ] Add `ClaudeJobCleanupInput`, `ClaudeJobCleanupResult`, and a cleanup-entry type.
-- [ ] Add `claudeJobCleanupInputSchema` with:
+- [x] Add `ClaudeJobCleanupInput`, `ClaudeJobCleanupResult`, and a cleanup-entry type.
+- [x] Add `claudeJobCleanupInputSchema` with:
   - `cwd`
   - `older_than_hours?: number`
   - `dry_run?: boolean`
   - `limit?: number`
-- [ ] Add schema tests for valid dry-run input and invalid zero/negative limits.
+- [x] Add schema tests for valid dry-run input and invalid zero/negative limits.
 
 ## Task 2: Add Store-Level Cleanup
 
@@ -66,10 +68,10 @@ It does not add automatic retention-on-write in this iteration.
 - Modify: `src/jobs.ts`
 - Modify: `tests/claude-cli.test.ts`
 
-- [ ] Add a store helper that lists/removes matching terminal jobs for one repo.
-- [ ] Filter by `cwd`, terminal status, optional age threshold, and optional limit.
-- [ ] Return per-job cleanup entries plus aggregate counts.
-- [ ] Add tests for:
+- [x] Add a store helper that lists/removes matching terminal jobs for one repo.
+- [x] Filter by `cwd`, terminal status, optional age threshold, and optional limit.
+- [x] Return per-job cleanup entries plus aggregate counts.
+- [x] Add tests for:
   - dry-run leaves files untouched
   - non-dry-run removes only old terminal jobs
   - running jobs are preserved
@@ -82,16 +84,16 @@ It does not add automatic retention-on-write in this iteration.
 - Modify: `tests/server.test.ts`
 - Modify: `README.md`
 
-- [ ] Add `cleanupBackgroundJobs(...)` helper in `src/claude-cli.ts`.
-- [ ] Register `claude_job_cleanup` in `src/server.ts`.
-- [ ] Route handler validation/cwd resolution into the helper.
-- [ ] Add handler-level tests for routing and validation errors.
-- [ ] Document the new tool and recommended usage in `README.md`.
+- [x] Add `cleanupBackgroundJobs(...)` helper in `src/claude-cli.ts`.
+- [x] Register `claude_job_cleanup` in `src/server.ts`.
+- [x] Route handler validation/cwd resolution into the helper.
+- [x] Add handler-level tests for routing and validation errors.
+- [x] Document the new tool and recommended usage in `README.md`.
 
 ## Verification
 
-- [ ] Run: `npm test -- tests/server.test.ts tests/schema.test.ts tests/claude-cli.test.ts`
-- [ ] Run: `npm run build`
-- [ ] Run: `npm test`
-- [ ] Run: `npm run typecheck`
-- [ ] Review: `git diff -- src/jobs.ts src/claude-cli.ts src/schema.ts src/server.ts tests README.md`
+- [x] Run: `npm test -- tests/server.test.ts tests/schema.test.ts tests/claude-cli.test.ts`
+- [x] Run: `npm run build`
+- [x] Run: `npm test`
+- [x] Run: `npm run typecheck`
+- [x] Review: `git diff -- src/jobs.ts src/claude-cli.ts src/schema.ts src/server.ts tests README.md`
