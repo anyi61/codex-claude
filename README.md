@@ -37,7 +37,7 @@ Codex CLI
 | `claude_run_inspect` | 按 run id 深入查看单次运行的原始记录和关联 apply/cleanup | `cwd`, `run_id` |
 | `claude_jobs` | 列出后台任务 | `cwd`, `type`, `status`, `limit` |
 | `claude_job_result` | 按 job id 读取后台任务结果 | `cwd`, `job_id` |
-| `claude_job_wait` | 等后台任务进入终态，适合替代手写轮询 | `cwd`, `job_id`, `timeout_ms`, `poll_interval_ms` |
+| `claude_job_wait` | 单次查看后台任务状态；终态返回结果，非终态返回 `waiting=true` | `cwd`, `job_id` |
 | `claude_job_cancel` | 取消自己启动的 queued/running 后台任务 | `cwd`, `job_id` |
 | `claude_job_cleanup` | 清理当前仓库旧的终态后台任务记录，默认先 dry-run | `cwd`, `older_than_hours`, `dry_run`, `limit` |
 | `claude_apply` | 预览或合并 delegated worktree 的变更到主工作区 | `cwd`, `worktree_path`, `preview`, `cleanup`, `background` |
@@ -364,14 +364,12 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 - `fast=true`：默认用更小 turn budget（2）和更短 `timeout_sec`（45s），并引导 Claude 先做最小读取。
 - `resume=false`：避免自动挂载旧 query session 上下文，减少陈旧上下文导致的尾延迟。
 
-拿到 `job_id` 后，用短等待轮询：
+拿到 `job_id` 后，轮询查看状态：
 
 ```json
 {
   "cwd": "/path/to/repo",
-  "job_id": "<job-id>",
-  "timeout_ms": 10000,
-  "poll_interval_ms": 1000
+  "job_id": "<job-id>"
 }
 ```
 
@@ -401,18 +399,16 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 }
 ```
 
-拿到返回的 `job.job_id` 后，可以直接等待终态，而不是自己循环调用 `claude_job_result`：
+拿到返回的 `job.job_id` 后，用 `claude_job_wait` 查看一次当前状态：
 
 ```json
 {
   "cwd": "/path/to/repo",
-  "job_id": "<job-id>",
-  "timeout_ms": 30000,
-  "poll_interval_ms": 1000
+  "job_id": "<job-id>"
 }
 ```
 
-`claude_job_wait` 会在后台进程变为 `succeeded`、`failed` 或 `cancelled` 时返回完整 job/result；如果 `timeout_ms` 到期但 job 仍是 `queued` 或 `running`，它不会作为 tool error 抛出，而是返回 `waiting=true`、`timed_out=true`、当前 `job` 和 `next_actions`。注意 `job.status` 表示后台进程状态，不等于 Claude 任务质量。终态 job 可能同时返回 `job.status="succeeded"` 和 `job.result_status="partial"`，这表示进程正常结束，但 Claude 达到 `max_turns` 或只完成了部分工作。遇到 `partial` / `needs_user` 时，应先用 `claude_result` 或 `claude_run_inspect` 查看，再决定 `resume_latest`、`claude_apply preview=true` 或清理 worktree。
+`claude_job_wait` 不做长时间阻塞等待，也没有 `timeout_ms`。它只查看当前 job 状态：如果后台进程已经 `succeeded`、`failed` 或 `cancelled`，返回完整 job/result；如果仍是 `queued` 或 `running`，返回 `waiting=true`、当前 `job` 和 `next_actions`，调用方稍后再次调用即可。注意 `job.status` 表示后台进程状态，不等于 Claude 任务质量。终态 job 可能同时返回 `job.status="succeeded"` 和 `job.result_status="partial"`，这表示进程正常结束，但 Claude 达到 `max_turns` 或只完成了部分工作。遇到 `partial` / `needs_user` 时，应先用 `claude_result` 或 `claude_run_inspect` 查看，再决定 `resume_latest`、`claude_apply preview=true` 或清理 worktree。
 
 如果后台任务历史积累较多，可以先 dry-run 看看哪些终态任务会被清理：
 

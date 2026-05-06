@@ -572,8 +572,6 @@ describe("server background job handlers", () => {
     const result = await handleToolCall("claude_job_wait", {
       cwd: "/repo/input",
       job_id: "job-1",
-      timeout_ms: 2000,
-      poll_interval_ms: 100,
     });
     const payload = parsePayload(result);
 
@@ -581,8 +579,6 @@ describe("server background job handlers", () => {
     expect(waitForBackgroundJobMock).toHaveBeenCalledWith({
       cwd: "/repo/resolved",
       job_id: "job-1",
-      timeout_ms: 2000,
-      poll_interval_ms: 100,
     });
     expect((payload.job as Record<string, unknown>).status).toBe("succeeded");
     expect(payload.timed_out).toBe(false);

@@ -1044,16 +1044,12 @@ describe("claude cli argument construction", () => {
       waitForBackgroundJob?: (input: {
         cwd: string;
         job_id: string;
-        timeout_ms?: number;
-        poll_interval_ms?: number;
       }) => Promise<{ job: { status: string; result_status?: string; summary?: string }; waiting: boolean; timed_out: boolean; result?: Record<string, unknown> }>;
     }).waitForBackgroundJob;
 
     const result = await waitForBackgroundJob!({
       cwd: repo,
       job_id: "job-done",
-      timeout_ms: 1000,
-      poll_interval_ms: 10,
     });
 
     expect(result.job.status).toBe("succeeded");
@@ -1180,7 +1176,7 @@ describe("claude cli argument construction", () => {
     vi.resetModules();
   });
 
-  it("returns a structured timeout while a background job stays running", async () => {
+  it("returns a waiting status while a background job stays running", async () => {
     const { repo, store } = await createJobFixture();
 
     await store.create({
@@ -1198,21 +1194,17 @@ describe("claude cli argument construction", () => {
       waitForBackgroundJob?: (input: {
         cwd: string;
         job_id: string;
-        timeout_ms?: number;
-        poll_interval_ms?: number;
       }) => Promise<unknown>;
     }).waitForBackgroundJob;
 
     const result = await waitForBackgroundJob!({
       cwd: repo,
       job_id: "job-running",
-      timeout_ms: 50,
-      poll_interval_ms: 10,
     });
 
     expect(result).toMatchObject({
       waiting: true,
-      timed_out: true,
+      timed_out: false,
       job: {
         job_id: "job-running",
         status: "running",
@@ -1225,7 +1217,7 @@ describe("claude cli argument construction", () => {
     ]);
   });
 
-  it("returns a structured timeout while a background job stays queued", async () => {
+  it("returns a waiting status while a background job stays queued", async () => {
     const { repo, store } = await createJobFixture();
 
     await store.create({
@@ -1243,21 +1235,17 @@ describe("claude cli argument construction", () => {
       waitForBackgroundJob?: (input: {
         cwd: string;
         job_id: string;
-        timeout_ms?: number;
-        poll_interval_ms?: number;
       }) => Promise<unknown>;
     }).waitForBackgroundJob;
 
     const result = await waitForBackgroundJob!({
       cwd: repo,
       job_id: "job-queued",
-      timeout_ms: 50,
-      poll_interval_ms: 10,
     });
 
     expect(result).toMatchObject({
       waiting: true,
-      timed_out: true,
+      timed_out: false,
       job: {
         job_id: "job-queued",
         status: "queued",

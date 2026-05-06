@@ -1415,36 +1415,18 @@ export async function getBackgroundJobResult(
 export async function waitForBackgroundJob(
   input: ClaudeJobWaitInput
 ): Promise<ClaudeJobWaitResult> {
-  const timeoutMs = input.timeout_ms ?? 30_000;
-  const pollIntervalMs = input.poll_interval_ms ?? 1_000;
-  const deadline = Date.now() + timeoutMs;
-
-  while (true) {
-    const result = await getBackgroundJobResult({ cwd: input.cwd, job_id: input.job_id });
-    if (!result) {
-      throw new Error(`Job not found: ${input.job_id}`);
-    }
-
-    if (result.job.status === "succeeded" || result.job.status === "failed" || result.job.status === "cancelled") {
-      return {
-        ...result,
-        waiting: false,
-        timed_out: false,
-        next_actions: buildNextActions({ cwd: input.cwd, job: result.job }),
-      };
-    }
-
-    if (Date.now() >= deadline) {
-      return {
-        ...result,
-        waiting: true,
-        timed_out: true,
-        next_actions: buildNextActions({ cwd: input.cwd, job: result.job }),
-      };
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, Math.min(pollIntervalMs, Math.max(deadline - Date.now(), 0))));
+  const result = await getBackgroundJobResult({ cwd: input.cwd, job_id: input.job_id });
+  if (!result) {
+    throw new Error(`Job not found: ${input.job_id}`);
   }
+
+  const terminal = result.job.status === "succeeded" || result.job.status === "failed" || result.job.status === "cancelled";
+  return {
+    ...result,
+    waiting: !terminal,
+    timed_out: false,
+    next_actions: buildNextActions({ cwd: input.cwd, job: result.job }),
+  };
 }
 
 export async function cancelBackgroundJob(

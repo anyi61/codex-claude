@@ -300,8 +300,6 @@ const TOOL_DEFINITIONS = [
       properties: {
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
         job_id: { type: "string", description: "Background job id" },
-        timeout_ms: { type: "number", description: "Maximum wait time in milliseconds (default 30000)" },
-        poll_interval_ms: { type: "number", description: "Polling interval in milliseconds (default 1000)" },
       },
     },
   },

@@ -110,8 +110,6 @@ export interface ClaudeResultInput {
 export interface ClaudeJobWaitInput {
   cwd: string;
   job_id: string;
-  timeout_ms?: number;
-  poll_interval_ms?: number;
 }
 
 export interface ClaudeJobWaitResult {
@@ -639,9 +637,7 @@ export const claudeResultInputSchema = z.object({
 export const claudeJobWaitInputSchema = z.object({
   cwd: cwdSchema,
   job_id: z.string().trim().min(1, "job_id is required"),
-  timeout_ms: z.number().int().positive().max(3_600_000).optional().default(30_000),
-  poll_interval_ms: z.number().int().positive().max(10_000).optional().default(1_000),
-});
+}).strict();
 
 export const claudeJobCancelInputSchema = z.object({
   cwd: cwdSchema,
