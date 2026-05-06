@@ -2265,56 +2265,60 @@ export async function checkClaudeStatus(cwd: string): Promise<ClaudeStatusResult
     errors: [],
   };
 
-  // Check claude binary
-  try {
-    const version = await execCapture(CLAUDE_BIN, ["--version"], { cwd });
+  const [claudeVersionResult, gitVersionResult, gitRepoResult] = await Promise.all([
+    execCapture(CLAUDE_BIN, ["--version"], { cwd }).then((version) => ({ ok: true as const, version })).catch(() => ({ ok: false as const })),
+    execCapture("git", ["--version"], { cwd }).then(() => ({ ok: true as const })).catch(() => ({ ok: false as const })),
+    execCapture("git", ["rev-parse", "--git-dir"], { cwd }).then(() => ({ ok: true as const })).catch(() => ({ ok: false as const })),
+  ]);
+
+  if (claudeVersionResult.ok) {
     result.claude_available = true;
-    result.claude_version = version;
-  } catch {
+    result.claude_version = claudeVersionResult.version;
+  } else {
     result.errors.push("claude CLI not found in PATH");
   }
 
-  // Check claude auth
+  if (gitVersionResult.ok) {
+    result.git_available = true;
+  } else {
+    result.errors.push("git not found in PATH");
+  }
+
+  result.cwd_is_git_repo = gitRepoResult.ok;
+
+  const [authResult, worktreeResult] = await Promise.all([
+    result.claude_available
+      ? execCapture(CLAUDE_BIN, ["auth", "status"], { cwd })
+        .then((authOutput) => ({ ok: true as const, authOutput }))
+        .catch(() => ({ ok: false as const }))
+      : Promise.resolve({ ok: false as const }),
+    result.git_available
+      ? execCapture("git", ["worktree", "list"], { cwd })
+        .then((wl) => ({ ok: true as const, wl }))
+        .catch(() => ({ ok: false as const }))
+      : Promise.resolve({ ok: false as const }),
+  ]);
+
   if (result.claude_available) {
-    try {
-      const authOutput = await execCapture(CLAUDE_BIN, ["auth", "status"], { cwd });
+    if (authResult.ok) {
       try {
-        const authJson = JSON.parse(authOutput);
+        const authJson = JSON.parse(authResult.authOutput);
         result.auth_status = authJson.loggedIn === true ? "authenticated" : "not authenticated";
       } catch {
-        result.auth_status = authOutput.includes("Logged in") || authOutput.includes("loggedIn") ? "authenticated" : "unknown";
+        result.auth_status = authResult.authOutput.includes("Logged in") || authResult.authOutput.includes("loggedIn") ? "authenticated" : "unknown";
       }
-    } catch {
+    } else {
       result.auth_status = "unauthenticated or unknown";
       result.errors.push("claude auth status could not be verified");
     }
   }
 
-  // Check git
-  try {
-    await execCapture("git", ["--version"], { cwd });
-    result.git_available = true;
-  } catch {
-    result.errors.push("git not found in PATH");
-  }
-
-  // Check worktree
   if (result.git_available) {
-    try {
-      const wl = await execCapture("git", ["worktree", "list"], { cwd });
-      result.worktree_capable = wl.length >= 0;
-    } catch {
+    if (worktreeResult.ok) {
+      result.worktree_capable = worktreeResult.wl.length >= 0;
+    } else {
       result.errors.push("git worktree not supported in this repo");
     }
-  }
-
-  // Check cwd
-  try {
-    const { execSync } = await import("node:child_process");
-    const isRepo = execSync("git rev-parse --git-dir", { cwd, stdio: "pipe" });
-    result.cwd_is_git_repo = isRepo.length > 0;
-  } catch {
-    result.cwd_is_git_repo = false;
   }
 
   result.cwd_valid = result.git_available && result.cwd_is_git_repo;
