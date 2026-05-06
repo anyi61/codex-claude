@@ -498,6 +498,57 @@ describe("claude cli argument construction", () => {
     vi.resetModules();
   });
 
+  it("recursively applies untracked directory entries from a worktree", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-directory-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "package.json"), "{\"name\":\"fixture\"}\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+    const worktreeRel = ".claude/worktrees/codex-delegated-directory";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await mkdir(path.join(worktree, "src", "lib"), { recursive: true });
+    await writeFile(path.join(worktree, "src", "index.js"), "export const value = 1;\n");
+    await writeFile(path.join(worktree, "src", "lib", "helper.js"), "export const helper = true;\n");
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(logDir, "implement-directory.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "success", summary: "Added src directory" },
+      observed: {
+        worktree_path: worktreeRel,
+        worktree_name: "codex-delegated-directory",
+        base_commit: baseCommit,
+        changed_files: ["src/"],
+        scope: { requested_files: undefined, out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 1, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const applied = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+    }, "apply-directory");
+
+    expect(applied.error).toBeUndefined();
+    expect(applied.conflicts).toEqual([]);
+    expect(applied.applied_files).toEqual(["src/index.js", "src/lib/helper.js"]);
+    expect(await readFile(path.join(repo, "src", "index.js"), "utf8")).toBe("export const value = 1;\n");
+    expect(await readFile(path.join(repo, "src", "lib", "helper.js"), "utf8")).toBe("export const helper = true;\n");
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
   it("marks non-zero implement results with observed file changes as partial", async () => {
     const { repo } = await createGitRepoFixture();
     const stdout = JSON.stringify({

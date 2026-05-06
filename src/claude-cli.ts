@@ -1589,6 +1589,41 @@ export function parseNameStatusPorcelainZ(output: string): Array<{ status: strin
   return parsed;
 }
 
+async function expandDirectoryChange(
+  change: { status: string; file: string },
+  worktreeRoot: string
+): Promise<Array<{ status: string; file: string }>> {
+  if (change.status === "D") return [change];
+  const sourcePath = path.join(worktreeRoot, change.file);
+  let sourceStat;
+  try {
+    sourceStat = await stat(sourcePath);
+  } catch {
+    return [change];
+  }
+  if (!sourceStat.isDirectory()) return [change];
+
+  const expanded: Array<{ status: string; file: string }> = [];
+  const walk = async (relativeDir: string): Promise<void> => {
+    const dirPath = path.join(worktreeRoot, relativeDir);
+    const entries = await readdir(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const childRelative = path.join(relativeDir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(childRelative);
+      } else if (entry.isFile()) {
+        expanded.push({
+          status: change.status,
+          file: normalizeRepoPath(worktreeRoot, childRelative),
+        });
+      }
+    }
+  };
+
+  await walk(change.file);
+  return expanded.sort((a, b) => a.file.localeCompare(b.file));
+}
+
 // ---- Spawn Claude with structured output ----
 
 export interface ClaudeRunOptions {
@@ -2788,7 +2823,7 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   const changesByFile = new Map<string, { status: string; file: string }>();
   function addChange(change: { status: string; file: string }): void {
     if (hasObservedScope) {
-      if (!observedChangedFiles.includes(change.file)) return;
+      if (!observedChangedFiles.some((observed) => isUnderRequestedFile(change.file, observed))) return;
     } else if (!change.file.startsWith("src/")) {
       return;
     }
@@ -2815,7 +2850,11 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
     }
   }
 
-  const changes = [...changesByFile.values()].sort((a, b) => a.file.localeCompare(b.file));
+  const changes = (await Promise.all(
+    [...changesByFile.values()].map((change) => expandDirectoryChange(change, wtReal))
+  ))
+    .flat()
+    .sort((a, b) => a.file.localeCompare(b.file));
   if (!diffStat.trim() && changes.length > 0) {
     diffStat = changes.map((c) => `${c.status}\t${c.file}`).join("\n");
   }
@@ -2901,11 +2940,10 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
       if (c.status === "D") {
         // Deletion
         if (existsSync(dest)) {
-          await import("node:fs/promises").then((m) => m.rm(dest).catch(() => {}));
+          await import("node:fs/promises").then((m) => m.rm(dest, { recursive: true, force: true }).catch(() => {}));
         }
         copied.push(c.file);
       } else {
-        // Modified or added — copy from worktree
         const content = await import("node:fs/promises").then((m) => m.readFile(src));
         await mkdir(path.dirname(dest), { recursive: true });
         await writeFile(dest, content);
