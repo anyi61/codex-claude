@@ -1208,13 +1208,14 @@ describe("claude cli argument construction", () => {
       summary: expect.stringContaining("do not duplicate this task locally"),
       waiting: true,
       timed_out: false,
-      recommended_delay_ms: 5000,
+      recommended_delay_ms: 60000,
       job: {
         job_id: "job-running",
         status: "running",
       },
     });
-    expect((result as { next_actions?: Array<{ reason: string }> }).next_actions?.[0]?.reason).toContain("do not duplicate this implementation locally");
+    expect((result as { next_actions?: Array<{ reason: string }> }).next_actions?.[0]?.reason).toContain("Wait about 60 seconds");
+    expect((result as { next_actions?: Array<{ reason: string }> }).next_actions?.find((action) => action.reason.includes("Cancel"))?.reason).toContain("exceeds its Claude timeout_sec budget");
     expect((result as { next_actions?: Array<{ tool: string }> }).next_actions?.map((action) => action.tool)).toEqual([
       "claude_job_wait",
       "claude_job_result",
@@ -1252,7 +1253,7 @@ describe("claude cli argument construction", () => {
       summary: expect.stringContaining("do not duplicate this task locally"),
       waiting: true,
       timed_out: false,
-      recommended_delay_ms: 5000,
+      recommended_delay_ms: 60000,
       job: {
         job_id: "job-queued",
         status: "queued",
