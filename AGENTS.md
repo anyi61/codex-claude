@@ -29,5 +29,20 @@
 ## 提交与 PR 指南
 近期历史遵循 Conventional Commits 规范：`feat: ...`、`fix: ...`、`docs: ...`。保持提交主题为祈使语气，并限定为单一逻辑变更。Pull Request 应包含简短的问题描述、变更摘要、已运行的验证命令、关联问题（如适用），以及子进程执行、允许根目录、工作树或环境处理相关的安全影响说明。
 
+## MCP Tool Usage Policy
+
+Default Codex workflows should use only:
+
+- `claude_setup`
+- `claude_task`
+- `claude_job_wait`
+- `claude_result`
+- `claude_apply`
+- `claude_cleanup`
+
+Do not call `claude_query`, `claude_review`, or `claude_implement` directly for ordinary work. Do not call `claude_jobs`, `claude_job_result`, or `claude_runs` directly for ordinary polling. These are Advanced / Debug tools for diagnostics, rescue, or explicit expert workflows.
+
+When `claude_task` returns a job, that job is the single execution source for the request. Continue with `claude_job_wait` until the job reaches a terminal state or is explicitly cancelled. If `claude_job_wait` returns `waiting=true`, do not implement the same task locally and do not create another job for the same task.
+
 ## 安全与配置提示
 不要向 Claude 子进程传递密钥。保持环境清理、危险命令拦截以及 `BRIDGE_DEPTH` 递归保护。在配置允许根目录时，尽量使用 `CODEX_CLAUDE_ALLOW_ROOTS` 环境变量，而非硬编码本地路径。

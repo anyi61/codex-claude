@@ -1,15 +1,14 @@
 # Claude Code Review
 
-## When to use claude_review
+For ordinary review requests, prefer `claude_task mode=review` and poll with `claude_job_wait`. Use direct `claude_review` only for Advanced / Debug workflows or when the user explicitly asks for the bottom-level tool.
 
-Use `claude_review` (MCP tool `claude_delegate`) when you need a second opinion on code changes:
+## When to use review
 
 1. **Before risky implementations** — diff of planned changes before applying to main branch
 2. **Complex patches** — diffs that touch multiple modules or cross-cutting concerns
 3. **Security-sensitive changes** — authentication, authorization, input handling, secrets management
 4. **Unfamiliar code** — when you are not sure about edge cases or idiomatic patterns
 5. **After claude_implement** — review Claude's diff before calling `claude_apply`
-6. **Ongoing codebase audit** — periodic quality or security review of specific modules
 
 ## How it works
 

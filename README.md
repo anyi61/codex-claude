@@ -84,30 +84,33 @@ npm run typecheck
 添加到 `~/.codex/config.toml`：
 
 ```toml
+[~/.codex/config.toml]
 [mcp_servers.claude_delegate]
 command = "node"
-args = ["/path/to/codex-claude-delegate-mcp/dist/server.js"]
+args = ["/absolute/path/to/codex-claude/delegate-mcp/dist/server.js"]
 tool_timeout_sec = 600
 startup_timeout_sec = 20
-enabled_tools = ["claude_status", "claude_setup", "claude_runs", "claude_run_inspect", "claude_result", "claude_workspace_status", "claude_task", "claude_review_gate", "claude_query", "claude_review", "claude_implement", "claude_jobs", "claude_job_result", "claude_job_cancel", "claude_job_wait", "claude_job_cleanup", "claude_apply", "claude_cleanup"]
+enabled_tools = [
+  "claude_setup",
+  "claude_task",
+  "claude_job_wait",
+  "claude_result",
+  "claude_apply",
+  "claude_cleanup"
+]
 ```
 
-如果你不需要限制工具，推荐直接省略 `enabled_tools`，让 Codex 自动读取 MCP server 暴露的完整工具列表。若保留 `enabled_tools`，必须包含上面全部 18 个工具；旧配置常只包含 `claude_status`、`claude_query`、`claude_review`、`claude_implement`、`claude_apply`、`claude_cleanup`，会导致后台任务、run 检查、review gate 和高层工作流工具不可用。
+Advanced / Debug tools remain registered for troubleshooting but are not enabled by default:
 
-如果 `codex mcp get claude_delegate` 只显示 6 个工具，通常是旧白名单导致的。最简单修复方式是重建 MCP 配置并省略 `enabled_tools`：
-
-```bash
-codex mcp remove claude_delegate
-codex mcp add claude_delegate -- node /path/to/codex-claude-delegate-mcp/dist/server.js
+```text
+claude_status, claude_runs, claude_run_inspect, claude_workspace_status,
+claude_review_gate, claude_query, claude_review, claude_implement,
+claude_jobs, claude_job_result, claude_job_cancel, claude_job_cleanup
 ```
 
-检查当前 Codex 配置实际暴露的工具：
-
-```bash
-codex mcp get claude_delegate
-```
-
-零成本检查 server 自身工具列表，不会调用 Claude：
+For ordinary tasks, do not call `claude_query`, `claude_review`, or `claude_implement` directly. Use `claude_task`.
+For ordinary polling, do not call `claude_jobs`, `claude_job_result`, or `claude_runs` directly. Use `claude_job_wait` and `claude_result`.
+If `claude_job_wait` reports `waiting=true`, do not implement the same request locally and do not start another job with the same task. Wait for `recommended_delay_ms`, then poll the same `job_id` again.
 
 ```bash
 npm run build

@@ -700,8 +700,8 @@ describe("claude cli argument construction", () => {
     expect(result.claude_report).toMatchObject({
       status: "needs_user",
       next_steps: expect.arrayContaining([
-        expect.stringContaining("dirty_policy=\"snapshot\""),
-        expect.stringContaining("dirty_policy=\"committed\""),
+        expect.stringContaining("committed"),
+        expect.stringContaining("snapshot"),
       ]),
     });
     expect(existsSync(path.join(repo, ".claude", "worktrees", "codex-delegated-dirty-main"))).toBe(false);
@@ -1306,9 +1306,10 @@ describe("claude cli argument construction", () => {
     expect(result.next_actions.map((action) => action.tool)).toEqual(
       expect.arrayContaining(["claude_apply", "claude_implement"])
     );
-    expect(result.next_actions.find((action) => action.tool === "claude_apply")?.args).toEqual({
+    expect(result.next_actions.find((action) => action.tool === "claude_apply" && action.args?.preview === true)?.args).toMatchObject({
       cwd: repo,
       worktree_path: ".claude/worktrees/codex-delegated-123",
+      preview: true,
     });
   });
 
@@ -1583,8 +1584,6 @@ describe("claude cli argument construction", () => {
     expect(stored?.payload.max_turns).toBeUndefined();
     expect(result.next_actions.map((action) => action.tool)).toEqual([
       "claude_job_wait",
-      "claude_job_result",
-      "claude_job_cancel",
     ]);
   });
 
@@ -1626,6 +1625,6 @@ describe("claude cli argument construction", () => {
 
     expect(result.delegated_mode).toBe("review");
     expect(result.job?.type).toBe("review");
-    expect(result.next_actions.map((action) => action.tool)).toContain("claude_review");
+    expect(result.next_actions.map((action) => action.tool)).toEqual(["claude_job_wait"]);
   });
 });

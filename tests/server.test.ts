@@ -663,4 +663,65 @@ describe("server background job handlers", () => {
     });
     expect((payload.job as Record<string, unknown>).type).toBe("cleanup");
   });
+
+  it("documents the six default tools and marks the rest as advanced", async () => {
+    let listToolsHandler: (() => Promise<{ tools: Array<{ name: string; description?: string }> }>) | undefined;
+    const fakeServer = {
+      setRequestHandler: vi.fn((_schema: unknown, handler: () => Promise<{ tools: Array<{ name: string; description?: string }> }>) => {
+        listToolsHandler = handler;
+      }),
+    };
+
+    registerToolDefinitions(fakeServer as never);
+    const result = await listToolsHandler!();
+    const byName = new Map(result.tools.map((tool) => [tool.name, tool]));
+
+    const defaultTools = [
+      "claude_setup",
+      "claude_task",
+      "claude_job_wait",
+      "claude_result",
+      "claude_apply",
+      "claude_cleanup",
+    ];
+    const advancedTools = result.tools
+      .map((tool) => tool.name)
+      .filter((name) => !defaultTools.includes(name));
+
+    expect(defaultTools.every((name) => byName.has(name))).toBe(true);
+    for (const name of advancedTools) {
+      expect(byName.get(name)?.description).toMatch(/^Advanced \/ Debug\./);
+    }
+  });
+
+  it("returns duplicate claude_task jobs without losing do-not-duplicate metadata", async () => {
+    runClaudeTaskMock.mockResolvedValue({
+      delegated_mode: "write",
+      summary: "An equivalent implement job is already running: job-existing.",
+      job: { job_id: "job-existing", type: "implement", status: "running" },
+      deduped: true,
+      do_not_start_duplicate_job: true,
+      next_actions: [
+        {
+          tool: "claude_job_wait",
+          reason: "poll",
+          args: { cwd: "/repo/resolved", job_id: "job-existing" },
+        },
+      ],
+    });
+
+    const result = await handleToolCall("claude_task", {
+      cwd: "/repo/input",
+      task: "Implement template rendering",
+      mode: "write",
+      dirty_policy: "committed",
+    });
+    const payload = parsePayload(result);
+
+    expect(payload.deduped).toBe(true);
+    expect(payload.do_not_start_duplicate_job).toBe(true);
+    expect((payload.next_actions as Array<Record<string, unknown>>)[0]).toMatchObject({
+      tool: "claude_job_wait",
+    });
+  });
 });

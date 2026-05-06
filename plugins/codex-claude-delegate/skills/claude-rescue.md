@@ -1,5 +1,7 @@
 # Claude Code Rescue — Failure Recovery
 
+Rescue workflows may use Advanced / Debug tools such as `claude_workspace_status`, `claude_job_result`, `claude_runs`, `claude_run_inspect`, and `claude_job_cancel`. Use them only after the default `claude_job_wait` / `claude_result` path is insufficient or the user explicitly asks for diagnosis.
+
 ## When to use rescue procedures
 
 Use these steps when `claude_implement` fails or produces unexpected results:

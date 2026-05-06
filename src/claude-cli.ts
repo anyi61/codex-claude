@@ -975,34 +975,26 @@ function buildNextActions(input: {
   const worktreePath = run?.worktree_path;
 
   if (job && (job.status === "queued" || job.status === "running")) {
-    actions.push({
-      tool: "claude_job_wait",
-      reason: "Job is still running; do not duplicate this implementation locally. Wait about 60 seconds, then poll again with claude_job_wait, or inspect with claude_job_result.",
-      args: { cwd: input.cwd, job_id: job.job_id },
-    });
-    actions.push({
-      tool: "claude_job_result",
-      reason: "Read the persisted job state without doing the same work locally. If it is still running, continue polling or cancel first.",
-      args: { cwd: input.cwd, job_id: job.job_id },
-    });
-    actions.push({
-      tool: "claude_job_cancel",
-      reason: "Cancel only if the user asks, the job exceeds its Claude timeout_sec budget, or you are intentionally abandoning this run before trying another execution path.",
-      args: { cwd: input.cwd, job_id: job.job_id },
-    });
+    return [
+      {
+        tool: "claude_job_wait",
+        reason: "This job is still active. Continue polling this job_id and do not start another job for the same task.",
+        args: { cwd: input.cwd, job_id: job.job_id },
+      },
+    ];
   }
 
   if (type === "implement") {
     if (worktreePath) {
       actions.push({
         tool: "claude_apply",
-        reason: "Implement result is available in a delegated worktree and can be landed to the main workspace.",
-        args: { cwd: input.cwd, worktree_path: worktreePath },
+        reason: "Preview the delegated worktree diff before modifying the main workspace.",
+        args: { cwd: input.cwd, worktree_path: worktreePath, preview: true },
       });
       actions.push({
-        tool: "claude_cleanup",
-        reason: "Delegated worktrees should be cleaned up after the implementation result is applied or discarded.",
-        args: { cwd: input.cwd, dry_run: false },
+        tool: "claude_apply",
+        reason: "After preview and review, apply the delegated worktree diff and clean up the worktree.",
+        args: { cwd: input.cwd, worktree_path: worktreePath, cleanup: true },
       });
     }
     if (input.session?.session_id) {
@@ -1172,6 +1164,7 @@ export async function getClaudeResult(input: ClaudeResultInput): Promise<ClaudeR
   const runEntry = resolvedRun?.entry;
   const session = await resolveWorkflowSessionSummary({ cwd: input.cwd, run: runEntry });
   const summary = resolvedJob?.summary ?? (runEntry ? buildResultSummaryFromRun(runEntry) : "Background job resolved");
+  const jobIsActive = resolvedJob?.status === "queued" || resolvedJob?.status === "running";
 
   return {
     source_type: resolvedJob ? "job" : "run",
@@ -1181,6 +1174,7 @@ export async function getClaudeResult(input: ClaudeResultInput): Promise<ClaudeR
     session,
     result: resultPayload,
     related_runs: resolvedRun?.related_runs,
+    do_not_start_duplicate_job: jobIsActive ? true : undefined,
     next_actions: buildNextActions({
       cwd: input.cwd,
       job: resolvedJob,
@@ -1264,6 +1258,14 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
     }
   }
 
+  const activeJobs = [...runningJobs.entries, ...queuedJobs.entries]
+    .sort((a, b) => compareRecency(b.updated_at, a.updated_at));
+  const workspaceNextActions = activeJobs.slice(0, limit).map((job) => ({
+    tool: "claude_job_wait",
+    reason: "Workspace has an active delegated job. Poll this job_id instead of starting a duplicate task.",
+    args: { cwd: input.cwd, job_id: job.job_id },
+  }));
+
   return {
     workspace_root: input.cwd,
     running_jobs: runningJobs.entries,
@@ -1282,6 +1284,8 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
       orphan_worktrees: summarizedWorktrees.filter((worktree) => worktree.orphaned).length,
       apply_blocked_runs: recentRuns.entries.filter((run) => run.lifecycle === "apply_blocked").length,
     },
+    do_not_start_duplicate_job: activeJobs.length > 0 ? true : undefined,
+    next_actions: workspaceNextActions.length > 0 ? workspaceNextActions : undefined,
     attention_items: attentionItems,
   };
 }
@@ -1803,9 +1807,9 @@ function dirtyNeedsUserResult(input: ClaudeImplementInput, dirtyFiles: string[],
       "A delegated worktree created from HEAD will not include uncommitted main-workspace changes unless dirty_policy=\"snapshot\" is used.",
     ],
     next_steps: [
-      "Retry with dirty_policy=\"snapshot\" to let Claude work from the current uncommitted main-workspace state.",
-      "Retry with dirty_policy=\"committed\" to intentionally ignore uncommitted changes and work from HEAD.",
-      "Commit, stash, or clean the current changes, then retry without dirty_policy.",
+      "Commit or stash the current main-workspace changes, then rerun claude_task without dirty_policy.",
+      "Use committed state only and intentionally ignore current uncommitted changes: dirty_policy=committed.",
+      "Snapshot current uncommitted changes into the delegated worktree before Claude starts: dirty_policy=snapshot.",
     ],
   };
   return makeEnvelope("needs_user", undefined, successExecution(Date.now() - startTime), [], {

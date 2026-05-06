@@ -63,7 +63,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_status",
     description:
-      "Check Claude Code CLI availability, auth status, git worktree support, and environment readiness.",
+      "Advanced / Debug. Check Claude Code CLI availability, auth status, git worktree support, and environment readiness.",
     inputSchema: {
       type: "object",
       required: ["cwd"],
@@ -75,7 +75,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_setup",
     description:
-      "Check workspace readiness for the high-level workflow layer, including review-gate hook installability and current gate state.",
+      "Default tool. Check workspace readiness for the high-level workflow layer, including review-gate hook installability and current gate state.",
     inputSchema: {
       type: "object",
       required: ["cwd"],
@@ -92,7 +92,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_runs",
     description:
-      "Inspect recent delegated run logs for this repository. Use to trace implement/apply/cleanup history without reading raw JSON files.",
+      "Advanced / Debug. Inspect recent delegated run logs for this repository. Use to trace implement/apply/cleanup history without reading raw JSON files.",
     inputSchema: {
       type: "object",
       required: ["cwd"],
@@ -108,7 +108,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_run_inspect",
     description:
-      "Inspect a single delegated run log by run id, including normalized details and lifecycle metadata.",
+      "Advanced / Debug. Inspect a single delegated run log by run id, including normalized details and lifecycle metadata.",
     inputSchema: {
       type: "object",
       required: ["cwd", "run_id"],
@@ -121,7 +121,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_result",
     description:
-      "Resolve the most relevant finished job or run for this workspace and return a normalized summary, session, and next actions.",
+      "Default tool. Resolve the most relevant finished job or run for this workspace and return a normalized summary, session, and next actions.",
     inputSchema: {
       type: "object",
       required: ["cwd"],
@@ -136,7 +136,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_workspace_status",
     description:
-      "Show a workspace-centric view of current jobs, recent runs, recent sessions, delegated worktrees, and attention items.",
+      "Advanced / Debug. Show a workspace-centric view of current jobs, recent runs, recent sessions, delegated worktrees, and attention items.",
     inputSchema: {
       type: "object",
       required: ["cwd"],
@@ -150,7 +150,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_task",
     description:
-      "High-level rescue/task entrypoint that routes to query, review, or implement and returns a background job for polling.",
+      "Default tool. High-level rescue/task entrypoint that routes to query, review, or implement and returns a background job for polling.",
     inputSchema: {
       type: "object",
       required: ["cwd", "task"],
@@ -172,7 +172,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_review_gate",
     description:
-      "Inspect, enable, or disable the review gate for the current workspace. Enable persists a repo-local gate flag and ensures the stop-hook manifest is present.",
+      "Advanced / Debug. Inspect, enable, or disable the review gate for the current workspace. Enable persists a repo-local gate flag and ensures the stop-hook manifest is present.",
     inputSchema: {
       type: "object",
       required: ["cwd", "action"],
@@ -185,7 +185,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_query",
     description:
-      "Ask Claude a read-only question as a persistent background job. Claude can read files and run safe git commands but cannot modify anything.",
+      "Advanced / Debug. Ask Claude a read-only question as a persistent background job. Claude can read files and run safe git commands but cannot modify anything.",
     inputSchema: {
       type: "object",
       required: ["task", "cwd"],
@@ -209,7 +209,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_review",
     description:
-      "Have Claude Code review code changes as a persistent background job. Claude runs in read-only mode. Provide a diff and/or file list for context.",
+      "Advanced / Debug. Have Claude Code review code changes as a persistent background job. Claude runs in read-only mode. Provide a diff and/or file list for context.",
     inputSchema: {
       type: "object",
       required: ["task", "cwd"],
@@ -227,7 +227,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_implement",
     description:
-      "Delegate an implementation task to Claude Code as a persistent background job. Claude runs in an isolated git worktree and does NOT modify the main working tree.",
+      "Advanced / Debug. Delegate an implementation task to Claude Code as a persistent background job. Claude runs in an isolated git worktree and does NOT modify the main working tree.",
     inputSchema: {
       type: "object",
       required: ["task", "cwd"],
@@ -252,7 +252,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_jobs",
     description:
-      "List recent background review/implement jobs for this repository.",
+      "Advanced / Debug. List recent background review/implement jobs for this repository.",
     inputSchema: {
       type: "object",
       required: ["cwd"],
@@ -267,7 +267,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_job_result",
     description:
-      "Load one background job record, including process status, Claude result_status, and final result when available.",
+      "Advanced / Debug. Load one background job record, including process status, Claude result_status, and final result when available.",
     inputSchema: {
       type: "object",
       required: ["cwd", "job_id"],
@@ -280,7 +280,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_job_cancel",
     description:
-      "Cancel a running or queued background job by id.",
+      "Advanced / Debug. Cancel a running or queued background job by id.",
     inputSchema: {
       type: "object",
       required: ["cwd", "job_id"],
@@ -293,7 +293,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_job_wait",
     description:
-      "Wait for a background job process to reach a terminal state or timeout; inspect job.result_status for the Claude task outcome.",
+      "Default tool. Wait for a background job process to reach a terminal state or timeout; inspect job.result_status for the Claude task outcome.",
     inputSchema: {
       type: "object",
       required: ["cwd", "job_id"],
@@ -306,7 +306,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_job_cleanup",
     description:
-      "Dry-run or remove old terminal background jobs for this repository.",
+      "Advanced / Debug. Dry-run or remove old terminal background jobs for this repository.",
     inputSchema: {
       type: "object",
       required: ["cwd"],
@@ -321,7 +321,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_apply",
     description:
-      "Apply a worktree's diff to the main working tree, then optionally clean up the worktree. Use after claude_implement to land changes.",
+      "Default tool. Apply a worktree's diff to the main working tree, then optionally clean up the worktree. Use after claude_implement to land changes.",
     inputSchema: {
       type: "object",
       required: ["cwd", "worktree_path"],
@@ -337,7 +337,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "claude_cleanup",
     description:
-      "List and remove stale delegated worktrees. Defaults to dry-run. Use after verifying apply to clean up resources.",
+      "Default tool. List and remove stale delegated worktrees. Defaults to dry-run. Use after verifying apply to clean up resources.",
     inputSchema: {
       type: "object",
       required: ["cwd"],
