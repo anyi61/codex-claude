@@ -196,6 +196,14 @@ const TOOL_DEFINITIONS = [
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
         timeout_sec: { type: "number", description: "Timeout in seconds (default 120)" },
         max_turns: { type: "number", description: "Maximum Claude turns for this query (default 8)" },
+        fast: {
+          type: "boolean",
+          description: "Use a lower-latency query mode with smaller turn budget and concise prompt guidance.",
+        },
+        resume: {
+          type: "boolean",
+          description: "Control query session resume behavior. Defaults to true, but fast mode defaults to false.",
+        },
         background: { type: "boolean", description: "Queue the query as a persistent background job" },
       },
     },
@@ -481,19 +489,36 @@ export async function handleToolCall(name: string, args: unknown, runId = random
       case "claude_query": {
         const parsed = claudeQueryInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, timeout_sec, max_turns, background } = parsed.data;
+        const { task, cwd, timeout_sec, max_turns, fast, resume, background } = parsed.data;
+        const resolvedTimeout = timeout_sec ?? (fast ? 45 : 120);
+        const resolvedMaxTurns = max_turns ?? (fast ? 2 : 8);
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
 
         if (background === true) {
           return jsonResult(await startBackgroundQuery(
-            { task, cwd: check.resolved, timeout_sec, max_turns, background },
+            {
+              task,
+              cwd: check.resolved,
+              timeout_sec: resolvedTimeout,
+              max_turns: resolvedMaxTurns,
+              fast,
+              resume,
+              background,
+            },
           ));
         }
 
         const report = await runClaudeQuery(
-          { task, cwd: check.resolved, timeout_sec, max_turns },
+          {
+            task,
+            cwd: check.resolved,
+            timeout_sec: resolvedTimeout,
+            max_turns: resolvedMaxTurns,
+            fast,
+            resume,
+          },
           runId
         );
         return jsonResult(report);

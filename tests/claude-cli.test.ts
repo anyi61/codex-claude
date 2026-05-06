@@ -138,6 +138,111 @@ describe("claude cli argument construction", () => {
     expect(buildImplementArgs({ cwd: "/repo", task: "change" }).join("\0")).toMatch(/\b(Edit|Write)\b/);
   });
 
+  it("builds a lower-turn fast query prompt", () => {
+    const args = buildQueryArgs({ cwd: "/repo", task: "explain", fast: true });
+    const maxTurnsIndex = args.indexOf("--max-turns");
+
+    expect(args[maxTurnsIndex + 1]).toBe("2");
+    expect(args.join("\n")).toContain("Prefer a concise answer");
+  });
+
+  it("does not resume old query sessions when resume is explicitly false", async () => {
+    const { repo } = await createGitRepoFixture("codex-query-no-resume-");
+    const stateDir = path.join(path.dirname(repo), ".codex-claude-delegate");
+    await mkdir(stateDir, { recursive: true });
+
+    let capturedArgs: string[] = [];
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      const spawnMock = vi.fn((bin: string, args: string[], options: unknown) => {
+        if (bin !== "claude") return actual.spawn(bin, args, options as never);
+        capturedArgs = args;
+        const stdout = JSON.stringify({
+          session_id: "sess-new-query",
+          structured_output: { answer: "ok" },
+        });
+        return createClaudeSpawnResult(stdout, "", 0);
+      });
+      return { ...actual, spawn: spawnMock };
+    });
+
+    process.chdir(path.dirname(repo));
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = path.join(stateDir, "runs");
+    vi.resetModules();
+    const session = await import("../src/session.js");
+    const repoKey = await session.computeRepoKey(repo);
+    await writeFile(path.join(stateDir, "sessions.json"), JSON.stringify({
+      version: 1,
+      sessions: [
+        {
+          session_id: "sess-old-query",
+          type: "query",
+          repo_key: repoKey,
+          repo_path: repo,
+          created_at: new Date().toISOString(),
+          last_used: new Date().toISOString(),
+          use_count: 3,
+          summary: "old",
+          expired: false,
+        },
+      ],
+    }, null, 2));
+
+    const reloaded = await import("../src/claude-cli.js");
+    await reloaded.runClaudeQuery({
+      cwd: repo,
+      task: "quick summary",
+      resume: false,
+      max_turns: 2,
+      timeout_sec: 45,
+    }, "run-query-no-resume");
+
+    expect(capturedArgs).not.toContain("-r");
+    expect(capturedArgs).not.toContain("sess-old-query");
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  });
+
+  it("includes query timing breakdown in execution metadata", async () => {
+    const { repo } = await createGitRepoFixture("codex-query-timing-");
+    const stateDir = path.join(path.dirname(repo), ".codex-claude-delegate");
+    process.chdir(path.dirname(repo));
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = path.join(stateDir, "runs");
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      const spawnMock = vi.fn((bin: string, args: string[], options: unknown) => {
+        if (bin !== "claude") return actual.spawn(bin, args, options as never);
+        const stdout = JSON.stringify({
+          session_id: "sess-query-timing",
+          structured_output: { answer: "ok" },
+        });
+        return createClaudeSpawnResult(stdout, "", 0);
+      });
+      return { ...actual, spawn: spawnMock };
+    });
+
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeQuery({
+      cwd: repo,
+      task: "quick summary",
+      fast: true,
+      resume: false,
+    }, "run-query-timing");
+
+    expect(result.execution.timings).toMatchObject({
+      session_lookup_ms: expect.any(Number),
+      claude_run_ms: expect.any(Number),
+      log_write_ms: expect.any(Number),
+      total_ms: expect.any(Number),
+    });
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  });
+
   it("blocks dangerous bash patterns", () => {
     for (const tool of [
       "Bash(rm *)",

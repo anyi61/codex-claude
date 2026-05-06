@@ -2116,6 +2116,8 @@ function readOnlyDisallowedTools(): string[] {
 }
 
 function createQueryOptions(input: ClaudeQueryInput): ClaudeRunOptions {
+  const effectiveMaxTurns = input.max_turns ?? (input.fast ? 2 : 8);
+  const effectiveTimeoutSec = input.timeout_sec ?? (input.fast ? 45 : 120);
   return {
     prompt: buildQueryPrompt(input),
     cwd: input.cwd,
@@ -2137,8 +2139,8 @@ function createQueryOptions(input: ClaudeQueryInput): ClaudeRunOptions {
       "Bash(cat *)",
     ],
     disallowedTools: readOnlyDisallowedTools(),
-    maxTurns: input.max_turns ?? 8,
-    timeoutSec: input.timeout_sec ?? 120,
+    maxTurns: effectiveMaxTurns,
+    timeoutSec: effectiveTimeoutSec,
     jsonSchema: QUERY_SCHEMA,
   };
 }
@@ -2353,12 +2355,16 @@ export async function runClaudeQuery(
   input: ClaudeQueryInput,
   runId: string
 ): Promise<ToolEnvelope<Record<string, unknown>>> {
+  const queryStart = Date.now();
   const store = await getStore();
   const repoKey = await computeRepoKey(input.cwd);
+  const sessionLookupStart = Date.now();
 
   // Auto-resume: find recent query session for the same repo
-  const recent = store.getRecent(repoKey, "query", RECENT_WINDOW_MINUTES);
-  const requestedSessionId = recent?.session_id ?? null;
+  const shouldResume = input.resume ?? !input.fast;
+  const recent = shouldResume ? store.getRecent(repoKey, "query", RECENT_WINDOW_MINUTES) : null;
+  const requestedSessionId = shouldResume ? (recent?.session_id ?? null) : null;
+  const sessionLookupMs = Date.now() - sessionLookupStart;
   let resumed = false;
   let forked = false;
 
@@ -2370,7 +2376,9 @@ export async function runClaudeQuery(
   let returnedSessionId: string | null = null;
 
   try {
+    const claudeRunStart = Date.now();
     const { report, session_id, execution } = await spawnClaude(opts);
+    const claudeRunMs = Date.now() - claudeRunStart;
     returnedSessionId = session_id;
     resumed = !!requestedSessionId;
 
@@ -2380,9 +2388,28 @@ export async function runClaudeQuery(
     }
 
     const sessionLog: SessionLog = { requested_session_id: requestedSessionId, resumed, forked, returned_session_id: session_id };
+    const logWriteStart = Date.now();
     await logRun(runId, { type: "query", input, report, session: sessionLog });
+    const logWriteMs = Date.now() - logWriteStart;
+    const pruneStart = Date.now();
     store.prune();
-    return makeEnvelope("success", report, execution, [], { claude_report: report });
+    const pruneMs = Date.now() - pruneStart;
+    return makeEnvelope(
+      "success",
+      report,
+      {
+        ...execution,
+        timings: {
+          session_lookup_ms: sessionLookupMs,
+          claude_run_ms: claudeRunMs,
+          log_write_ms: logWriteMs,
+          store_prune_ms: pruneMs,
+          total_ms: Date.now() - queryStart,
+        },
+      },
+      [],
+      { claude_report: report }
+    );
   } catch (err) {
     const errorMsg = (err as Error).message;
 
@@ -2394,14 +2421,33 @@ export async function runClaudeQuery(
       // Retry without resume
       const retryOpts: ClaudeRunOptions = { ...opts, resumeSessionId: undefined };
       try {
+        const claudeRunStart = Date.now();
         const { report, session_id, execution } = await spawnClaude(retryOpts);
+        const claudeRunMs = Date.now() - claudeRunStart;
         returnedSessionId = session_id;
         if (session_id) {
           store.upsert(session_id, "query", repoKey, input.cwd, String((report.answer as string) ?? "").slice(0, 200));
         }
         const sessionLog: SessionLog = { requested_session_id: requestedSessionId, resumed: false, forked: false, returned_session_id: session_id };
+        const logWriteStart = Date.now();
         await logRun(runId, { type: "query", input, report, session: sessionLog, retried_after_session_expired: true });
-        return makeEnvelope("success", report, execution, [], { claude_report: report });
+        const logWriteMs = Date.now() - logWriteStart;
+        return makeEnvelope(
+          "success",
+          report,
+          {
+            ...execution,
+            timings: {
+              session_lookup_ms: sessionLookupMs,
+              claude_run_ms: claudeRunMs,
+              log_write_ms: logWriteMs,
+              retried_after_session_expired: 1,
+              total_ms: Date.now() - queryStart,
+            },
+          },
+          [],
+          { claude_report: report }
+        );
       } catch (retryErr) {
         await logRun(runId, { type: "query", input, error: (retryErr as Error).message, retried_after_session_expired: true });
         throw retryErr;

@@ -17,6 +17,8 @@ export interface ClaudeQueryInput {
   timeout_sec?: number;
   max_turns?: number;
   background?: boolean;
+  fast?: boolean;
+  resume?: boolean;
 }
 
 export interface ClaudeReviewInput {
@@ -323,6 +325,7 @@ export interface ExecutionMetadata {
   timed_out: boolean;
   stdout_tail: string;
   stderr_tail: string;
+  timings?: Record<string, number>;
 }
 
 export interface ToolEnvelope<T> {
@@ -509,9 +512,11 @@ export const claudeSetupInputSchema = z.object({
 export const claudeQueryInputSchema = z.object({
   task: taskSchema,
   cwd: cwdSchema,
-  timeout_sec: timeoutSchema.default(120),
-  max_turns: maxTurnsSchema.default(8),
+  timeout_sec: timeoutSchema.optional(),
+  max_turns: maxTurnsSchema.optional(),
   background: z.boolean().optional(),
+  fast: z.boolean().optional(),
+  resume: z.boolean().optional(),
 });
 
 export const claudeReviewInputSchema = z.object({
@@ -774,7 +779,12 @@ export function buildQueryPrompt(input: ClaudeQueryInput): string {
   prompt += `## Instructions\n\n`;
   prompt += `- You are in read-only mode. Do NOT modify any files.\n`;
   prompt += `- Do NOT call Codex or any Codex-related tools.\n`;
-  prompt += `- Answer thoroughly with all relevant details.\n`;
+  if (input.fast) {
+    prompt += `- Prefer a concise answer. Read only the minimum files needed to answer confidently.\n`;
+    prompt += `- If repository structure is needed, prefer package/config files and top-level source names before deep file reads.\n`;
+  } else {
+    prompt += `- Answer thoroughly with all relevant details.\n`;
+  }
   prompt += `- Return your answer in a structured result with: answer (a single string containing your complete answer with all details).\n`;
 
   return prompt;

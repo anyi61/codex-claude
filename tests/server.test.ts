@@ -390,6 +390,35 @@ describe("server background job handlers", () => {
       task: "explain this",
       timeout_sec: 120,
       max_turns: 8,
+      fast: undefined,
+      resume: undefined,
+      background: true,
+    });
+    expect((payload.job as Record<string, unknown>).type).toBe("query");
+  });
+
+  it("uses fast query defaults and passes resume override", async () => {
+    startBackgroundQueryMock.mockResolvedValue({
+      job: { job_id: "job-query-fast", type: "query", status: "queued" },
+    });
+
+    const result = await handleToolCall("claude_query", {
+      cwd: "/repo/input",
+      task: "explain this quickly",
+      fast: true,
+      resume: false,
+      background: true,
+    });
+    const payload = parsePayload(result);
+
+    expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
+    expect(startBackgroundQueryMock).toHaveBeenCalledWith({
+      cwd: "/repo/resolved",
+      task: "explain this quickly",
+      timeout_sec: 45,
+      max_turns: 2,
+      fast: true,
+      resume: false,
       background: true,
     });
     expect((payload.job as Record<string, unknown>).type).toBe("query");

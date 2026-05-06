@@ -83,6 +83,7 @@ describe("schema definitions", () => {
 
   it("accepts background job inputs", () => {
     expect(claudeQueryInputSchema.safeParse({ cwd: "/repo", task: "explain", background: true }).success).toBe(true);
+    expect(claudeQueryInputSchema.safeParse({ cwd: "/repo", task: "explain", fast: true, resume: false }).success).toBe(true);
     expect(claudeReviewInputSchema.safeParse({ cwd: "/repo", task: "review this", background: true }).success).toBe(true);
     expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "ship it", background: true }).success).toBe(true);
     expect(claudeJobsInputSchema.safeParse({ cwd: "/repo", limit: 10, type: "query" }).success).toBe(true);
