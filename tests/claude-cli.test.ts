@@ -1044,7 +1044,7 @@ describe("claude cli argument construction", () => {
       waitForBackgroundJob?: (input: {
         cwd: string;
         job_id: string;
-      }) => Promise<{ job: { status: string; result_status?: string; summary?: string }; waiting: boolean; timed_out: boolean; result?: Record<string, unknown> }>;
+      }) => Promise<{ job: { status: string; result_status?: string; summary?: string }; summary: string; waiting: boolean; timed_out: boolean; recommended_delay_ms?: number; result?: Record<string, unknown> }>;
     }).waitForBackgroundJob;
 
     const result = await waitForBackgroundJob!({
@@ -1055,8 +1055,10 @@ describe("claude cli argument construction", () => {
     expect(result.job.status).toBe("succeeded");
     expect(result.job.result_status).toBe("partial");
     expect(result.job.summary).toContain("Implement partial");
+    expect(result.summary).toContain("is succeeded");
     expect(result.waiting).toBe(false);
     expect(result.timed_out).toBe(false);
+    expect(result.recommended_delay_ms).toBeUndefined();
     expect(result.result?.status).toBe("partial");
 
     delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
@@ -1203,13 +1205,16 @@ describe("claude cli argument construction", () => {
     });
 
     expect(result).toMatchObject({
+      summary: expect.stringContaining("do not duplicate this task locally"),
       waiting: true,
       timed_out: false,
+      recommended_delay_ms: 5000,
       job: {
         job_id: "job-running",
         status: "running",
       },
     });
+    expect((result as { next_actions?: Array<{ reason: string }> }).next_actions?.[0]?.reason).toContain("do not duplicate this implementation locally");
     expect((result as { next_actions?: Array<{ tool: string }> }).next_actions?.map((action) => action.tool)).toEqual([
       "claude_job_wait",
       "claude_job_result",
@@ -1244,8 +1249,10 @@ describe("claude cli argument construction", () => {
     });
 
     expect(result).toMatchObject({
+      summary: expect.stringContaining("do not duplicate this task locally"),
       waiting: true,
       timed_out: false,
+      recommended_delay_ms: 5000,
       job: {
         job_id: "job-queued",
         status: "queued",

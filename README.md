@@ -408,7 +408,7 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 }
 ```
 
-`claude_job_wait` 不做长时间阻塞等待，也没有 `timeout_ms`。它只查看当前 job 状态：如果后台进程已经 `succeeded`、`failed` 或 `cancelled`，返回完整 job/result；如果仍是 `queued` 或 `running`，返回 `waiting=true`、当前 `job` 和 `next_actions`，调用方稍后再次调用即可。注意 `job.status` 表示后台进程状态，不等于 Claude 任务质量。终态 job 可能同时返回 `job.status="succeeded"` 和 `job.result_status="partial"`，这表示进程正常结束，但 Claude 达到 `max_turns` 或只完成了部分工作。遇到 `partial` / `needs_user` 时，应先用 `claude_result` 或 `claude_run_inspect` 查看，再决定 `resume_latest`、`claude_apply preview=true` 或清理 worktree。
+`claude_job_wait` 不做长时间阻塞等待，也没有 `timeout_ms`。它只查看当前 job 状态：如果后台进程已经 `succeeded`、`failed` 或 `cancelled`，返回完整 job/result；如果仍是 `queued` 或 `running`，返回 `waiting=true`、`recommended_delay_ms`、当前 `job` 和 `next_actions`。此时调用方不要在本地重复执行同一任务，只能稍后继续调用 `claude_job_wait`、用 `claude_job_result` 查看持久化状态，或先 `claude_job_cancel` 再改用其他执行路径。注意 `job.status` 表示后台进程状态，不等于 Claude 任务质量。终态 job 可能同时返回 `job.status="succeeded"` 和 `job.result_status="partial"`，这表示进程正常结束，但 Claude 达到 `max_turns` 或只完成了部分工作。遇到 `partial` / `needs_user` 时，应先用 `claude_result` 或 `claude_run_inspect` 查看，再决定 `resume_latest`、`claude_apply preview=true` 或清理 worktree。
 
 如果后台任务历史积累较多，可以先 dry-run 看看哪些终态任务会被清理：
 

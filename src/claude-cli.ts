@@ -808,17 +808,17 @@ function buildNextActions(input: {
   if (job && (job.status === "queued" || job.status === "running")) {
     actions.push({
       tool: "claude_job_wait",
-      reason: "This background task is still in progress.",
+      reason: "Job is still running; do not duplicate this implementation locally. Poll again with claude_job_wait, inspect with claude_job_result, or cancel the job first.",
       args: { cwd: input.cwd, job_id: job.job_id },
     });
     actions.push({
       tool: "claude_job_result",
-      reason: "Poll the background job result directly if you need the latest persisted state.",
+      reason: "Read the persisted job state without doing the same work locally. If it is still running, continue polling or cancel first.",
       args: { cwd: input.cwd, job_id: job.job_id },
     });
     actions.push({
       tool: "claude_job_cancel",
-      reason: "Cancel the background task if it is no longer needed.",
+      reason: "Cancel the background task before attempting the same implementation locally.",
       args: { cwd: input.cwd, job_id: job.job_id },
     });
   }
@@ -1423,8 +1423,12 @@ export async function waitForBackgroundJob(
   const terminal = result.job.status === "succeeded" || result.job.status === "failed" || result.job.status === "cancelled";
   return {
     ...result,
+    summary: terminal
+      ? `Job ${result.job.job_id} is ${result.job.status}; use the returned result or claude_result for follow-up.`
+      : `Job ${result.job.job_id} is still ${result.job.status}; do not duplicate this task locally. Poll again with claude_job_wait or cancel the job first.`,
     waiting: !terminal,
     timed_out: false,
+    recommended_delay_ms: terminal ? undefined : 5000,
     next_actions: buildNextActions({ cwd: input.cwd, job: result.job }),
   };
 }

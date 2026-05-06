@@ -115,8 +115,10 @@ export interface ClaudeJobWaitInput {
 export interface ClaudeJobWaitResult {
   job: BackgroundJobSummary;
   result?: Record<string, unknown>;
+  summary: string;
   waiting: boolean;
   timed_out: boolean;
+  recommended_delay_ms?: number;
   next_actions: WorkflowNextAction[];
 }
 

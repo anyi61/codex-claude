@@ -563,6 +563,7 @@ describe("server background job handlers", () => {
   it("routes claude_job_wait through waitForBackgroundJob with resolved cwd", async () => {
     waitForBackgroundJobMock.mockResolvedValue({
       job: { job_id: "job-1", status: "succeeded" },
+      summary: "Job job-1 is succeeded; use the returned result or claude_result for follow-up.",
       waiting: false,
       timed_out: false,
       result: { ok: true },
