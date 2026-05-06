@@ -539,7 +539,7 @@ export const claudeReviewInputSchema = z.object({
   diff: z.string().optional(),
   files: filesSchema,
   timeout_sec: timeoutSchema.default(180),
-  max_turns: maxTurnsSchema.default(10),
+  max_turns: maxTurnsSchema.optional(),
   background: z.boolean().optional(),
 });
 
@@ -549,7 +549,7 @@ export const claudeImplementInputSchema = z.object({
   files: filesSchema,
   constraints: constraintsSchema,
   timeout_sec: timeoutSchema.default(600),
-  max_turns: maxTurnsSchema.default(15),
+  max_turns: maxTurnsSchema.optional(),
   session_key: z.string().trim().min(1).optional(),
   fork_session: z.boolean().optional(),
   resume_latest: z.boolean().optional(),

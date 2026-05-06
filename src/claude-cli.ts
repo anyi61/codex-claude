@@ -78,7 +78,6 @@ const SESSION_DIR = path.join(process.cwd(), ".codex-claude-delegate");
 const JOB_STATE_DIR_ENV = "CODEX_CLAUDE_BACKGROUND_STATE_DIR";
 const REVIEW_GATE_RELATIVE_PATH = path.join(".codex-claude-delegate", "review-gate.json");
 const REVIEW_GATE_HOOK_COMMAND = "node '${CLAUDE_PLUGIN_ROOT}/hooks/review-gate-stop.mjs'";
-const TASK_WRITE_DEFAULT_MAX_TURNS = 25;
 
 // ---- Session store (lazy init) ----
 
@@ -1276,7 +1275,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
     files: input.files,
     constraints: input.constraints,
     timeout_sec: input.timeout_sec,
-    max_turns: input.max_turns ?? TASK_WRITE_DEFAULT_MAX_TURNS,
+    max_turns: input.max_turns,
     resume_latest: input.resume_latest,
     background: true,
     dirty_policy: input.dirty_policy,
@@ -1770,7 +1769,7 @@ export interface ClaudeRunOptions {
   tools: string;
   allowedTools: string[];
   disallowedTools: string[];
-  maxTurns: number;
+  maxTurns?: number;
   timeoutSec: number;
   jsonSchema: object;
   maxBudgetUsd?: number;
@@ -1847,11 +1846,13 @@ export function buildClaudeArgs(opts: ClaudeRunOptions): string[] {
     args.push("--max-budget-usd", String(opts.maxBudgetUsd));
   }
 
-  args.push(
-    "--tools", opts.tools,
-    "--max-turns", String(opts.maxTurns),
-    "--output-format", "json",
-  );
+  args.push("--tools", opts.tools);
+
+  if (opts.maxTurns !== undefined) {
+    args.push("--max-turns", String(opts.maxTurns));
+  }
+
+  args.push("--output-format", "json");
 
   // --allowedTools / --disallowedTools must come before --json-schema.
   // --json-schema must be the last flag before the positional prompt.
@@ -1967,7 +1968,7 @@ function spawnClaude(opts: ClaudeRunOptions): Promise<ClaudeSpawnResult> {
   const safeEnv = sanitizeEnv();
   const startTime = Date.now();
 
-  log(`spawning: ${CLAUDE_BIN} -p (${args.length} args, worktree=${opts.worktree ?? "none"}, maxTurns=${opts.maxTurns})`);
+  log(`spawning: ${CLAUDE_BIN} -p (${args.length} args, worktree=${opts.worktree ?? "none"}, maxTurns=${opts.maxTurns ?? "unlimited"})`);
 
   return new Promise((resolve, reject) => {
     const child = spawn(CLAUDE_BIN, args, {
@@ -2288,7 +2289,7 @@ function readOnlyDisallowedTools(): string[] {
 }
 
 function createQueryOptions(input: ClaudeQueryInput): ClaudeRunOptions {
-  const effectiveMaxTurns = input.max_turns ?? (input.fast ? 2 : 8);
+  const effectiveMaxTurns = input.max_turns ?? (input.fast ? 2 : undefined);
   const effectiveTimeoutSec = input.timeout_sec ?? (input.fast ? 45 : 120);
   return {
     prompt: buildQueryPrompt(input),
@@ -2333,7 +2334,7 @@ function createReviewOptions(input: ClaudeReviewInput): ClaudeRunOptions {
       "Bash(git blame *)",
     ],
     disallowedTools: readOnlyDisallowedTools(),
-    maxTurns: input.max_turns ?? 10,
+    maxTurns: input.max_turns,
     timeoutSec: input.timeout_sec ?? 180,
     jsonSchema: REVIEW_SCHEMA,
     noSessionPersistence: true,
@@ -2414,7 +2415,7 @@ function createImplementOptions(
       "Bash(pnpm add *)",
       "Bash(pnpm remove *)",
     ],
-    maxTurns: input.max_turns ?? 15,
+    maxTurns: input.max_turns,
     timeoutSec: input.timeout_sec ?? 600,
     jsonSchema: IMPLEMENT_SCHEMA,
     resumeSessionId,

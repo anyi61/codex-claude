@@ -278,7 +278,7 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 
 - `mode=read` 适合解释、分析、定位
 - `mode=review` 适合 diff/风险审查
-- `mode=write` 适合真实改代码；未显式传 `max_turns` 时会使用比底层 `claude_implement` 更高的默认轮数，适合高层任务描述
+- `mode=write` 适合真实改代码；未显式传 `max_turns` 时不设置 turn 上限，只有用户明确传入时才限制
 - `mode=auto` 会根据 `diff`、`constraints`、`files` 和任务措辞推断
 
 ### 6. Setup 与 Review Gate

@@ -193,7 +193,7 @@ const TOOL_DEFINITIONS = [
         task: { type: "string", description: "The question or analysis task" },
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
         timeout_sec: { type: "number", description: "Timeout in seconds (default 120)" },
-        max_turns: { type: "number", description: "Maximum Claude turns for this query (default 8)" },
+        max_turns: { type: "number", description: "Maximum Claude turns for this query. Omitted means no explicit turn cap; fast=true uses 2 unless max_turns is provided." },
         fast: {
           type: "boolean",
           description: "Use a lower-latency query mode with smaller turn budget and concise prompt guidance.",
@@ -219,7 +219,7 @@ const TOOL_DEFINITIONS = [
         diff: { type: "string", description: "The diff to review (optional; Claude can also git diff itself)" },
         files: { type: "array", items: { type: "string" }, description: "Specific files to focus on" },
         timeout_sec: { type: "number", description: "Timeout in seconds (default 180)" },
-        max_turns: { type: "number", description: "Maximum Claude turns for this review (default 10)" },
+        max_turns: { type: "number", description: "Maximum Claude turns for this review. Omitted means no explicit turn cap." },
         background: { type: "boolean", description: "Queue the review as a persistent background job" },
       },
     },
@@ -237,7 +237,7 @@ const TOOL_DEFINITIONS = [
         files: { type: "array", items: { type: "string" }, description: "Relevant files for context" },
         constraints: { type: "array", items: { type: "string" }, description: "Constraints (e.g. 'do not modify tests')" },
         timeout_sec: { type: "number", description: "Timeout in seconds (default 600)" },
-        max_turns: { type: "number", description: "Maximum Claude turns for this implementation (default 15)" },
+        max_turns: { type: "number", description: "Maximum Claude turns for this implementation. Omitted means no explicit turn cap." },
         session_key: { type: "string", description: "Resume an existing Claude session by ID (implement does NOT auto-resume)" },
         fork_session: { type: "boolean", description: "When used with session_key, fork the session instead of continuing it" },
         resume_latest: { type: "boolean", description: "Resume the latest implement session recorded for this repository. Cannot be combined with session_key." },
@@ -490,7 +490,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
         const { task, cwd, timeout_sec, max_turns, fast, resume } = parsed.data;
         const resolvedTimeout = timeout_sec ?? (fast ? 45 : 120);
-        const resolvedMaxTurns = max_turns ?? (fast ? 2 : 8);
+        const resolvedMaxTurns = max_turns ?? (fast ? 2 : undefined);
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);

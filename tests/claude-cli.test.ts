@@ -126,7 +126,7 @@ describe("claude cli argument construction", () => {
     expect(args).toContain("--tools");
     expect(args).toContain("--allowedTools");
     expect(args).toContain("--disallowedTools");
-    expect(args).toContain("--max-turns");
+    expect(args).not.toContain("--max-turns");
     expect(args).toContain("--output-format");
     expect(args).toContain("json");
     expect(args).toContain("--json-schema");
@@ -1551,7 +1551,7 @@ describe("claude cli argument construction", () => {
     expect(result.job?.type).toBe("implement");
     expect(result.job?.status).toBe("queued");
     const stored = await jobStore.get(result.job!.job_id);
-    expect(stored?.payload.max_turns).toBe(25);
+    expect(stored?.payload.max_turns).toBeUndefined();
     expect(Array.isArray(result.next_actions)).toBe(true);
   });
 
@@ -1583,8 +1583,8 @@ describe("claude cli argument construction", () => {
       cwd: repo,
       task: "Implement input validation for README updates.",
       background: true,
-      max_turns: 25,
     });
+    expect(stored?.payload.max_turns).toBeUndefined();
     expect(result.next_actions.map((action) => action.tool)).toEqual([
       "claude_job_wait",
       "claude_job_result",
