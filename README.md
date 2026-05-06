@@ -454,7 +454,9 @@ export CODEX_CLAUDE_ALLOW_ROOTS="/Users/you/projects:/Users/you/work"
 `files` 行为补充：
 
 - `claude_implement` 在创建 worktree 前会检查 `files` 对应路径在主工作区是否 dirty（`git status --porcelain=v1 -z`）。
-- 若存在未提交改动，会直接拒绝任务，避免“主工作区改动在新 worktree 丢失”的静默偏差。
+- 未传 `files` 时，写任务会检查整个主工作区的用户改动；会忽略工具自身的 `.claude/` 和 `.codex-claude-delegate/` 元数据目录。
+- 若存在未提交改动，默认 `dirty_policy="ask"` 会返回 `status="needs_user"`，不创建 worktree、不入队、不调用 Claude。返回结果会提示三个选择：先提交/暂存/清理后重试；用 `dirty_policy="committed"` 明确按 `HEAD` 旧提交执行；或用 `dirty_policy="snapshot"` 把当前未提交文件复制进 delegated worktree，让 Claude 基于当前状态继续。
+- `dirty_policy="committed"` 适合你明确想忽略当前工作区改动的场景；`dirty_policy="snapshot"` 适合把真实用户当前未提交状态交给 Claude，但结果仍保留在隔离 worktree，合并前仍需 review/apply。
 
 `claude_implement` 默认不复用 implement session。如需显式续接：
 
@@ -666,7 +668,7 @@ preview 模式会返回 `planned_changes`，并保证主工作区不被修改。
 - `claude CLI not found`：确认 `claude --version` 在同一 shell 环境可运行，或设置 `CLAUDE_BIN`。
 - `fork_session requires session_key`：`fork_session` 只能配合显式 `session_key` 使用。
 - `apply refused`：主工作区有本地改动。先提交、stash 或还原相关文件，再重试。
-- `Requested files contain uncommitted changes`：`claude_implement` 检测到 `files` 对应路径在主工作区 dirty。先提交/暂存/清理这些文件，再重试。
+- `Main workspace contains uncommitted changes` / `Requested files contain uncommitted changes`：默认会返回 `needs_user`。选择先提交/暂存/清理后重试，或显式设置 `dirty_policy="committed"` / `dirty_policy="snapshot"` 后重试。
 - `No changed files found`：worktree 中没有可根据 implement log 或 legacy fallback 识别的 A/M/D 变更。
 - 残留 worktree：先 `claude_cleanup` dry-run，再 `dry_run: false` 清理。
 

@@ -57,6 +57,14 @@ describe("schema definitions", () => {
     expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", worktreeName: "../bad" }).success).toBe(false);
     expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", files: "src" }).success).toBe(false);
     expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", max_changed_files: 101 }).success).toBe(false);
+    expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", dirty_policy: "merge" }).success).toBe(false);
+  });
+
+  it("accepts dirty workspace policy inputs", () => {
+    expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", dirty_policy: "ask" }).success).toBe(true);
+    expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", dirty_policy: "committed" }).success).toBe(true);
+    expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", dirty_policy: "snapshot" }).success).toBe(true);
+    expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "x", mode: "write", dirty_policy: "snapshot" }).success).toBe(true);
   });
 
   it("accepts apply preview and validates run filters", () => {

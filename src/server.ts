@@ -168,6 +168,7 @@ const TOOL_DEFINITIONS = [
         diff: { type: "string", description: "Diff to review. Presence strongly biases auto mode toward review." },
         timeout_sec: { type: "number", description: "Timeout in seconds for the delegated task" },
         max_turns: { type: "number", description: "Maximum Claude turns for the delegated task" },
+        dirty_policy: { type: "string", enum: ["ask", "committed", "snapshot"], description: "Write-mode handling for uncommitted main-workspace changes: ask (default), committed (ignore dirty changes and use HEAD), or snapshot (copy dirty files into the delegated worktree)." },
       },
     },
   },
@@ -247,6 +248,7 @@ const TOOL_DEFINITIONS = [
         max_changed_files: { type: "number", description: "Warn if Claude changes more than this many files. Must be a positive integer <= 100." },
         worktreeName: { type: "string", description: "Optional delegated worktree name override" },
         background: { type: "boolean", description: "Queue the implementation as a persistent background job" },
+        dirty_policy: { type: "string", enum: ["ask", "committed", "snapshot"], description: "Handling for uncommitted main-workspace changes: ask (default), committed (ignore dirty changes and use HEAD), or snapshot (copy dirty files into the delegated worktree)." },
       },
     },
   },
@@ -550,7 +552,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
       case "claude_implement": {
         const parsed = claudeImplementInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, files, constraints, timeout_sec, max_turns, session_key, fork_session, resume_latest, max_cost_usd, max_changed_files, worktreeName, background } = parsed.data;
+        const { task, cwd, files, constraints, timeout_sec, max_turns, session_key, fork_session, resume_latest, max_cost_usd, max_changed_files, worktreeName, background, dirty_policy } = parsed.data;
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
@@ -579,11 +581,12 @@ export async function handleToolCall(name: string, args: unknown, runId = random
             max_changed_files,
             worktreeName,
             background,
+            dirty_policy,
           }));
         }
 
         const result = await runClaudeImplement(
-          { task, cwd: check.resolved, files, constraints, timeout_sec, max_turns, session_key, fork_session, resume_latest, max_cost_usd, max_changed_files, worktreeName },
+          { task, cwd: check.resolved, files, constraints, timeout_sec, max_turns, session_key, fork_session, resume_latest, max_cost_usd, max_changed_files, worktreeName, dirty_policy },
           runId
         );
         return jsonResult(result);

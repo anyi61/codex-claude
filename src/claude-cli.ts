@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { writeFile, mkdir, readFile, readdir, stat } from "node:fs/promises";
+import { cp, rm, writeFile, mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -1315,7 +1315,16 @@ export async function runClaudeTask(input: ClaudeTaskInput, runId: string): Prom
       max_turns: input.max_turns ?? TASK_WRITE_DEFAULT_MAX_TURNS,
       resume_latest: input.resume_latest,
       background: true,
+      dirty_policy: input.dirty_policy,
     });
+    if (!("job" in queued)) {
+      return {
+        delegated_mode: delegatedMode,
+        summary: "Write task needs a dirty-workspace decision before it can be delegated.",
+        result: queued as unknown as Record<string, unknown>,
+        next_actions: [],
+      };
+    }
     return {
       delegated_mode: delegatedMode,
       summary: summarizeTaskDispatch(delegatedMode, true),
@@ -1332,6 +1341,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, runId: string): Prom
     timeout_sec: input.timeout_sec,
     max_turns: input.max_turns ?? TASK_WRITE_DEFAULT_MAX_TURNS,
     resume_latest: input.resume_latest,
+    dirty_policy: input.dirty_policy,
   }, runId);
   const workflow = await getClaudeResult({ cwd: input.cwd, run_id: runId }).catch(() => null);
   return {
@@ -1402,7 +1412,13 @@ export async function startBackgroundQuery(input: ClaudeQueryInput): Promise<{ j
   });
 }
 
-export async function startBackgroundImplement(input: ClaudeImplementInput): Promise<{ job: BackgroundJobSummary }> {
+export async function startBackgroundImplement(input: ClaudeImplementInput): Promise<{ job: BackgroundJobSummary } | ClaudeResult> {
+  if ((input.dirty_policy ?? "ask") === "ask") {
+    const { requestedFiles, dirtyFiles } = await preflightImplementDirtyState(input);
+    if (dirtyFiles.length > 0) {
+      return dirtyNeedsUserResult(input, dirtyFiles, requestedFiles);
+    }
+  }
   const queued = await enqueueBackgroundJob({
     cwd: input.cwd,
     type: "implement",
@@ -1550,19 +1566,111 @@ async function ensureImplementWorkspaceScaffold(worktreePath: string): Promise<v
 
 async function findDirtyFiles(cwd: string, requestedFiles: string[]): Promise<string[]> {
   if (requestedFiles.length === 0) return [];
-  const output = await execCapture(
-    "git",
-    ["status", "--short", "--", ...requestedFiles],
-    { cwd }
-  ).catch(() => "");
+  const output = await execCapture("git", ["status", "--porcelain=v1", "-z", "--", ...requestedFiles], { cwd }).catch(() => "");
   const dirty = new Set<string>();
-  for (const line of output.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const file = trimmed.replace(/^[ MADRCU?!]{1,2}\s+/, "");
-    if (file) dirty.add(file);
+  for (const entry of parseStatusPorcelainZ(output)) {
+    if (entry.file) dirty.add(entry.file);
   }
   return [...dirty].sort();
+}
+
+function isIgnoredMainWorkspaceDirtyFile(file: string): boolean {
+  return file === ".claude" ||
+    file.startsWith(".claude/") ||
+    file === ".codex-claude-delegate" ||
+    file.startsWith(".codex-claude-delegate/");
+}
+
+async function findDirtyMainWorkspaceFiles(cwd: string): Promise<string[]> {
+  const output = await execCapture("git", ["status", "--porcelain=v1", "-z"], { cwd }).catch(() => "");
+  const dirty = new Set<string>();
+  for (const entry of parseStatusPorcelainZ(output)) {
+    const file = normalizeRepoPath(cwd, entry.file);
+    if (!file || isIgnoredMainWorkspaceDirtyFile(file)) continue;
+    dirty.add(file);
+  }
+  return [...dirty].sort();
+}
+
+async function listDirtyMainWorkspaceEntries(cwd: string): Promise<Array<{ status: string; file: string }>> {
+  const output = await execCapture("git", ["status", "--porcelain=v1", "-z"], { cwd }).catch(() => "");
+  return parseStatusPorcelainZ(output)
+    .map((entry) => ({ ...entry, file: normalizeRepoPath(cwd, entry.file) }))
+    .filter((entry) => entry.file && !isIgnoredMainWorkspaceDirtyFile(entry.file))
+    .sort((a, b) => a.file.localeCompare(b.file));
+}
+
+async function findDirtyImplementFiles(cwd: string, requestedFiles: string[]): Promise<string[]> {
+  return requestedFiles.length > 0
+    ? findDirtyFiles(cwd, requestedFiles)
+    : findDirtyMainWorkspaceFiles(cwd);
+}
+
+function formatDirtyImplementMessage(dirtyFiles: string[], requestedFiles: string[]): string {
+  return requestedFiles.length > 0
+    ? `Requested files contain uncommitted changes in main workspace: ${dirtyFiles.join(", ")}. Choose dirty_policy=\"snapshot\" to include current uncommitted changes, dirty_policy=\"committed\" to use HEAD only, or commit/stash/clean them before retrying.`
+    : `Main workspace contains uncommitted changes: ${dirtyFiles.join(", ")}. Choose dirty_policy=\"snapshot\" to include current uncommitted changes, dirty_policy=\"committed\" to use HEAD only, or commit/stash/clean them before retrying.`;
+}
+
+function dirtyNeedsUserResult(input: ClaudeImplementInput, dirtyFiles: string[], requestedFiles: string[], startTime = Date.now()): ClaudeResult {
+  const summary = requestedFiles.length > 0
+    ? `Requested files have uncommitted changes: ${dirtyFiles.join(", ")}.`
+    : `Main workspace has uncommitted changes: ${dirtyFiles.join(", ")}.`;
+  const report = {
+    status: "needs_user",
+    summary,
+    changed_files: dirtyFiles,
+    commands_run: ["git status --porcelain=v1 -z"],
+    tests: { ran: false },
+    risks: [
+      "A delegated worktree created from HEAD will not include uncommitted main-workspace changes unless dirty_policy=\"snapshot\" is used.",
+    ],
+    next_steps: [
+      "Retry with dirty_policy=\"snapshot\" to let Claude work from the current uncommitted main-workspace state.",
+      "Retry with dirty_policy=\"committed\" to intentionally ignore uncommitted changes and work from HEAD.",
+      "Commit, stash, or clean the current changes, then retry without dirty_policy.",
+    ],
+  };
+  return makeEnvelope("needs_user", undefined, successExecution(Date.now() - startTime), [], {
+    claude_report: report,
+    server_observed: {
+      repo_root: input.cwd,
+      changed_files: dirtyFiles,
+      diff_stat: "",
+      diff_name_only: dirtyFiles.map((file) => `dirty\t${file}`).join("\n"),
+      scope: {
+        requested_files: requestedFiles.length > 0 ? requestedFiles : undefined,
+        out_of_scope_files: [],
+        scope_exceeded: false,
+        warnings: [],
+      },
+    },
+  });
+}
+
+async function preflightImplementDirtyState(input: ClaudeImplementInput): Promise<{ requestedFiles: string[]; dirtyFiles: string[] }> {
+  const requestedFiles = normalizeRequestedFiles(input.cwd, input.files);
+  const dirtyFiles = await findDirtyImplementFiles(input.cwd, requestedFiles);
+  return { requestedFiles, dirtyFiles };
+}
+
+async function applyDirtySnapshotToWorktree(cwd: string, worktreePath: string): Promise<string[]> {
+  const entries = await listDirtyMainWorkspaceEntries(cwd);
+  const copied: string[] = [];
+  for (const entry of entries) {
+    const source = path.join(cwd, entry.file);
+    const destination = path.join(worktreePath, entry.file);
+    if (entry.status === "D") {
+      await rm(destination, { recursive: true, force: true });
+      copied.push(entry.file);
+      continue;
+    }
+    if (!existsSync(source)) continue;
+    await mkdir(path.dirname(destination), { recursive: true });
+    await cp(source, destination, { recursive: true, force: true });
+    copied.push(entry.file);
+  }
+  return copied;
 }
 
 // ---- Sensitive data redaction for stderr ----
@@ -2677,24 +2785,25 @@ export async function runClaudeImplement(
   const worktreeRelPath = path.join(".claude", "worktrees", worktreeName);
   const worktreePath = path.join(implementInput.cwd, worktreeRelPath);
   const requestedFiles = normalizeRequestedFiles(implementInput.cwd, implementInput.files);
+  const dirtyPolicy = implementInput.dirty_policy ?? "ask";
   let baseCommit: string | undefined;
 
-  if (requestedFiles.length > 0) {
-    const dirtyRequestedFiles = await findDirtyFiles(implementInput.cwd, requestedFiles);
-    if (dirtyRequestedFiles.length > 0) {
-      const message =
-        `Requested files contain uncommitted changes in main workspace: ${dirtyRequestedFiles.join(", ")}. ` +
-        "Please commit/stash/clean them first, or use an explicit dirty-snapshot mode.";
-      await logRun(runId, {
-        type: "implement",
-        input: implementInput,
-        error: message,
-        requested_files: requestedFiles,
-        dirty_requested_files: dirtyRequestedFiles,
-        duration_ms: 0,
-      });
-      throw new Error(message);
-    }
+  const dirtyFiles = await findDirtyImplementFiles(implementInput.cwd, requestedFiles);
+  if (dirtyPolicy === "ask" && dirtyFiles.length > 0) {
+    const message = formatDirtyImplementMessage(dirtyFiles, requestedFiles);
+    const result = dirtyNeedsUserResult(implementInput, dirtyFiles, requestedFiles);
+    await logRun(runId, {
+      type: "implement",
+      input: implementInput,
+      report: result.claude_report,
+      observed: result.server_observed,
+      execution: result.execution,
+      requested_files: requestedFiles,
+      dirty_requested_files: dirtyFiles,
+      error: message,
+      duration_ms: 0,
+    });
+    return result;
   }
 
   try {
@@ -2707,6 +2816,9 @@ export async function runClaudeImplement(
     }
     const resolvedBase = await execCapture("git", ["rev-parse", "HEAD"], { cwd: worktreePath });
     baseCommit = resolvedBase.trim() || undefined;
+    if (dirtyPolicy === "snapshot") {
+      await applyDirtySnapshotToWorktree(implementInput.cwd, worktreePath);
+    }
     await ensureImplementWorkspaceScaffold(worktreePath);
   } catch (err) {
     await logRun(runId, {

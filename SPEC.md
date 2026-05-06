@@ -117,13 +117,13 @@ src/
 
 让 Claude 在隔离 worktree 中实现代码变更，运行测试，返回结构化结果 + 实际 diff。
 
-- **入参**: `{ task: string, cwd: string, files?: string[], constraints?: string[], timeout_sec?: number }`
+- **入参**: `{ task: string, cwd: string, files?: string[], constraints?: string[], timeout_sec?: number, dirty_policy?: "ask" | "committed" | "snapshot" }`
 - **出参**: `{ claude_report: ClaudeReport, server_observed: ServerObserved }`
 - **工具**: `--tools "Read,Glob,Grep,Edit,Write,Bash"`
 - **maxTurns**: 8
 - **隔离**: `--worktree codex-delegated-<runId>`
 - **会改文件**（仅在 worktree 内）
-- **前置校验**: 若传入 `files`，服务端先检查这些路径在主工作区是否 dirty；若 dirty 则拒绝执行（避免 worktree 基于 `HEAD` 丢失未提交上下文）
+- **dirty 前置决策**: 服务端先检查主工作区用户改动。默认 `dirty_policy="ask"` 时返回 `needs_user` 并列出选择，不创建 worktree；`committed` 明确按 `HEAD` 执行；`snapshot` 将当前 dirty 文件复制到 delegated worktree 后再交给 Claude。
 
 ### 4.5 当前工具面
 
@@ -497,7 +497,7 @@ class SessionStore {
 - [x] `git status --short` 解析迁移到 `git status --porcelain=v1 -z`
 - [x] 引入 `scope`（`requested_files/out_of_scope_files/scope_exceeded/warnings`）
 - [x] `claude_apply` 读取 implement run log，拒绝越界与超限 worktree
-- [x] `claude_implement` 对 dirty `files` 做前置拒绝，避免主工作区未提交改动在 worktree 中静默丢失
+- [x] `claude_implement` 对 dirty 主工作区做前置决策：默认 `needs_user`，也支持 `dirty_policy=committed|snapshot`
 - [x] 支持 `CODEX_CLAUDE_RUN_LOG_DIR` 覆盖日志目录，便于隔离测试
 
 ### Phase 4：打包为 Codex Plugin

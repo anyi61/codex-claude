@@ -1,5 +1,5 @@
 import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
@@ -684,6 +684,116 @@ describe("claude cli argument construction", () => {
     vi.resetModules();
   });
 
+  it("asks for a dirty-workspace decision before broad implement tasks", async () => {
+    const { repo } = await createGitRepoFixture("codex-impl-dirty-main-");
+    await writeFile(path.join(repo, "README.md"), "# uncommitted\n");
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeImplement({
+      cwd: repo,
+      task: "Implement a new feature without file scoping.",
+      worktreeName: "codex-delegated-dirty-main",
+      max_turns: 1,
+    }, "run-dirty-main");
+
+    expect(result.status).toBe("needs_user");
+    expect(result.claude_report).toMatchObject({
+      status: "needs_user",
+      next_steps: expect.arrayContaining([
+        expect.stringContaining("dirty_policy=\"snapshot\""),
+        expect.stringContaining("dirty_policy=\"committed\""),
+      ]),
+    });
+    expect(existsSync(path.join(repo, ".claude", "worktrees", "codex-delegated-dirty-main"))).toBe(false);
+  });
+
+  it("can snapshot dirty main workspace files into an implement worktree", async () => {
+    const { repo } = await createGitRepoFixture("codex-impl-dirty-snapshot-");
+    await writeFile(path.join(repo, "README.md"), "# uncommitted\n");
+    const stdout = JSON.stringify({
+      session_id: "sess-snapshot",
+      structured_output: {
+        status: "success",
+        summary: "Saw the snapshot.",
+        changed_files: [],
+        commands_run: [],
+        tests: { ran: false },
+        risks: [],
+        next_steps: [],
+      },
+    });
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return {
+        ...actual,
+        spawn: vi.fn((bin: string, args: string[], options: { cwd?: string }) => {
+          if (bin !== "claude") return actual.spawn(bin, args, options as never);
+          expect(readFileSync(path.join(options.cwd!, "README.md"), "utf8")).toBe("# uncommitted\n");
+          return createClaudeSpawnResult(stdout, "", 0);
+        }),
+      };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeImplement({
+      cwd: repo,
+      task: "Inspect current README.",
+      worktreeName: "codex-delegated-dirty-snapshot",
+      dirty_policy: "snapshot",
+      max_turns: 1,
+    }, "run-dirty-snapshot");
+
+    expect(result.status).toBe("success");
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  });
+
+  it("ignores delegate metadata directories when checking broad implement dirtiness", async () => {
+    const { repo } = await createGitRepoFixture("codex-impl-dirty-internal-");
+    await mkdir(path.join(repo, ".codex-claude-delegate", "runs"), { recursive: true });
+    await mkdir(path.join(repo, ".claude"), { recursive: true });
+    await writeFile(path.join(repo, ".codex-claude-delegate", "runs", "local.json"), "{}\n");
+    await writeFile(path.join(repo, ".claude", "local"), "metadata\n");
+    const stdout = JSON.stringify({
+      session_id: "sess-internal-dirty",
+      structured_output: {
+        status: "success",
+        summary: "No user changes were required.",
+        changed_files: [],
+        commands_run: [],
+        tests: { ran: false },
+        risks: [],
+        next_steps: [],
+      },
+    });
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return {
+        ...actual,
+        spawn: vi.fn((bin: string, args: string[], options: unknown) => {
+          if (bin !== "claude") return actual.spawn(bin, args, options as never);
+          return createClaudeSpawnResult(stdout, "", 0);
+        }),
+      };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeImplement({
+      cwd: repo,
+      task: "Inspect the project.",
+      worktreeName: "codex-delegated-internal-dirty",
+      max_turns: 1,
+    }, "run-internal-dirty");
+
+    expect(result.status).toBe("success");
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  });
+
   it("returns a structured failed implement result when a resumed Claude session is unavailable", async () => {
     const { repo, logDir, stateDir } = await createGitRepoFixture("codex-impl-resume-missing-");
     await writeFile(path.join(logDir, "run-implement-prev.json"), JSON.stringify({
@@ -848,6 +958,7 @@ describe("claude cli argument construction", () => {
       cwd: repo,
       task: "ship it",
       background: true,
+      dirty_policy: "committed",
     });
     expect(implement.job.type).toBe("implement");
 
@@ -1378,6 +1489,7 @@ describe("claude cli argument construction", () => {
       files: ["README.md"],
       constraints: ["Only change README.md"],
       resume_latest: true,
+      dirty_policy: "committed",
     }, "run-task-write");
 
     expect(result.delegated_mode).toBe("write");
@@ -1386,6 +1498,23 @@ describe("claude cli argument construction", () => {
     const stored = await jobStore.get(result.job!.job_id);
     expect(stored?.payload.max_turns).toBe(25);
     expect(Array.isArray(result.next_actions)).toBe(true);
+  });
+
+  it("returns needs_user from claude_task write background jobs when unscoped user changes are dirty", async () => {
+    const { repo } = await createGitRepoFixture("codex-task-dirty-main-");
+    await writeFile(path.join(repo, "README.md"), "# dirty\n");
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      task: "Implement input validation.",
+      mode: "write",
+      background: true,
+    }, "run-task-write-dirty");
+
+    expect(result.delegated_mode).toBe("write");
+    expect(result.job).toBeUndefined();
+    expect(result.result?.status).toBe("needs_user");
   });
 
   it("routes claude_task auto mode to review when diff is provided", async () => {

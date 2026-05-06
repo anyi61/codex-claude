@@ -45,6 +45,7 @@ export interface ClaudeImplementInput {
   max_changed_files?: number;
   worktreeName?: string;
   background?: boolean;
+  dirty_policy?: "ask" | "committed" | "snapshot";
 }
 
 export type ClaudeTaskMode = "auto" | "read" | "review" | "write";
@@ -60,6 +61,7 @@ export interface ClaudeTaskInput {
   diff?: string;
   timeout_sec?: number;
   max_turns?: number;
+  dirty_policy?: "ask" | "committed" | "snapshot";
 }
 
 export type BackgroundJobType = "query" | "review" | "implement" | "apply" | "cleanup";
@@ -502,6 +504,7 @@ const maxTurnsSchema = z.number().int().positive().max(50).optional();
 const filesSchema = z.array(z.string().trim().min(1)).optional();
 const constraintsSchema = z.array(z.string().trim().min(1)).optional();
 const worktreeNameSchema = z.string().regex(/^[A-Za-z0-9_-]+$/, "worktreeName may only contain letters, numbers, hyphens, and underscores").optional();
+const dirtyPolicySchema = z.enum(["ask", "committed", "snapshot"]).optional();
 
 export const claudeStatusInputSchema = z.object({
   cwd: cwdSchema,
@@ -546,6 +549,7 @@ export const claudeImplementInputSchema = z.object({
   max_changed_files: z.number().int().positive().max(100).optional(),
   worktreeName: worktreeNameSchema,
   background: z.boolean().optional(),
+  dirty_policy: dirtyPolicySchema,
 }).refine((value) => !value.fork_session || !!value.session_key, {
   message: "fork_session requires session_key",
   path: ["fork_session"],
@@ -565,6 +569,7 @@ export const claudeTaskInputSchema = z.object({
   diff: z.string().optional(),
   timeout_sec: timeoutSchema.optional(),
   max_turns: maxTurnsSchema.optional(),
+  dirty_policy: dirtyPolicySchema,
 }).refine((value) => value.mode !== "read" || !value.resume_latest, {
   message: "resume_latest is only supported for write mode",
   path: ["resume_latest"],
