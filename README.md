@@ -4,12 +4,10 @@
 
 ## 功能
 
-
-
 ## 快速开始
 
 ```bash
-# 1) 按下方“安装”章节安装插件，然后重启 Codex（或刷新插件）
+# 1) 按下方“安装”章节安装插件，然后退出并重新进入 Codex
 # 2) 首次自检
 claude_setup(cwd="/path/to/your/repo")
 
@@ -43,8 +41,9 @@ claude_task(mode="read", cwd="/path/to/your/repo", task="Summarize this repo")
    codex plugin marketplace add "$(pwd)"
    ```
 
-3. 在 Codex 中安装或启用 `codex-claude-delegate` 插件，然后重启 Codex，或刷新插件。
-4. 运行 `claude_setup(cwd="/path/to/your/repo")` 做首次自检。
+3. 在 Codex 中输入 `/plugins`，找到 `codex-claude-delegate` 并安装或启用。
+4. 退出并重新进入 Codex，让插件 MCP 工具完成加载。
+5. 运行 `claude_setup(cwd="/path/to/your/repo")` 做首次自检。
 
 插件已包含 `plugins/codex-claude-delegate/server/server.js`，普通用户不需要运行 `npm install` 或 `npm run build`。如果 `claude_setup` 提示缺少 `server/server.js`，在仓库根目录运行 `npm run build:plugin` 重新生成。
 
@@ -64,10 +63,16 @@ npm run check:plugin
 
 ### 卸载
 
-1. 从 Codex 插件中移除 `codex-claude-delegate`，或删除/取消链接已安装的插件目录。
-2. 重启 Codex，或刷新插件。
-3. 如果曾使用手动 MCP 配置，删除 `~/.codex/config.toml` 中的 `[mcp_servers.claude_delegate]` 配置块。
-4. 可选清理工作区状态：在不再需要历史 job/run 状态的仓库中删除 `.codex-claude-delegate/`。
+1. 在 Codex 中输入 `/plugins`，卸载或禁用 `codex-claude-delegate`。
+2. 移除本地 marketplace：
+
+   ```bash
+   codex plugin marketplace remove codex-claude-local
+   ```
+
+3. 退出并重新进入 Codex。
+4. 如果曾使用手动 MCP 配置，删除 `~/.codex/config.toml` 中的 `[mcp_servers.claude_delegate]` 配置块。
+5. 可选清理本地文件：删除克隆下来的本仓库目录；在不再需要历史 job/run 状态的工作区中删除 `.codex-claude-delegate/`。
 
 ## 最小示例
 
@@ -158,7 +163,7 @@ npm run build:plugin
 npm run check:plugin
 ```
 
-插件 MCP 入口固定为 `plugins/codex-claude-delegate/.mcp.json` 中的 `${CLAUDE_PLUGIN_ROOT}/server/server.js`。常规开发调试仍可使用 `npm run dev` 或 `npm run build`（根目录 `dist/`）。
+插件 MCP 入口固定为 `plugins/codex-claude-delegate/.mcp.json` 中相对插件根目录的 `./server/server.js`。常规开发调试仍可使用 `npm run dev` 或 `npm run build`（根目录 `dist/`）。
 
 ## 故障排查
 
@@ -166,7 +171,7 @@ npm run check:plugin
 |---------|-----|
 | 插件安装后工具不可用 | 重启 Codex/刷新插件，然后先运行 `claude_setup` 查看环境检查结果 |
 | 找不到 `server/server.js` | 在仓库根目录执行 `npm run build:plugin`，再执行 `npm run check:plugin` |
-| `${CLAUDE_PLUGIN_ROOT}` 未解析 | 重新安装插件并确认通过插件入口加载；当前配置依赖该变量 |
+| 旧版插件入口仍使用 `${CLAUDE_PLUGIN_ROOT}` | 拉取最新代码，重新安装插件，并确认 `plugins/codex-claude-delegate/.mcp.json` 使用 `./server/server.js` |
 | 找不到 `claude` 命令 | 安装 Claude Code CLI，或设置 `CLAUDE_BIN` |
 | `cwd` 不在允许根目录内 | 设置 `CODEX_CLAUDE_ALLOW_ROOTS` 并重启 Codex |
 | `apply` 被拒绝 | 主工作区有未提交改动。先 commit/stash，或重试时传 `dirty_policy=committed` |
