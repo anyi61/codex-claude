@@ -25,7 +25,7 @@ if (typeof serverArg !== "string" || !serverArg.length) {
   fail("plugins/codex-claude-delegate/.mcp.json missing claude_delegate.args[0]");
 }
 
-const serverPath = serverArg.replace("${CLAUDE_PLUGIN_ROOT}", pluginRoot);
+const serverPath = path.resolve(pluginRoot, serverArg.replace("${CLAUDE_PLUGIN_ROOT}", pluginRoot));
 
 if (!existsSync(serverPath)) {
   fail(`server file not found: ${serverPath}`);

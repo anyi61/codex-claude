@@ -7,5 +7,7 @@ node_modules/
 coverage/
 goal.md
 debug/
-.agents/
+/.agents/*
+!/.agents/plugins/
+!/.agents/plugins/marketplace.json
 /AGENTS.md

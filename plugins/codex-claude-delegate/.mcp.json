@@ -2,8 +2,8 @@
   "mcpServers": {
     "claude_delegate": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/server/server.js"],
-      "cwd": "${CLAUDE_PLUGIN_ROOT}"
+      "args": ["./server/server.js"],
+      "cwd": "."
     }
   }
 }
