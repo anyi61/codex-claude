@@ -6,3 +6,5 @@ node_modules/
 *.tsbuildinfo
 coverage/
 goal.md
+debug/
+.agents/
