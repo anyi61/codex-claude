@@ -6,29 +6,7 @@
 
 不做：两个 agent 实时双向聊天、Claude 主动向 Codex 发消息。
 
-## 2. 背景调研
-
-### 2.1 已有方案
-
-| 项目 | Stars | 方向 | 活跃 | 结论 |
-|---|---|---|---|---|
-| `openai/codex-plugin-cc` | 17k | Claude → Codex | 官方维护 | 正向插件，参考其架构 |
-| `raysonmeng/agent-bridge` | 111 | 双向实时 | 活跃 | 实时双向桥（Claude Code Channels），非任务委托型 |
-| `Dunqing/claude-codex-bridge` | 2 | 双向 MCP | 停滞 | 设计思路可参考，成熟度极低 |
-| `AlessioZazzarini/claude-codex-collab` | 15 | Claude → Codex | 停滞 | 方向相反，非 Codex → Claude |
-| `Leonard013/BigBrain` | 1 | Claude → Codex | 停滞 | 多模型 advisor，非反向委托 |
-
-### 2.2 `codex-plugin-cc` 架构（参考）
-
-```
-Claude Code
-  └─ Hooks (SessionStart/Stop)
-       └─ Bash → codex-companion.mjs
-            └─ Codex App Server (JSON-RPC over stdin/stdout)
-                 └─ thread/start, turn/start, review/start
-```
-
-### 2.3 本项目的对称架构
+## 2. 架构
 
 ```
 Codex CLI
@@ -38,119 +16,57 @@ Codex CLI
                  └─ --worktree, --json-schema, 结构化返回
 ```
 
-### 2.4 关键决策：任务委托 vs 实时协作
-
-- **任务委托（本项目选择）**：Codex 调一个 tool → Claude 子进程跑完 → 返回结果。简单、可控、不依赖实验特性。
-- **实时协作**：两个 agent 进程同时运行，通过 WebSocket/Channels 互通。需要 Claude Code Channels（research preview）。参考 `agent-bridge`。
-
-### 2.5 CLI 路径 vs Agent SDK 路径
-
-| | `claude -p` | Claude Agent SDK |
-|---|---|---|
-| 认证 | 复用本地 Claude 订阅 | 需要 Anthropic API key |
-| 控制粒度 | CLI flags | `ClaudeAgentOptions` 全量 |
-| Session 管理 | `--resume` flag | `list/delete/fork/tag/resume` + 自定义 store |
-| 流式输出 | `--output-format stream-json` | async iterator |
-| 适合场景 | MVP / 个人使用 | 产品化 / 稳定分发 |
-
-**Phase 1 用 CLI 路径**，复用本地订阅、快速验证。
-
-## 3. 架构
-
-### 3.1 核心链路
-
-```
-Codex 规划任务
-  ↓ 调用 MCP tool
-MCP server (stdio)
-  ↓ validateCwd / checkRecursion / sanitizeEnv
-spawn("claude", ["-p", "-w", ..., "--json-schema", ...])
-  ↓ Claude 在隔离 worktree 中执行
-解析 structured_output
-  ↓ git diff --name-only / --stat (server_observed)
-返回 { claude_report, server_observed } 给 Codex
-  ↓
-Codex 验收 diff，决定是否 apply
-```
-
-### 3.2 模块分工
+### 模块分工
 
 ```
 src/
-├── server.ts       # MCP server 入口，stdio transport，4 个 tool 路由
-├── claude-cli.ts   # spawn claude -p 封装，3 种运行模式（query/review/implement）
-├── guard.ts        # 安全：cwd 校验、env 清理、递归防护、exec 工具函数
-└── schema.ts       # 类型定义、JSON Schema、结构化输出类型、prompt 构建器
+├── server.ts       # MCP stdio 入口，18 个工具注册与分发
+├── claude-cli.ts   # Claude CLI 启动、后台作业管理、结果观测、apply 范围检查
+├── jobs.ts         # JobStore 类：基于文件系统的作业持久化、fingerprint 去重、心跳
+├── job-runner.ts   # Detached worker 进程入口
+├── session.ts      # SessionStore 类：会话持久化与复用
+├── guard.ts        # 安全：cwd 校验、env 清理、递归防护
+├── schema.ts       # 类型定义、Zod 校验、JSON Schema、prompt 构建器
+└── codex-config.ts # Codex allow_roots 配置读写
 ```
 
-## 4. MCP Tools
+## 3. MCP Tools（18 个）
 
-### 4.1 `claude_status`
+### 3.1 按使用层次分类
 
-检查 Claude Code CLI 可用性、认证状态、git worktree 支持。
+| 层次 | 工具 | 功能 |
+|------|------|------|
+| **Default** | `claude_setup` | 完整就绪检查 + configure_allow_root |
+| | `claude_task` | 高层入口，按 mode=auto/read/review/write 路由到 query/review/implement |
+| | `claude_job_wait` | 单次查看后台任务状态（含轮询节流、过期检测、动态延迟） |
+| | `claude_result` | 取当前工作区最相关的已完成 job/run 摘要 |
+| | `claude_apply` | 预览或合并 delegated worktree 变更到主工作区 |
+| | `claude_cleanup` | 清理 `.claude/worktrees/codex-delegated-*` worktree |
+| **Advanced/Debug** | `claude_status` | 检查 Claude CLI/Git/worktree/允许根目录 |
+| | `claude_runs` | 列出历史 run log |
+| | `claude_run_inspect` | 按 run id 深入查看原始记录 |
+| | `claude_workspace_status` | 聚合视图：jobs/runs/sessions/worktrees/attention |
+| | `claude_review_gate` | 查询、启用、关闭 repo-local review gate |
+| | `claude_query` | 只读问答（底层入口） |
+| | `claude_review` | 只读审查（底层入口） |
+| | `claude_implement` | 隔离 worktree 实现（底层入口） |
+| | `claude_jobs` | 列出后台作业 |
+| | `claude_job_result` | 按 job_id 读取作业状态 |
+| | `claude_job_cancel` | 取消 queued/running 作业 |
+| | `claude_job_cleanup` | 清理旧终态作业记录 |
 
-- **入参**: `{ cwd: string }`
-- **出参**: `ClaudeStatusResult { claude_available, claude_version, auth_status, git_available, worktree_capable, cwd_valid, cwd_is_git_repo, errors[] }`
-- **不改文件**
+### 3.2 默认工作流
 
-### 4.2 `claude_query`
+```
+claude_setup → claude_task → claude_job_wait → claude_result
+  → claude_apply(preview=true) → claude_apply(cleanup=true) → claude_cleanup
+```
 
-问 Claude 只读问题。Claude 可读文件、跑安全 git 命令，不可修改。默认快速返回后台 job，调用方后续轮询。
+### 3.3 claude_task.files 策略
 
-- **入参**: `{ task: string, cwd: string, timeout_sec?: number }`
-- **出参**: `{ job: BackgroundJobSummary }`；后台完成后结果为 `ClaudeReport`（通过 `--json-schema` 约束）
-- **工具**: `--tools "Read,Glob,Grep,Bash"`
-- **maxTurns**: 默认不设置；仅用户显式传入 `max_turns` 时添加 `--max-turns`
-- **不改文件**
+`claude_task.files` 已废弃，合并为 `instruction_files`（仅上下文，不限制 apply scope）。需严格文件修改限制时，使用 Advanced `claude_implement` 并传入 `files`。
 
-### 4.3 `claude_review`
-
-让 Claude review 代码变更（diff 或当前工作区状态）。默认快速返回后台 job，调用方后续轮询。
-
-- **入参**: `{ task: string, cwd: string, diff?: string, files?: string[], timeout_sec?: number }`
-- **出参**: `{ job: BackgroundJobSummary }`；后台完成后结果为 `ClaudeReport`
-- **工具**: `--tools "Read,Glob,Grep,Bash"`
-- **maxTurns**: 默认不设置；仅用户显式传入 `max_turns` 时添加 `--max-turns`
-- **不改文件**
-
-### 4.4 `claude_implement`
-
-让 Claude 在隔离 worktree 中实现代码变更，运行测试，返回结构化结果 + 实际 diff。默认快速返回后台 job，调用方后续轮询。
-
-- **入参**: `{ task: string, cwd: string, files?: string[], constraints?: string[], timeout_sec?: number, dirty_policy?: "ask" | "committed" | "snapshot" }`
-- **出参**: `{ job: BackgroundJobSummary }`；dirty 前置决策可能直接返回 `needs_user`；后台完成后结果为 `{ claude_report: ClaudeReport, server_observed: ServerObserved }`
-- **工具**: `--tools "Read,Glob,Grep,Edit,Write,Bash"`
-- **maxTurns**: 默认不设置；仅用户显式传入 `max_turns` 时添加 `--max-turns`
-- **隔离**: `--worktree codex-delegated-<runId>`
-- **会改文件**（仅在 worktree 内）
-- **dirty 前置决策**: 服务端先检查主工作区用户改动。默认 `dirty_policy="ask"` 时返回 `needs_user` 并列出选择，不创建 worktree；`committed` 明确按 `HEAD` 执行；`snapshot` 将当前 dirty 文件复制到 delegated worktree 后再交给 Claude。
-
-### 4.5 当前工具面
-
-当前实现已经从最初 4 个 MVP 工具扩展为完整工作流工具面：
-
-| 工具 | 作用 |
-|---|---|
-| `claude_status` | 检查 Claude/Git/worktree/允许根目录和近期运行状态 |
-| `claude_setup` | 检查高层工作流准备状态，包括 review gate 和 hook 资产 |
-| `claude_runs` | 列出近期 query/review/implement/apply/cleanup run logs |
-| `claude_run_inspect` | 按 run id 读取单条规范化 run log 和关联 apply/cleanup 信息 |
-| `claude_result` | 解析当前工作区最相关的已完成 job/run，并返回摘要、session 和 next actions |
-| `claude_workspace_status` | 聚合 running/queued jobs、terminal jobs、recent runs、sessions、worktrees 和 attention items |
-| `claude_task` | 高层入口，按 `mode=auto/read/review/write` 路由到 query/review/implement |
-| `claude_review_gate` | 查询、启用或关闭 repo-local review gate |
-| `claude_query` | 只读查询，默认入队并快速返回 job |
-| `claude_review` | 只读审查，默认入队并快速返回 job |
-| `claude_implement` | 在隔离 worktree 中实现任务，默认入队并快速返回 job |
-| `claude_jobs` | 列出后台 query/review/implement/apply/cleanup 任务 |
-| `claude_job_result` | 按 `job_id` 读取后台进程状态、Claude 任务结果状态和结果 |
-| `claude_job_cancel` | 取消 queued/running 后台任务 |
-| `claude_job_wait` | 单次查看后台任务状态；终态返回 result，非终态返回 `waiting=true` |
-| `claude_job_cleanup` | dry-run 或删除当前仓库较旧的终态后台任务记录 |
-| `claude_apply` | 将 delegated worktree 变更 preview/apply 到主工作区，也可后台入队 |
-| `claude_cleanup` | dry-run 或清理 delegated worktree，也可后台入队 |
-
-### 4.6 结构化返回类型
+### 3.4 结构化返回
 
 ```ts
 interface ClaudeReport {
@@ -164,7 +80,7 @@ interface ClaudeReport {
 }
 
 interface ServerObserved {
-  changed_files: string[];       // 服务端观测的真实变更（基于 base_commit..HEAD + uncommitted + untracked）
+  changed_files: string[];
   diff_stat: string;
   diff_name_only: string;
   base_commit?: string;
@@ -185,402 +101,119 @@ interface ServerObserved {
 }
 ```
 
+## 4. 后台作业模型
+
+### 4.1 生命周期
+
+```
+queued → running → succeeded | failed | cancelled
+```
+
+所有执行型入口默认入队并快速返回 job_id。调用方通过 `claude_job_wait` 轮询。
+
+### 4.2 去重
+
+通过 sha256 fingerprint（cwd + type + mode + task + files + dirty_policy + session controls + max_changed_files + max_cost_usd）检测活跃重复任务。命中时返回 `deduped=true` + `do_not_start_duplicate_job=true`。
+
+### 4.3 心跳
+
+Running job 每 15s 刷新 `heartbeat_at`，不依赖 Claude stdout。用于过期检测。
+
+### 4.4 过期分类
+
+| 状态 | 条件 | 建议操作 |
+|------|------|---------|
+| fresh | heartbeat_age ≤ 90s | claude_job_wait 继续轮询 |
+| stale_candidate | 90s < heartbeat_age ≤ 300s | 再等一次（delay=30s） |
+| stale | heartbeat_age > 300s 或 pid 不存活 | cancel / status / result |
+
+### 4.5 轮询节流
+
+记录 `last_wait_at` + `last_wait_recommended_delay_ms`。调用间隔小于上次推荐延迟时：
+- 返回 `poll_too_soon=true` + `remaining_delay_ms` + `next_allowed_poll_at`
+- 包含 `not_before` 参数在 next_actions 中
+- 不刷新 `last_wait_at`
+
+### 4.6 动态轮询延迟
+
+| 作业年龄 | 推荐间隔 |
+|----------|----------|
+| < 30s | 10s |
+| 30s ~ 2min | 20s |
+| 2min ~ 10min | 45s |
+| 10min ~ 30min | 60s |
+| > 30min | 90s |
+| stale_candidate | 30s |
+
 ## 5. 安全设计
 
-### 5.1 三层工具控制
+### 5.1 多层防护
 
-Claude CLI 的三个 flag 职责不同，不能混淆：
+| 层 | 机制 |
+|----|------|
+| 递归防护 | BRIDGE_DEPTH ≤ 2，每次 spawn 加 1 |
+| cwd 校验 | realpath + allowRoots 白名单 |
+| 环境清理 | 移除 SECRET/TOKEN/CREDENTIAL/PASSWORD/API_KEY |
+| 命令注入 | spawn("claude", args[]) 非 shell 字符串 |
+| 工具白名单 | --tools + --allowedTools + --disallowedTools |
+| 非交互模式 | --permission-mode dontAsk |
+| stdout 保护 | 日志写 stderr 或文件 |
+| server_observed | 服务端 git diff 独立验证 |
 
-| Flag | 作用 |
-|---|---|
-| `--tools` | **限制 Claude 能看到/使用哪些工具**（工具白名单） |
-| `--allowedTools` | **哪些调用自动通过，不再询问权限**（免审批列表） |
-| `--disallowedTools` | **哪些工具/pattern 彻底禁用**（硬禁止） |
-
-正确的组合：
-
-```bash
---tools "Read,Glob,Grep,Edit,Write,Bash" \
---allowedTools "Read" "Glob" "Grep" "Edit" "Write" "Bash(git status)" ... \
---disallowedTools "Bash(rm *)" "Bash(sudo *)" "Bash(curl *)" ...
-```
-
-### 5.2 非交互模式
-
-```bash
---permission-mode dontAsk
-```
-
-`claude -p` 是非交互模式，`dontAsk` 确保遇到未批准的工具调用时自动拒绝而非卡住。
-
-### 5.3 递归防护
-
-```
-BRIDGE_DEPTH 环境变量:
-  0 → 正常允许委托
-  1 → 允许被委托的 agent 工作，但禁止再次委托
-  ≥2 → MCP server 直接拒绝启动
-```
-
-MCP server 启动时检查，spawn Claude 时传 `BRIDGE_DEPTH + 1`。
-
-### 5.4 cwd 校验
-
-```ts
-validateCwd(raw):
-  1. realpath 解析（防 ../ 越界）
-  2. 必须在 ALLOW_ROOTS 白名单内
-  3. 必须是目录
-  4. implement 额外要求是 git 仓库
-```
-
-### 5.5 环境变量清理
+### 5.2 环境变量清理
 
 只透传 `PATH, HOME, SHELL, LANG, LC_ALL, TERM, USER, TMPDIR, TEMP, TMP, NODE_ENV`。
-
-过滤所有含 `SECRET, TOKEN, CREDENTIAL, PASSWORD, API_KEY` 的变量。
-
+隐式移除所有含 `SECRET, TOKEN, CREDENTIAL, PASSWORD, API_KEY` 的变量。
 显式移除：`OPENAI_API_KEY, ANTHROPIC_API_KEY, GITHUB_TOKEN, GH_TOKEN, AWS_*, CLOUDFLARE_API_TOKEN, DOCKER_PASSWORD, NPM_TOKEN, SSH_AUTH_SOCK, SSH_AGENT_PID`。
 
-### 5.6 命令行注入防护
-
-**禁止** shell 字符串拼接：
-
-```ts
-// WRONG
-exec(`claude -p -w ${name} --json-schema '${schema}' "${prompt}"`)
-
-// CORRECT
-spawn("claude", ["-p", "-w", name, "--json-schema", JSON.stringify(schema), prompt])
-```
-
-### 5.7 stdout 保护
-
-MCP server 使用 stdio transport，stdout 用于 MCP JSON-RPC 协议。所有日志写 `process.stderr` 或文件。
-
-### 5.8 server_observed 验证
-
-不信任 Claude 自述的 `changed_files` 和测试结果。MCP server 在 Claude 完成后自己观测真实变更：
-
-- `base_commit`：worktree 创建后记录 `git rev-parse HEAD`
-- committed tracked：`git diff --name-only/--stat base_commit HEAD`
-- uncommitted tracked：`git diff --name-only`
-- untracked：`git status --porcelain=v1 -z`
-- 统一使用 `porcelain -z` 解析，避免 `--short` 字符串切片误判路径
-
-当 `files` 存在时，计算 `scope` 越界信息；`claude_apply` 读取 implement run log 后，遇到 `scope_exceeded=true` 或 `changed_files_exceeded=true` 均拒绝 apply。
-
-## 6. Prompt 注入约束
-
-传给 Claude 的 prompt 中强制注入：
-
-```text
-- You are a worker delegated by Codex. Do NOT call Codex or any Codex-related tools.
-- Do not delegate this task to another agent. Complete it yourself.
-- Work exclusively within the provided worktree.
-- After making changes, run the project's tests if available.
-```
-
-## 7. 开发阶段
-
-### Phase 1（已完成 ✅）：裸 MCP server，one-shot 委托
-
-- [x] 独立 Node.js MCP server
-- [x] 4 个 tool：status, query, review, implement
-- [x] `claude -p` + `-w` + `--json-schema` + `--permission-mode dontAsk`
-- [x] 安全措施全部到位
-- [x] 日志写 stderr
-- [x] server_observed 验证
-- [x] Codex 端到端验证：status → query → review → implement 全链路
-- [x] Skill 文件：`.agents/skills/claude-delegate.md`
-- [x] 三个独立 JSON Schema（QUERY / REVIEW / IMPLEMENT）
-- [x] maxTurns 参数透传：只有用户显式传入 `max_turns` 时添加 `--max-turns`
-- [x] 调试发现 4 个 CLI 坑并记录
-
-### Phase 2（已完成 ✅）：会话复用
-
-**设计原则**：query 自动复用、review 禁用持久化、implement 显式复用。不做 implement 自动续接（上下文污染风险）。
-
-- [x] `src/session.ts` — SessionStore 类，原子 sessions.json 读写
-- [x] query 自动 resume 最近 20 分钟内同 repo 的 query session
-- [x] review 使用 `--no-session-persistence`，不入 session store
-- [x] implement 支持 `session_key` + `fork_session` 入参，不自动复用
-- [x] run log 包含 `session` 字段（requested/resumed/forked/returned）
-- [x] 续接失败检测：auto-resume fallback，显式 session_key 抛错
-- [x] `sessions.json` 原子写入 + expired prune
-- [x] Codex 端到端验证：query session 复用 1 条，review 写 0 条
-
-#### sessions.json 结构
-
-```json
-{
-  "version": 1,
-  "sessions": [
-    {
-      "session_id": "uuid",
-      "type": "query",
-      "repo_key": "sha256(realpath(repo_root))",
-      "repo_path": "/Users/anyi/codex-claude",
-      "created_at": "2026-05-03T10:00:00Z",
-      "last_used": "2026-05-03T11:30:00Z",
-      "use_count": 3,
-      "summary": "上次任务的简要摘要",
-      "expired": false
-    }
-  ]
-}
-```
-
-- `repo_key`: `sha256(realpath cwd)`，不做字符串替换，防路径冲突
-- `use_count`: 仅记录本工具调用次数，不等于 Claude 原生 turn 数
-
-#### 各 tool 策略
+## 6. 会话策略
 
 | Type | 复用策略 | CLI flags |
 |------|---------|-----------|
-| **query** | 自动 resume 最近 **20分钟内**、未过期、同 repo 的 query session。超过时间新建 | `-p -r <session_id>` |
-| **review** | 不复用，不写入 session store | `-p --no-session-persistence` |
-| **implement** | 仅当用户显式传 `session_key` 或 `fork_session` 时 resume。不传则新建 session 并记录 session_id，但不自动复用 | `-p -r <session_id>` 或 `-p -r <session_id> --fork-session` |
+| query | 自动 resume 最近 20 分钟内同 repo 的 query session | `-p -r <session_id>` |
+| review | 不复用，不写入 session store | `--no-session-persistence` |
+| implement | 仅当用户显式传 session_key/fork_session/resume_latest | `-p -r <session_id> [--fork-session]` |
 
-#### 新增入参（claude_implement）
+## 7. Known CLI 坑
 
-```ts
-// 扩展 ClaudeImplementInput
-session_key?: string;    // resume 指定 session
-fork_session?: boolean;  // 配合 session_key 使用: fork 不污染原 session
-```
+1. `--json-schema` 必须是 prompt 前最后一个参数，必须在 `--allowedTools/--disallowedTools` 之后
+2. 默认不设 `--max-turns`，仅用户显式传入时添加
+3. `claude auth status` 返回 JSON，需 `JSON.parse`
+4. 三个 JSON Schema 不可共用（QUERY / REVIEW / IMPLEMENT 各自独立）
+5. job.status 与 result_status 分离：进程 succeeded 但任务可能是 partial
 
-- `session_key` = 要 resume 的 Claude `session_id`
-- `fork_session` = resume 时加 `--fork-session` flag
-- 不传 `session_key` 时：新建 session，记录返回的 `session_id` 到 sessions.json，但永不自动复用
+## 8. 已知限制
 
-#### 新增模块
+1. 无实时双向通信 — Codex 不能中途补充指令
+2. 每次 Claude 调用是冷启动（新进程 ~2-5s）
+3. 不自动清理所有 worktree — 需 claude_cleanup
+4. implement 不自动复用 session — 需显式传 resume
+5. ALLOW_ROOTS 默认仅 ~/projects, ~/work, ~/codex-claude
+6. 旧 job 记录无 fingerprint/heartbeat_at
 
-**src/session.ts** — 会话持久化存储：
-
-```ts
-class SessionStore {
-  constructor(path: string);
-  getRecent(repoKey: string, type: string, withinMinutes: number): Session | null;
-  upsert(sessionId: string, type: string, repoKey: string, repoPath: string): void;
-  markExpired(sessionId: string): void;
-  prune(): void;            // 删除过期 >24h 的 session
-  getAll(): Session[];
-}
-```
-
-- 原子写入：`writeFile` + `rename` 防并发损坏
-- 只在 `spawnClaude` 返回后写入（从 stdout 的 `session_id` 字段提取）
-
-#### run log 扩展
-
-每条 run log 新增 `session` 字段：
-
-```json
-{
-  "session": {
-    "requested_session_id": "...",
-    "resumed": true,
-    "forked": false,
-    "returned_session_id": "..."
-  }
-}
-```
-
-#### 续接失败处理
-
-当 `-r <session_id>` 返回以下错误时：
-- "session not found"
-- "not found"
-- "expired"
-
-策略按 resume 类型区分：
-
-| 场景 | 处理 |
-|------|------|
-| **query 自动 resume** | 标记 session `expired: true`，fallback 到无 resume 新 session（静默恢复） |
-| **implement 显式 session_key** | 标记 session `expired: true`，抛出错误（用户明确指定的 session 不存在应报错） |
-
-#### 不做的功能
-
-- ❌ `--session-id <repo_key>` — CLI 要求 valid UUID，不能用 repo_key
-- ❌ implement 自动复用 — 上下文污染风险高
-- ❌ `sessions/<session-id>.log` 独立日志目录 — 现有 `runs/` 目录已够用
-- ❌ "最近 ~3 个 session 内同类任务则续接" — 定义不清，第一版不做
-
-#### 完成标准
-
-- [x] `npm run build` 通过
-- [x] `debug/mcp-test.ts` 能证明 query 第二次调用使用 `-r`
-- [x] run log 中包含 `session` 字段（requested_session_id / resumed / forked / returned_session_id）
-- [x] `sessions.json` 创建、更新、prune 正常
-- [x] resume 失败时标记 `expired: true` 并自动 fallback
-
-### Phase 3 第一阶段（已完成 ✅）：apply + cleanup + 状态报告
-
-核心闭环：implement → review diff → apply → cleanup。implement 不自动清理 worktree，Codex 验收后再走 apply/cleanup。
-
-- [x] `claude_apply` — 优先按 implement run log 中服务端观测到的变更文件直接复制（非 git apply），区分 M/A/D 状态；缺少可信日志时回退到 `src/`
-- [x] `claude_cleanup` — 扫描残留 worktree，dry-run 模式，`git worktree remove --force`
-- [x] `claude_status` 扩展 — `delegated_worktrees_count`, `delegated_worktrees[]`, `stale_worktrees_count`
-- [x] apply 路径校验限定在 `.claude/worktrees/codex-delegated-*`
-- [x] apply 前检查主工作区未提交变更，有冲突全量拒绝（不部分 apply）
-- [x] cleanup 使用完整相对路径 `.claude/worktrees/<name>`
-- [x] `npm run build` + `debug/mcp-test.ts` 通过
-
-#### claude_apply
-
-新增工具，将 worktree 中的 diff 应用到主工作区。
-
-```ts
-入参 {
-  cwd: string;
-  worktree_path: string;           // 限定 .claude/worktrees/ 下
-  cleanup?: boolean;               // apply 成功后自动清理 worktree
-}
-
-行为 {
-  1. 校验 cwd 和 worktree_path 必在 .claude/worktrees/codex-delegated-*; 确认目录存在
-  2. 检查主工作区被影响文件无本地未提交变更（git status --short），有冲突则拒绝
-  3. 收集变更文件列表：优先使用 implement 记录的 `server_observed.changed_files` + `base_commit`，缺少可信日志时回退到 `git diff --name-status -- src/`（区分 M/A/D）
-  4. 对 M/A 文件：直接复制 worktree → 主工作区（避免 git apply patch 解析问题）
-  5. 对 D 文件：从主工作区删除对应文件
-  6. cleanup=true → git worktree remove --force .claude/worktrees/<name> + git worktree prune
-  7. 返回 applied_files（实际成功列表）、diff_stat、cleanup_performed、conflicts[]
-}
-```
-
-#### claude_cleanup
-
-新增工具，清理残留 worktree。
-
-```ts
-入参 {
-  cwd: string;
-  older_than_hours?: number;       // 只清理超过 N 小时的 worktree
-  dry_run?: boolean;               // 默认 true，先返回待清理列表
-}
-
-行为 {
-  1. 只处理 .claude/worktrees/codex-delegated-*
-  2. dry_run=true 返回待清理列表但不执行
-  3. git worktree remove --force .claude/worktrees/<name>
-  4. 失败时报告原因不 rm -rf 强制删除
-}
-```
-
-#### claude_status 扩展
-
-新增字段：
-
-```json
-{
-  "delegated_worktrees_count": 2,
-  "delegated_worktrees": ["codex-delegated-xxx", "codex-delegated-yyy"],
-  "stale_worktrees_count": 0
-}
-```
-
-### Phase 3.2（已完成 ✅）：资源控制
-
-- [x] `max_cost_usd`: 通过 `--max-budget-usd` flag 传递给 Claude CLI
-- [x] `max_changed_files`: 在 `observeResult()` 后检查，超限返回 `resource_limits.warnings[]`
-- [x] server 层参数校验：`max_cost_usd` 必须 >0, <=10, finite；`max_changed_files` 必须正整数 <=100
-- [x] 结构化返回 `resource_limits: { max_cost_usd?, max_changed_files?, actual_changed_files, changed_files_exceeded, warnings[] }`
-- [x] run log 包含 `observed.resource_limits`，方便后续复盘
-- [x] `debug/test-implement.ts` 覆盖：资源限制参数传递、超限检测、无效参数校验
-- `idle_timeout_sec`: 暂缓，除非遇到真实卡死问题
-
-### Phase 3.3（已完成 ✅）：变更观测与作用域收敛
-
-- [x] `claude_implement` 基于 `base_commit` 观测 committed/uncommitted/untracked，避免 `HEAD~1` 猜测
-- [x] `git status --short` 解析迁移到 `git status --porcelain=v1 -z`
-- [x] 引入 `scope`（`requested_files/out_of_scope_files/scope_exceeded/warnings`）
-- [x] `claude_apply` 读取 implement run log，拒绝越界与超限 worktree
-- [x] `claude_implement` 对 dirty 主工作区做前置决策：默认 `needs_user`，也支持 `dirty_policy=committed|snapshot`
-- [x] 支持 `CODEX_CLAUDE_RUN_LOG_DIR` 覆盖日志目录，便于隔离测试
-
-### Phase 4：打包为 Codex Plugin
-
-```
-.codex-plugin/
-├── plugin.json
-├── skills/
-│   ├── claude-delegate.md
-│   ├── claude-review.md
-│   └── claude-rescue.md
-├── mcp-server/
-│   └── (当前项目)
-└── hooks/
-    └── hooks.json
-```
-
-## 8. 调试中发现的 CLI 坑
-
-### 8.1 `--json-schema` 参数顺序 Bug
-
-Claude CLI 的 `--json-schema` 必须放在 `--allowedTools` 和 `--disallowedTools` **之后**，且必须是 prompt 之前的最后一个 flag。如果放在之前，CLI 会把后续的 `--allowedTools` 等 flag 当作 schema 值的一部分消费掉，导致 "Input must be provided" 错误。
-
-正确的参数顺序：
-```
--p -w <name> --permission-mode --tools [--max-turns N] --output-format
-  --allowedTools ... --disallowedTools ... --json-schema <schema> <prompt>
-```
-
-### 8.2 `maxTurns` 只应由用户显式限制
-
-implement 模式需要读文件、编辑、运行构建等多项操作。默认设置较低 `maxTurns` 会让 Claude 在任务完成前退出，形成 `partial` 结果。服务端默认不添加 `--max-turns`，只有用户显式传入 `max_turns` 时才限制。
-
-即使用户显式设置后触发 `error_max_turns`，stdout 中仍可能有有效的结构化输出，不应直接丢弃；应记录为 `partial` 并保留 worktree 供审查/续接。
-
-后台任务需要区分两层状态：`job.status` 表示后台进程是否结束，`job.result_status` 表示 Claude 任务语义结果。进程可以是 `succeeded`，同时任务是 `partial`，例如 Claude 达到用户设置的 `max_turns` 但已经写入部分代码。UI 和调用方必须优先展示 `result_status`，避免把“进程正常退出”误判为“需求完整完成”。
-
-`claude_task`、`claude_query`、`claude_review`、`claude_implement` 这些会调用 Claude 的执行型入口默认都应入队并快速返回 `job_id`；`background=true` 保持兼容但不再是避免阻塞的必要条件。`timeout_sec` 表示 Claude 子进程预算，不是 Codex 单次 MCP tool call 的等待预算。调用方应循环调用 `claude_job_wait` 查看状态；如果 job 仍 `queued`/`running`，`claude_job_wait` 立即返回 `{ waiting: true, recommended_delay_ms, job, next_actions }`，不得长时间阻塞或抛出等待超时。`waiting=true` 时必须明确提示调用方不要在本地重复执行同一任务，建议等待约 60 秒后继续轮询或读取 job result；除非用户要求、job 超过 Claude `timeout_sec` 预算，或明确放弃该 run，否则不应 cancel 后切换执行路径。
-
-### 8.3 `claude auth status` 返回 JSON
-
-CLI 的 `claude auth status` 返回 `{"loggedIn": true, "authMethod": "oauth_token", ...}`，不是纯文本 "Logged in"。字符串匹配 `"Logged in"` 会失败，需用 `JSON.parse`。
-
-### 8.4 三个工具需要三个不同的 JSON Schema
-
-最初三个工具共用 `RESULT_SCHEMA`（面向 implement 的 status/summary/changed_files/tests/risks），导致 query 的 `summary` 字段承载不了完整答案。已拆分为：
-- `QUERY_SCHEMA` — `{ answer: string }`
-- `REVIEW_SCHEMA` — `{ findings, recommendations, severity }`
-- `IMPLEMENT_SCHEMA` — 完整的 status/summary/changed_files/commands_run/tests/risks/next_steps
-
-## 10. 已知限制
-
-1. **无实时双向通信**：Codex 不能中途给 Claude 发补充指令，只能等 Claude 跑完
-2. **Claude 无等价 App Server**：没有 Codex 那样的 JSON-RPC 守护进程，每次都是新进程（冷启动 ~2-5s）
-3. **worktree 清理**：Phase 1 不自动清理 worktree，残留需要手动 `rm -rf .claude/worktrees && git worktree prune`
-4. **session 不复用**：Phase 1 每次 one-shot，无上下文复用
-5. **Codex Plugin 未打包**：Phase 1 需手动配置 `~/.codex/config.toml`
-6. **Codex 会绕过 claude_implement**：对于简单任务，Codex 倾向于自己编辑而非委托。需显式指令或 Skill 引导
-7. **ALLOW_ROOTS 硬编码**：默认仅允许 `~/projects`、`~/work`、`~/codex-claude`。可通过 `CODEX_CLAUDE_ALLOW_ROOTS` 环境变量覆盖（冒号分隔的路径列表），例如 `CODEX_CLAUDE_ALLOW_ROOTS=/Users/anyi/codex-claude:/Users/anyi/my-project`。设置方式：在 `~/.codex/config.toml` 的 `[shell_environment_policy.set]` 中添加。
-
-## 11. Codex 配置示例
+## 9. Codex 配置示例
 
 ```toml
-# ~/.codex/config.toml
-
+[~/.codex/config.toml]
 [mcp_servers.claude_delegate]
 command = "node"
-args = ["/Users/anyi/codex-claude/dist/server.js"]
+args = ["/absolute/path/to/codex-claude-delegate-mcp/dist/server.js"]
 tool_timeout_sec = 600
 startup_timeout_sec = 20
-enabled_tools = ["claude_status", "claude_query", "claude_review", "claude_implement"]
-
-# 如需扩展 ALLOW_ROOTS 白名单（默认仅 ~/projects、~/work、~/codex-claude）：
-[shell_environment_policy.set]
-CODEX_CLAUDE_ALLOW_ROOTS = "/Users/anyi/codex-claude:/Users/anyi/my-other-project"
+enabled_tools = [
+  "claude_setup",
+  "claude_task",
+  "claude_job_wait",
+  "claude_result",
+  "claude_apply",
+  "claude_cleanup"
+]
 ```
 
-## 12. 运行日志
+## 10. 数据存储
 
-运行日志写入 `.codex-claude-delegate/runs/<runId>.json`，包含：
-
-- 请求参数
-- Claude 返回的 structured_output
-- server_observed（git diff 实际结果）
-- 耗时
-- 错误信息（如有）
+- Run logs: `.codex-claude-delegate/runs/<runId>.json`
+- Sessions: `.codex-claude-delegate/sessions.json`
+- Background jobs: `.codex-claude-delegate/jobs/<jobId>.json`
+- Review gate: `.codex-claude-delegate/review-gate.json`
+- Delegated worktrees: `.claude/worktrees/codex-delegated-<runId 前缀 8 位>/`
