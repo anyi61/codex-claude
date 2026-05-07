@@ -52,6 +52,57 @@ describe("Codex MCP config helpers", () => {
     expect(config).toContain(`CODEX_CLAUDE_ALLOW_ROOTS = "${result.env_value}"`);
   });
 
+  it("writes plugin-mode allow roots to shell environment instead of creating an invalid MCP server", async () => {
+    const projectA = path.join(root, "project-a");
+    const projectB = path.join(root, "project-b");
+    await mkdir(projectA, { recursive: true });
+    await mkdir(projectB);
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, [
+      "[plugins.\"codex-claude-delegate@codex-claude-local\"]",
+      "enabled = true",
+      "",
+      "[mcp_servers.claude_delegate.env]",
+      `CODEX_CLAUDE_ALLOW_ROOTS = "${projectA}"`,
+      "",
+    ].join("\n"), "utf8");
+
+    const projectBReal = await realpath(projectB);
+
+    const result = await configureCodexAllowRoot(projectB);
+    const config = await readFile(configPath, "utf8");
+
+    expect(result.env_value).toBe([projectA, projectBReal].join(path.delimiter));
+    expect(config).not.toContain("[mcp_servers.claude_delegate.env]");
+    expect(config).toContain("[shell_environment_policy.set]");
+    expect(config).toContain(`CODEX_CLAUDE_ALLOW_ROOTS = "${result.env_value}"`);
+  });
+
+  it("updates existing shell environment allow roots in plugin mode", async () => {
+    const projectA = path.join(root, "project-a");
+    const projectB = path.join(root, "project-b");
+    await mkdir(projectA, { recursive: true });
+    await mkdir(projectB);
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, [
+      "[shell_environment_policy.set]",
+      "ANTHROPIC_BASE_URL = \"http://127.0.0.1:15721\"",
+      `CODEX_CLAUDE_ALLOW_ROOTS = "${projectA}"`,
+      "",
+    ].join("\n"), "utf8");
+
+    const projectBReal = await realpath(projectB);
+
+    const result = await configureCodexAllowRoot(projectB);
+    const config = await readFile(configPath, "utf8");
+
+    expect(result.env_value).toBe([projectA, projectBReal].join(path.delimiter));
+    expect(config).toContain("ANTHROPIC_BASE_URL = \"http://127.0.0.1:15721\"");
+    expect(config).toContain(`CODEX_CLAUDE_ALLOW_ROOTS = "${result.env_value}"`);
+  });
+
   it("refuses to add dangerous roots to Codex config", async () => {
     await expect(configureCodexAllowRoot(root)).rejects.toThrow("dangerous allow root");
   });

@@ -84,7 +84,7 @@ const TOOL_DEFINITIONS = [
         configure_allow_root: {
           type: "boolean",
           description:
-            "When true, add cwd to CODEX_CLAUDE_ALLOW_ROOTS in the Codex MCP config and update this MCP process so setup can continue.",
+            "When true, add cwd to CODEX_CLAUDE_ALLOW_ROOTS in the Codex config and update this MCP process so setup can continue.",
         },
       },
     },
@@ -407,7 +407,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
                 tool: "claude_setup",
                 args: { cwd: parsed.data.cwd, configure_allow_root: true },
                 reason:
-                  "Add this cwd to CODEX_CLAUDE_ALLOW_ROOTS in the Codex MCP config, then retry setup in the same MCP process.",
+                  "Add this cwd to CODEX_CLAUDE_ALLOW_ROOTS in the Codex config, then retry setup in the same MCP process.",
               },
             ],
             config_hint: {

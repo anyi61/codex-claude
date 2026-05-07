@@ -145,7 +145,7 @@ claude_task(mode="write") → claude_job_wait → claude_result
 
 ```toml
 # ~/.codex/config.toml
-[mcp_servers.claude_delegate.env]
+[shell_environment_policy.set]
 CODEX_CLAUDE_ALLOW_ROOTS = "/Users/you/projects:/Users/you/work:/Users/you/my-repo"
 ```
 
@@ -172,6 +172,7 @@ npm run check:plugin
 | 插件安装后工具不可用 | 重启 Codex/刷新插件，然后先运行 `claude_setup` 查看环境检查结果 |
 | 找不到 `server/server.js` | 在仓库根目录执行 `npm run build:plugin`，再执行 `npm run check:plugin` |
 | 旧版插件入口仍使用 `${CLAUDE_PLUGIN_ROOT}` | 拉取最新代码，重新安装插件，并确认 `plugins/codex-claude-delegate/.mcp.json` 使用 `./server/server.js` |
+| 启动 Codex 报 `invalid transport in mcp_servers.claude_delegate` | 删除孤立的 `[mcp_servers.claude_delegate.env]` 配置块，改用 `[shell_environment_policy.set]` 设置 `CODEX_CLAUDE_ALLOW_ROOTS` |
 | 找不到 `claude` 命令 | 安装 Claude Code CLI，或设置 `CLAUDE_BIN` |
 | `cwd` 不在允许根目录内 | 设置 `CODEX_CLAUDE_ALLOW_ROOTS` 并重启 Codex |
 | `apply` 被拒绝 | 主工作区有未提交改动。先 commit/stash，或重试时传 `dirty_policy=committed` |

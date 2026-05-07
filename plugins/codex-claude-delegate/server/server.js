@@ -24908,6 +24908,7 @@ import { realpath as realpath2 } from "node:fs/promises";
 import path2 from "node:path";
 var SERVER_NAME = "claude_delegate";
 var ALLOW_ROOTS_KEY = "CODEX_CLAUDE_ALLOW_ROOTS";
+var SHELL_ENV_TABLE = "shell_environment_policy.set";
 function codexConfigPath() {
   const codexHome = process.env.CODEX_HOME ?? (process.env.HOME ? path2.join(process.env.HOME, ".codex") : "");
   if (!codexHome) throw new Error("Cannot locate Codex config: HOME and CODEX_HOME are both unset.");
@@ -24915,15 +24916,6 @@ function codexConfigPath() {
 }
 function tomlString(value) {
   return JSON.stringify(value);
-}
-function parseTomlStringValue(line) {
-  const match = line.match(/^\s*CODEX_CLAUDE_ALLOW_ROOTS\s*=\s*"((?:\\"|[^"])*)"\s*$/m);
-  if (!match) return null;
-  try {
-    return JSON.parse(`"${match[1]}"`);
-  } catch {
-    return match[1].replace(/\\"/g, '"');
-  }
 }
 function splitAllowRootsValue(value) {
   const delimiterPattern = path2.delimiter === ";" ? /[;,]/g : /[:,]/g;
@@ -24940,21 +24932,59 @@ function uniqueRoots(roots) {
   }
   return result;
 }
-function updateEnvTable(config2, envValue) {
-  const assignment = `${ALLOW_ROOTS_KEY} = ${tomlString(envValue)}`;
-  const tablePattern = new RegExp(`(\\[mcp_servers\\.${SERVER_NAME}\\.env\\]\\n)([\\s\\S]*?)(?=\\n\\[|$)`);
+function updateTomlTableValue(config2, tableName, key, value) {
+  const assignment = `${key} = ${tomlString(value)}`;
+  const escapedTable = tableName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const tablePattern = new RegExp(`(\\[${escapedTable}\\]\\n)([\\s\\S]*?)(?=\\n\\[|$)`);
   const match = config2.match(tablePattern);
   if (!match) {
     const needsNewline = config2.length > 0 && !config2.endsWith("\n");
     return `${config2}${needsNewline ? "\n" : ""}
-[mcp_servers.${SERVER_NAME}.env]
+[${tableName}]
 ${assignment}
 `;
   }
   const body = match[2] ?? "";
-  const nextBody = body.match(new RegExp(`^\\s*${ALLOW_ROOTS_KEY}\\s*=`, "m")) ? body.replace(new RegExp(`^\\s*${ALLOW_ROOTS_KEY}\\s*=.*$`, "m"), assignment) : `${body}${body.endsWith("\n") || body.length === 0 ? "" : "\n"}${assignment}
+  const nextBody = body.match(new RegExp(`^\\s*${escapedKey}\\s*=`, "m")) ? body.replace(new RegExp(`^\\s*${escapedKey}\\s*=.*$`, "m"), assignment) : `${body}${body.endsWith("\n") || body.length === 0 ? "" : "\n"}${assignment}
 `;
   return config2.replace(tablePattern, `${match[1]}${nextBody}`);
+}
+function hasManualMcpServerTable(config2) {
+  return new RegExp(`^\\s*\\[mcp_servers\\.${SERVER_NAME}\\]\\s*$`, "m").test(config2);
+}
+function updateEnvTable(config2, envValue) {
+  return updateTomlTableValue(config2, `mcp_servers.${SERVER_NAME}.env`, ALLOW_ROOTS_KEY, envValue);
+}
+function updateShellEnvTable(config2, envValue) {
+  return updateTomlTableValue(config2, SHELL_ENV_TABLE, ALLOW_ROOTS_KEY, envValue);
+}
+function readTableValue(config2, tableName, key) {
+  const escapedTable = tableName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const tableMatch = config2.match(new RegExp(`\\[${escapedTable}\\]\\n([\\s\\S]*?)(?=\\n\\[|$)`));
+  if (!tableMatch) return null;
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const keyMatch = tableMatch[1]?.match(new RegExp(`^\\s*${escapedKey}\\s*=\\s*"((?:\\\\.|[^"\\\\])*)"\\s*$`, "m"));
+  if (!keyMatch) return null;
+  try {
+    return JSON.parse(`"${keyMatch[1]}"`);
+  } catch {
+    return keyMatch[1].replace(/\\"/g, '"');
+  }
+}
+function removeEnvOnlyTable(config2) {
+  if (hasManualMcpServerTable(config2)) return config2;
+  return config2.replace(new RegExp(`\\n?\\[mcp_servers\\.${SERVER_NAME}\\.env\\]\\n[\\s\\S]*?(?=\\n\\[|$)`), "");
+}
+function updateAllowRootsConfig(config2, envValue) {
+  if (hasManualMcpServerTable(config2)) {
+    return updateEnvTable(config2, envValue);
+  }
+  const cleaned = removeEnvOnlyTable(config2);
+  return updateShellEnvTable(cleaned, envValue);
+}
+function readConfiguredAllowRoots(config2) {
+  return readTableValue(config2, `mcp_servers.${SERVER_NAME}.env`, ALLOW_ROOTS_KEY) ?? readTableValue(config2, SHELL_ENV_TABLE, ALLOW_ROOTS_KEY);
 }
 async function configureCodexAllowRoot(rawCwd) {
   let resolved;
@@ -24973,12 +25003,11 @@ async function configureCodexAllowRoot(rawCwd) {
     config2 = await readFile(configPath, "utf8");
   } catch {
   }
-  const existingMatch = config2.match(new RegExp(`\\[mcp_servers\\.${SERVER_NAME}\\.env\\]\\n([\\s\\S]*?)(?=\\n\\[|$)`));
-  const existingValue = existingMatch ? parseTomlStringValue(existingMatch[1] ?? "") : null;
+  const existingValue = readConfiguredAllowRoots(config2);
   const configuredRoots = existingValue ? splitAllowRootsValue(existingValue) : getAllowRoots();
   const allowRoots = uniqueRoots([...configuredRoots, resolved]);
   const envValue = allowRoots.join(path2.delimiter);
-  const nextConfig = updateEnvTable(config2, envValue);
+  const nextConfig = updateAllowRootsConfig(config2, envValue);
   const changed = nextConfig !== config2;
   if (changed) {
     await writeFile(configPath, nextConfig, "utf8");
@@ -27340,7 +27369,7 @@ var TOOL_DEFINITIONS = [
         cwd: { type: "string", description: "Working directory to inspect and prepare" },
         configure_allow_root: {
           type: "boolean",
-          description: "When true, add cwd to CODEX_CLAUDE_ALLOW_ROOTS in the Codex MCP config and update this MCP process so setup can continue."
+          description: "When true, add cwd to CODEX_CLAUDE_ALLOW_ROOTS in the Codex config and update this MCP process so setup can continue."
         }
       }
     }
@@ -27643,7 +27672,7 @@ async function handleToolCall(name, args, runId = randomUUID2()) {
               {
                 tool: "claude_setup",
                 args: { cwd: parsed.data.cwd, configure_allow_root: true },
-                reason: "Add this cwd to CODEX_CLAUDE_ALLOW_ROOTS in the Codex MCP config, then retry setup in the same MCP process."
+                reason: "Add this cwd to CODEX_CLAUDE_ALLOW_ROOTS in the Codex config, then retry setup in the same MCP process."
               }
             ],
             config_hint: {
