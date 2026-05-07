@@ -30,9 +30,20 @@ claude_task(mode="read", cwd="/path/to/your/repo", task="Summarize this repo")
 
 ### 作为 Codex 插件安装
 
-1. 克隆或下载本仓库。
-2. 在 Codex 中安装本地插件目录：`plugins/codex-claude-delegate`。
-3. 重启 Codex，或刷新插件。
+1. 克隆本仓库并进入目录：
+
+   ```bash
+   git clone https://github.com/anyi/codex-claude.git
+   cd codex-claude
+   ```
+
+2. 将当前仓库注册为 Codex 本地插件源：
+
+   ```bash
+   codex plugin marketplace add "$(pwd)"
+   ```
+
+3. 在 Codex 中安装或启用 `codex-claude-delegate` 插件，然后重启 Codex，或刷新插件。
 4. 运行 `claude_setup(cwd="/path/to/your/repo")` 做首次自检。
 
 插件已包含 `plugins/codex-claude-delegate/server/server.js`，普通用户不需要运行 `npm install` 或 `npm run build`。如果 `claude_setup` 提示缺少 `server/server.js`，在仓库根目录运行 `npm run build:plugin` 重新生成。
