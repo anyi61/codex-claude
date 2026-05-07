@@ -9,17 +9,54 @@
 ## Quick start
 
 ```bash
-# 1) 在 Codex 安装插件目录 plugins/codex-claude-delegate
-# 2) 重启 Codex（或刷新插件）
-# 3) 首次自检
+# 1) 按下方 Install 安装插件，然后重启 Codex（或刷新插件）
+# 2) 首次自检
 claude_setup(cwd="/path/to/your/repo")
 
-# 4) 发送第一次委托（推荐 read 模式）
+# 3) 发送第一次委托（推荐 read 模式）
 claude_task(mode="read", cwd="/path/to/your/repo", task="Summarize this repo")
 # 返回 job_id 后继续用 claude_job_wait 轮询到终态
 ```
 
 首跑链路建议固定为：`claude_setup` -> `claude_task` -> `claude_job_wait` -> `claude_result`。完整 18 个工具列表见下方。
+
+## Install
+
+### Prerequisites
+
+- Codex with plugin support.
+- Node.js available as `node` on `PATH` because the plugin MCP server is launched with `node`.
+- Claude Code CLI available as `claude` on `PATH`, or configure `CLAUDE_BIN`.
+
+### Install as a Codex plugin
+
+1. Clone or download this repository.
+2. In Codex, install the local plugin directory: `plugins/codex-claude-delegate`.
+3. Restart Codex or refresh plugins.
+4. Run `claude_setup(cwd="/path/to/your/repo")`.
+
+The plugin includes `plugins/codex-claude-delegate/server/server.js`, so normal users do not need `npm install` or `npm run build`. If `claude_setup` reports `server/server.js` missing, rebuild from the repository root with `npm run build:plugin`.
+
+### Update
+
+```bash
+git pull
+```
+
+Then restart Codex or refresh plugins. If you modified files under `src/`, also run:
+
+```bash
+npm install
+npm run build:plugin
+npm run check:plugin
+```
+
+### Uninstall
+
+1. Remove `codex-claude-delegate` from Codex plugins, or delete/unlink the installed plugin directory.
+2. Restart Codex or refresh plugins.
+3. If you used the manual MCP config path, remove the `[mcp_servers.claude_delegate]` block from `~/.codex/config.toml`.
+4. Optional per-workspace cleanup: remove `.codex-claude-delegate/` from repositories where you no longer want stored job/run state.
 
 ## Minimal example
 
