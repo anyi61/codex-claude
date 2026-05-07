@@ -45,7 +45,7 @@ claude_task(mode="read", cwd="/path/to/your/repo", task="Summarize this repo")
 4. 退出并重新进入 Codex，让插件 MCP 工具完成加载。
 5. 运行 `claude_setup(cwd="/path/to/your/repo")` 做首次自检。
 
-插件已包含 `plugins/codex-claude-delegate/server/server.js`，普通用户不需要运行 `npm install` 或 `npm run build`。如果 `claude_setup` 提示缺少 `server/server.js`，在仓库根目录运行 `npm run build:plugin` 重新生成。
+插件已包含 `plugins/codex-claude-delegate/server/server.js` 和 `plugins/codex-claude-delegate/server/job-runner.js`，普通用户不需要运行 `npm install` 或 `npm run build`。如果 `claude_setup` 提示缺少 `server/server.js` 或 `job-runner.js`，在仓库根目录运行 `npm run build:plugin` 重新生成。
 
 ### 更新
 
@@ -71,8 +71,14 @@ npm run check:plugin
    ```
 
 3. 退出并重新进入 Codex。
-4. 如果曾使用手动 MCP 配置，删除 `~/.codex/config.toml` 中的 `[mcp_servers.claude_delegate]` 配置块。
-5. 可选清理本地文件：删除克隆下来的本仓库目录；在不再需要历史 job/run 状态的工作区中删除 `.codex-claude-delegate/`。
+4. 如果曾使用手动 MCP 配置，移除对应 MCP server：
+
+   ```bash
+   codex mcp remove claude_delegate
+   ```
+
+5. 如果启动 Codex 仍提示 `invalid transport in mcp_servers.claude_delegate`，删除 `~/.codex/config.toml` 中残留的 `[mcp_servers.claude_delegate]` 或 `[mcp_servers.claude_delegate.env]` 配置块。
+6. 可选清理本地文件：删除克隆下来的本仓库目录；在不再需要历史 job/run 状态的工作区中删除 `.codex-claude-delegate/`。
 
 ## 最小示例
 
@@ -163,14 +169,14 @@ npm run build:plugin
 npm run check:plugin
 ```
 
-插件 MCP 入口固定为 `plugins/codex-claude-delegate/.mcp.json` 中相对插件根目录的 `./server/server.js`。常规开发调试仍可使用 `npm run dev` 或 `npm run build`（根目录 `dist/`）。
+插件 MCP 入口固定为 `plugins/codex-claude-delegate/.mcp.json` 中相对插件根目录的 `./server/server.js`，后台 job runner 固定为同目录的 `./server/job-runner.js`。常规开发调试仍可使用 `npm run dev` 或 `npm run build`（根目录 `dist/`）。
 
 ## 故障排查
 
 | 问题 | 处理方式 |
 |---------|-----|
 | 插件安装后工具不可用 | 重启 Codex/刷新插件，然后先运行 `claude_setup` 查看环境检查结果 |
-| 找不到 `server/server.js` | 在仓库根目录执行 `npm run build:plugin`，再执行 `npm run check:plugin` |
+| 找不到 `server/server.js` 或 `server/job-runner.js` | 在仓库根目录执行 `npm run build:plugin`，再执行 `npm run check:plugin` |
 | 旧版插件入口仍使用 `${CLAUDE_PLUGIN_ROOT}` | 拉取最新代码，重新安装插件，并确认 `plugins/codex-claude-delegate/.mcp.json` 使用 `./server/server.js` |
 | 启动 Codex 报 `invalid transport in mcp_servers.claude_delegate` | 删除孤立的 `[mcp_servers.claude_delegate.env]` 配置块，改用 `[shell_environment_policy.set]` 设置 `CODEX_CLAUDE_ALLOW_ROOTS` |
 | 找不到 `claude` 命令 | 安装 Claude Code CLI，或设置 `CLAUDE_BIN` |

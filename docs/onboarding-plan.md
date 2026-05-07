@@ -6,9 +6,9 @@
 
 ## Implementation Changes
 
-- 使用 `esbuild` 生成插件 runtime。新增 devDependency `esbuild`，新增脚本 `build:plugin`，从 `src/server.ts` 打包到 `plugins/codex-claude-delegate/server/server.js`。
+- 使用 `esbuild` 生成插件 runtime。新增 devDependency `esbuild`，新增脚本 `build:plugin`，从 `src/server.ts` 和 `src/job-runner.ts` 分别打包到 `plugins/codex-claude-delegate/server/server.js` 和 `plugins/codex-claude-delegate/server/job-runner.js`。
 - 更新 `package.json`：在 `devDependencies` 中添加 `"esbuild": "^0.25.0"`，在 `scripts` 中添加 `build:plugin` 和 `check:plugin`。
-- 将 `plugins/codex-claude-delegate/.mcp.json` 的 MCP server 入口固定为 `${CLAUDE_PLUGIN_ROOT}/server/server.js`。该产物路径不受当前 `/dist/` ignore 规则影响，构建后应可提交。
+- 将 `plugins/codex-claude-delegate/.mcp.json` 的 MCP server 入口固定为 `${CLAUDE_PLUGIN_ROOT}/server/server.js`。插件 server 产物和 background job runner 产物均不受当前 `/dist/` ignore 规则影响，构建后应可提交。
 - 保留现有开发路径：`npm run dev` 继续运行源码，`npm run build` 继续只产出根目录 `dist/`，手动 MCP 配置作为 README 的次级“Manual install / Development”路径。
 - 以 `plugins/codex-claude-delegate/.codex-plugin/plugin.json` 作为 Codex 插件主配置；`.claude-plugin/plugin.json` 作为兼容元数据保留。版本号需要与 `package.json` 保持一致。
 - README 只做上手路径校准，不做大范围重写：顶部说明价值，Quick Start 聚焦插件安装、自检和第一次成功运行；已有 Default / Advanced 工具分层保留。
@@ -16,9 +16,9 @@
 
 ## Implementation Decisions
 
-- `build:plugin` 必须使用 esbuild 单文件 bundle，不采用 tsc 输出复制方案。脚本命令固定为 `esbuild src/server.ts --bundle --platform=node --target=node22 --format=esm --packages=bundle --outfile=plugins/codex-claude-delegate/server/server.js`，要求 `esbuild` 版本为 `^0.25.0`。
-- `plugins/codex-claude-delegate/server/server.js` 是 repo-tracked release artifact。实现完成后必须生成并提交该文件，保证最终用户安装插件后不需要本地构建。
-- 必须新增 `check:plugin` 脚本，而不是在测试或人工步骤中二选一。该脚本使用 `scripts/check-plugin.mjs` 实现，至少验证三件事：`.mcp.json` 指向的 server 文件存在、server 文件不被 `.gitignore` 忽略、Node 启动该 server 不出现缺失依赖加载错误。
+- `build:plugin` 必须使用 esbuild bundle，不采用 tsc 输出复制方案。脚本命令固定为 `esbuild src/server.ts src/job-runner.ts --bundle --platform=node --target=node22 --format=esm --packages=bundle --outdir=plugins/codex-claude-delegate/server --outbase=src`，要求 `esbuild` 版本为 `^0.25.0`。
+- `plugins/codex-claude-delegate/server/server.js` 和 `plugins/codex-claude-delegate/server/job-runner.js` 是 repo-tracked release artifacts。实现完成后必须生成并提交这两个文件，保证最终用户安装插件后不需要本地构建。
+- 必须新增 `check:plugin` 脚本，而不是在测试或人工步骤中二选一。该脚本使用 `scripts/check-plugin.mjs` 实现，至少验证四件事：`.mcp.json` 指向的 server 文件存在、background job runner 文件存在、两个 runtime 文件不被 `.gitignore` 忽略、Node 启动这两个 runtime 不出现缺失依赖加载错误。
 - 除非 bundle 暴露纯加载层面的 ESM 或路径问题，不修改 `src/` 中 MCP 工具行为、schema、job 状态机或 apply 逻辑。
 - README 只允许改动上手相关内容：项目顶部介绍、`Quick start`、`Configuration`、`Troubleshooting` 中与插件安装路径直接相关的段落。不要重排 Tools 表格或重写高级工具说明。
 - 本轮继续使用 `${CLAUDE_PLUGIN_ROOT}`，因为现有 `.mcp.json` 和 `hooks/hooks.json` 已依赖该变量。实现阶段先确认插件安装路径和变量解析是否正常；如果变量在 Codex 插件环境中不可用，停止并报告，不自行设计替代路径。
@@ -27,7 +27,7 @@
 ## User And Maintainer Flow
 
 - 最终用户安装已打包插件后，不需要在插件目录运行 `npm install` 或 `npm run build`。
-- 维护者或贡献者从源码构建插件时，需要运行 `npm install`，然后运行 `npm run build:plugin` 生成 `plugins/codex-claude-delegate/server/server.js`。
+- 维护者或贡献者从源码构建插件时，需要运行 `npm install`，然后运行 `npm run build:plugin` 生成 `plugins/codex-claude-delegate/server/server.js` 和 `plugins/codex-claude-delegate/server/job-runner.js`。
 - 开发和迭代过程中，每次修改 `src/` 后都需要运行 `npm run build:plugin && npm run check:plugin`，确保插件 runtime 与源码同步。
 - 插件 runtime 应 bundle 运行依赖，例如 `@modelcontextprotocol/sdk` 和 `zod`。不要采用“复制 tsc 输出但依赖 node_modules”的方案，因为这不满足自包含插件目标。
 
@@ -43,10 +43,10 @@
 
 - `npm run build`：确认原 TypeScript 编译仍产出根目录 `dist/`。
 - `npm test` 和 `npm run typecheck`：确认现有行为未回归。
-- `npm run build:plugin`：确认生成 `plugins/codex-claude-delegate/server/server.js`。
-- `git check-ignore -q plugins/codex-claude-delegate/server/server.js; test $? -eq 1`：确认插件 runtime 不被 `.gitignore` 忽略。
-- `node plugins/codex-claude-delegate/server/server.js < /dev/null`：确认不会因缺失运行依赖出现 `ERR_MODULE_NOT_FOUND` 或类似加载错误。
-- `npm run check:plugin`：检查 `plugins/codex-claude-delegate/.mcp.json` 指向的文件存在，插件 runtime 不被忽略，且 Node 可加载 runtime。
+- `npm run build:plugin`：确认生成 `plugins/codex-claude-delegate/server/server.js` 和 `plugins/codex-claude-delegate/server/job-runner.js`。
+- `git check-ignore -q plugins/codex-claude-delegate/server/server.js; test $? -eq 1` 和 `git check-ignore -q plugins/codex-claude-delegate/server/job-runner.js; test $? -eq 1`：确认插件 runtime 不被 `.gitignore` 忽略。
+- `node plugins/codex-claude-delegate/server/server.js < /dev/null`：确认 server 不会因缺失运行依赖出现 `ERR_MODULE_NOT_FOUND` 或类似加载错误。
+- `npm run check:plugin`：检查 `plugins/codex-claude-delegate/.mcp.json` 指向的文件存在，background job runner 存在，插件 runtime 不被忽略，且 Node 可加载 runtime。
 - 在 Codex 插件环境中验证最小链路：`claude_setup` 成功，`claude_task(mode="read")` 返回 `job_id`，`claude_job_wait` 可轮询到终态。
 - 验证 `hooks/review-gate-stop.mjs` 在插件环境下仍能通过 `${CLAUDE_PLUGIN_ROOT}` 被解析和执行。
 

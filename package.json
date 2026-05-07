@@ -6,7 +6,7 @@
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
-    "build:plugin": "esbuild src/server.ts --bundle --platform=node --target=node22 --format=esm --packages=bundle --outfile=plugins/codex-claude-delegate/server/server.js",
+    "build:plugin": "esbuild src/server.ts src/job-runner.ts --bundle --platform=node --target=node22 --format=esm --packages=bundle --outdir=plugins/codex-claude-delegate/server --outbase=src",
     "check:plugin": "node scripts/check-plugin.mjs",
     "start": "node dist/server.js",
     "dev": "tsx src/server.ts",

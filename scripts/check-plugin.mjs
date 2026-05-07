@@ -26,9 +26,14 @@ if (typeof serverArg !== "string" || !serverArg.length) {
 }
 
 const serverPath = path.resolve(pluginRoot, serverArg.replace("${CLAUDE_PLUGIN_ROOT}", pluginRoot));
+const jobRunnerPath = path.join(path.dirname(serverPath), "job-runner.js");
 
 if (!existsSync(serverPath)) {
   fail(`server file not found: ${serverPath}`);
+}
+
+if (!existsSync(jobRunnerPath)) {
+  fail(`background job runner file not found: ${jobRunnerPath}`);
 }
 
 try {
@@ -39,6 +44,17 @@ try {
     // not ignored, expected
   } else {
     fail(`unable to run git check-ignore for ${serverPath}`);
+  }
+}
+
+try {
+  execFileSync("git", ["check-ignore", "-q", jobRunnerPath], { cwd: repoRoot, stdio: "ignore" });
+  fail(`background job runner file is ignored by git: ${jobRunnerPath}`);
+} catch (error) {
+  if (error && typeof error === "object" && "status" in error && error.status === 1) {
+    // not ignored, expected
+  } else {
+    fail(`unable to run git check-ignore for ${jobRunnerPath}`);
   }
 }
 
@@ -55,6 +71,21 @@ try {
 } catch (error) {
   const stderr = error && typeof error === "object" && "stderr" in error ? String(error.stderr) : "";
   fail(`unable to load plugin server with node: ${stderr.trim() || "unknown error"}`);
+}
+
+try {
+  execFileSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `import(${JSON.stringify(pathToFileURL(jobRunnerPath).href)}).then(()=>process.exit(0)).catch((err)=>{console.error(err);process.exit(1);});`
+    ],
+    { cwd: repoRoot, stdio: "pipe" }
+  );
+} catch (error) {
+  const stderr = error && typeof error === "object" && "stderr" in error ? String(error.stderr) : "";
+  fail(`unable to load plugin background job runner with node: ${stderr.trim() || "unknown error"}`);
 }
 
 const expectedHookManifestPath = path.join(pluginRoot, "hooks", "hooks.json");
