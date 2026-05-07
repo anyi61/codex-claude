@@ -43,3 +43,23 @@ Pull requests should include the behavior change, commands run, and any MCP/plug
 ## Security & Configuration Tips
 
 Do not commit credentials, local Codex config, or Claude session data. Keep allow-root behavior, environment sanitization, recursion guards, and worktree safety checks covered by tests.
+
+## Behavioral Guidelines (Karpathy Principles)
+
+This project follows the four Karpathy-inspired principles defined in `CLAUDE.md`:
+
+| Principle | What It Prevents |
+|-----------|-----------------|
+| **Think Before Coding** | Wrong assumptions, hidden confusion, missing tradeoffs |
+| **Simplicity First** | Overcomplication, bloated abstractions |
+| **Surgical Changes** | Orthogonal edits, touching code you shouldn't |
+| **Goal-Driven Execution** | Leverage through tests-first, verifiable success criteria |
+
+### How They Apply Here
+
+- **Think Before Coding** — Before implementing, state assumptions and present tradeoffs. Don't silently pick one interpretation.
+- **Simplicity First** — No features beyond what was asked. No speculative abstractions. Prefer 50 lines over 200.
+- **Surgical Changes** — Every changed line traces to the request. Don't refactor adjacent code. Clean up only YOUR orphans.
+- **Goal-Driven Execution** — Transform tasks into verifiable goals with test-first loops. Multi-step tasks get a brief plan with checks.
+
+See `CLAUDE.md` in the project root for the full guidelines.

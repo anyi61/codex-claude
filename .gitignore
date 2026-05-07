@@ -11,3 +11,4 @@ debug/
 !/.agents/plugins/
 !/.agents/plugins/marketplace.json
 /AGENTS.md
+/CLAUDE.md
