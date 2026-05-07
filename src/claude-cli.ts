@@ -118,12 +118,33 @@ function getRepoRootFromModule(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 }
 
+function resolvePluginRootFromModule(): string {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  const envPluginRoot = process.env.CLAUDE_PLUGIN_ROOT ? path.resolve(process.env.CLAUDE_PLUGIN_ROOT) : null;
+
+  const candidates = [
+    envPluginRoot,
+    path.resolve(moduleDir, ".."),
+    path.join(getRepoRootFromModule(), "plugins", "codex-claude-delegate"),
+  ].filter((candidate): candidate is string => typeof candidate === "string");
+
+  for (const candidate of candidates) {
+    const hooksDir = path.join(candidate, "hooks");
+    if (existsSync(path.join(hooksDir, "hooks.json")) || existsSync(path.join(hooksDir, "review-gate-stop.mjs"))) {
+      return candidate;
+    }
+  }
+
+  // Fallback to the repository layout used during source development.
+  return path.join(getRepoRootFromModule(), "plugins", "codex-claude-delegate");
+}
+
 function getHookManifestPath(): string {
-  return path.join(getRepoRootFromModule(), "plugins", "codex-claude-delegate", "hooks", "hooks.json");
+  return path.join(resolvePluginRootFromModule(), "hooks", "hooks.json");
 }
 
 function getHookScriptPath(): string {
-  return path.join(getRepoRootFromModule(), "plugins", "codex-claude-delegate", "hooks", "review-gate-stop.mjs");
+  return path.join(resolvePluginRootFromModule(), "hooks", "review-gate-stop.mjs");
 }
 
 function getReviewGateStatePath(cwd: string): string {

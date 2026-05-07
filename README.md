@@ -1,6 +1,6 @@
 # codex-claude-delegate-mcp
 
-让 Codex CLI 把代码任务委托给 Claude Code 执行的 MCP 服务器。Codex 负责规划与验收，Claude 在隔离 worktree 中安全执行。
+让 Codex 通过插件把代码任务委托给 Claude Code 执行。插件内置自包含 MCP runtime，安装后无需在用户机器本地构建 `dist/`。
 
 ## Features
 
@@ -9,22 +9,17 @@
 ## Quick start
 
 ```bash
-# Install
-cd /path/to/codex-claude-delegate-mcp
-npm install && npm run build
+# 1) 在 Codex 安装插件目录 plugins/codex-claude-delegate
+# 2) 重启 Codex（或刷新插件）
+# 3) 首次自检
+claude_setup(cwd="/path/to/your/repo")
 
-# Configure MCP (~/.codex/config.toml)
-[mcp_servers.claude_delegate]
-command = "node"
-args = ["/absolute/path/to/dist/server.js"]
-tool_timeout_sec = 600
-enabled_tools = [
-  "claude_setup", "claude_task", "claude_job_wait",
-  "claude_result", "claude_apply", "claude_cleanup"
-]
+# 4) 发送第一次委托（推荐 read 模式）
+claude_task(mode="read", cwd="/path/to/your/repo", task="Summarize this repo")
+# 返回 job_id 后继续用 claude_job_wait 轮询到终态
 ```
 
-重启 Codex，6 个默认工具即可用。完整的 18 个工具列表见下方。
+首跑链路建议固定为：`claude_setup` -> `claude_task` -> `claude_job_wait` -> `claude_result`。完整 18 个工具列表见下方。
 
 ## Minimal example
 
@@ -105,10 +100,25 @@ CODEX_CLAUDE_ALLOW_ROOTS = "/Users/you/projects:/Users/you/work:/Users/you/my-re
 
 在 `enabled_tools` 中添加需要的工具名即可。
 
+### Manual install / development
+
+如果你是维护者，从源码构建插件 runtime：
+
+```bash
+npm install
+npm run build:plugin
+npm run check:plugin
+```
+
+插件 MCP 入口固定为 `plugins/codex-claude-delegate/.mcp.json` 中的 `${CLAUDE_PLUGIN_ROOT}/server/server.js`。常规开发调试仍可使用 `npm run dev` 或 `npm run build`（根目录 `dist/`）。
+
 ## Troubleshooting
 
 | Problem | Fix |
 |---------|-----|
+| 插件安装后工具不可用 | 重启 Codex/刷新插件，然后先运行 `claude_setup` 查看环境检查结果 |
+| `server/server.js` not found | 在仓库根目录执行 `npm run build:plugin`，再执行 `npm run check:plugin` |
+| `${CLAUDE_PLUGIN_ROOT}` 未解析 | 重新安装插件并确认通过插件入口加载；当前配置依赖该变量 |
 | `claude command not found` | 安装 Claude Code CLI，或设置 `CLAUDE_BIN` |
 | `cwd outside allowRoots` | 设置 `CODEX_CLAUDE_ALLOW_ROOTS` 并重启 Codex |
 | `apply refused` | 主工作区有未提交改动。先 commit/stash，或重试时传 `dirty_policy=committed` |

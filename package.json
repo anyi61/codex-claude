@@ -6,6 +6,8 @@
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
+    "build:plugin": "esbuild src/server.ts --bundle --platform=node --target=node22 --format=esm --packages=bundle --outfile=plugins/codex-claude-delegate/server/server.js",
+    "check:plugin": "node scripts/check-plugin.mjs",
     "start": "node dist/server.js",
     "dev": "tsx src/server.ts",
     "test": "vitest run",
@@ -19,6 +21,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
     "tsx": "^4.0.0",
     "typescript": "^5.7.0",
     "vitest": "^3.2.4"

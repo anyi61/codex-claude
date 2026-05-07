@@ -1,6 +1,7 @@
 # Claude Code Delegate
 
 Use `claude_task` for normal read/review/write delegation. After it returns a `job_id`, call `claude_job_wait` for that same job. Respect `recommended_delay_ms` and `next_allowed_poll_at`. If `poll_too_soon=true`, wait until `next_allowed_poll_at` before polling again. Do not start another job or implement locally while `waiting=true`.
+First run sequence: `claude_setup` -> `claude_task` -> `claude_job_wait` -> `claude_result`.
 
 For normal `claude_task` calls, do not pass `files`. If Claude should read a plan or checklist, use `instruction_files` or mention the file in `task`; these files are context, not modification scope. Use Advanced / Debug `claude_implement.files` only when strict file modification limits are explicitly required.
 
