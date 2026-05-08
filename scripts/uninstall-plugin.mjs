@@ -122,6 +122,91 @@ function inlineClassifySection(config) {
   return null;
 }
 
+function splitAllowRootsValue(value) {
+  const delimiterPattern = path.delimiter === ";" ? /[;,]/g : /[:,]/g;
+  return value.split(delimiterPattern).map((part) => part.trim()).filter(Boolean);
+}
+
+function addCandidateWorkspace(candidates, rawPath) {
+  if (!rawPath || typeof rawPath !== "string") return;
+  candidates.add(path.resolve(rawPath));
+}
+
+async function addWorkspaceCandidatesFromJsonFile(candidates, filePath) {
+  try {
+    const raw = await readFile(filePath, "utf8");
+    const parsed = JSON.parse(raw);
+    addCandidateWorkspace(candidates, parsed?.cwd);
+    addCandidateWorkspace(candidates, parsed?.input?.cwd);
+    addCandidateWorkspace(candidates, parsed?.workspace_root);
+  } catch {
+    // Ignore malformed or concurrently written state files.
+  }
+}
+
+async function discoverWorkspaceCandidates(configScan, stateDir) {
+  const candidates = new Set();
+  addCandidateWorkspace(candidates, repoRoot);
+
+  if (configScan.allowRootsValue) {
+    for (const root of splitAllowRootsValue(configScan.allowRootsValue)) {
+      addCandidateWorkspace(candidates, root);
+    }
+  }
+
+  if (process.env.CODEX_CLAUDE_ALLOW_ROOTS) {
+    for (const root of splitAllowRootsValue(process.env.CODEX_CLAUDE_ALLOW_ROOTS)) {
+      addCandidateWorkspace(candidates, root);
+    }
+  }
+
+  const jobsDir = path.join(stateDir, "jobs");
+  try {
+    const jobs = await readdir(jobsDir);
+    await Promise.all(
+      jobs
+        .filter((name) => name.endsWith(".json"))
+        .map((name) => addWorkspaceCandidatesFromJsonFile(candidates, path.join(jobsDir, name)))
+    );
+  } catch {}
+
+  const runsDir = path.join(stateDir, "runs");
+  try {
+    const runs = await readdir(runsDir);
+    await Promise.all(
+      runs
+        .filter((name) => name.endsWith(".json"))
+        .map((name) => addWorkspaceCandidatesFromJsonFile(candidates, path.join(runsDir, name)))
+    );
+  } catch {}
+
+  await addWorkspaceCandidatesFromJsonFile(candidates, path.join(stateDir, "review-gate.json"));
+
+  return [...candidates].sort();
+}
+
+async function scanDelegatedWorktrees(configScan, stateDir) {
+  const workspaces = await discoverWorkspaceCandidates(configScan, stateDir);
+  const delegatedWorktrees = [];
+
+  for (const workspace of workspaces) {
+    const worktreesDir = path.join(workspace, ".claude", "worktrees");
+    if (!existsSync(worktreesDir)) continue;
+    try {
+      const entries = await readdir(worktreesDir);
+      for (const name of entries.filter((entry) => entry.startsWith("codex-delegated-")).sort()) {
+        delegatedWorktrees.push({
+          workspace,
+          name,
+          path: path.join(worktreesDir, name),
+        });
+      }
+    } catch {}
+  }
+
+  return delegatedWorktrees;
+}
+
 async function inlineScan() {
   const configPath = codexConfigPath();
   let config = "";
@@ -221,18 +306,11 @@ async function scanResources() {
   console.log(`  Hooks:       ${hookInstalled ? hookManifest : "(not found)"}`);
 
   // 5. Worktrees
-  const worktreesDir = path.join(repoRoot, ".claude", "worktrees");
-  let delegatedWorktrees = [];
-  if (existsSync(worktreesDir)) {
-    try {
-      const entries = await readdir(worktreesDir);
-      delegatedWorktrees = entries.filter(e => e.startsWith("codex-delegated-"));
-    } catch {}
-  }
+  const delegatedWorktrees = await scanDelegatedWorktrees(configScan, stateDir);
   if (delegatedWorktrees.length > 0) {
     console.log(`  Worktrees:`);
     for (const wt of delegatedWorktrees) {
-      console.log(`    - .claude/worktrees/${wt}`);
+      console.log(`    - ${wt.path}`);
     }
   } else {
     console.log(`  Worktrees:   (none detected)`);
@@ -522,10 +600,10 @@ async function phaseReportWorktrees(scan) {
 
   console.log(`  Found ${scan.delegatedWorktrees.length} delegated worktree(s):`);
   for (const wt of scan.delegatedWorktrees) {
-    console.log(`    .claude/worktrees/${wt}`);
+    console.log(`    ${wt.path}`);
   }
   console.log("  These are not automatically deleted.");
-  console.log("  To clean up: run claude_cleanup(cwd=repo, dry_run=true) then claude_cleanup(cwd=repo, dry_run=false).");
+  console.log("  To clean up: run claude_cleanup(cwd=<workspace>, dry_run=true) then claude_cleanup(cwd=<workspace>, dry_run=false).");
   recordManual("worktrees", `${scan.delegatedWorktrees.length} worktree(s) found; manual cleanup required`);
 
   if (!dryRun) {

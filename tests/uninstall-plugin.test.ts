@@ -178,6 +178,33 @@ describe("uninstall-plugin.mjs", () => {
       await rm(worktreesDir, { recursive: true, force: true });
     });
 
+    it("reports delegated worktrees from configured workspaces outside the uninstall repo", async () => {
+      const otherRepo = path.join(tmpDir, "other-repo");
+      const otherWorktreesDir = path.join(otherRepo, ".claude", "worktrees");
+      await mkdir(path.join(repoRoot, ".claude", "worktrees"), { recursive: true });
+      await mkdir(otherWorktreesDir, { recursive: true });
+      await mkdir(path.join(otherWorktreesDir, "codex-delegated-other"), { recursive: true });
+
+      const configPath = path.join(codexHome, "config.toml");
+      await mkdir(path.dirname(configPath), { recursive: true });
+      await writeFile(configPath, [
+        '[mcp_servers.claude_delegate]',
+        'command = "node"',
+        'args = ["./server/server.js"]',
+        "",
+        '[mcp_servers.claude_delegate.env]',
+        `CODEX_CLAUDE_ALLOW_ROOTS = "${repoRoot}:${otherRepo}"`,
+        "",
+      ].join("\n"), "utf8");
+
+      const { stdout } = runScript(["--dry-run"], {
+        CODEX_HOME: codexHome,
+        CODEX_UNINSTALL_REPO_ROOT: repoRoot,
+      });
+
+      expect(stdout).toContain(path.join(otherWorktreesDir, "codex-delegated-other"));
+    });
+
     it("handles config file not existing gracefully", async () => {
       const { stdout, exitCode } = runScript(["--dry-run"], {
         CODEX_HOME: codexHome,
