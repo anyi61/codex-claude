@@ -12,3 +12,4 @@ debug/
 !/.agents/plugins/marketplace.json
 /AGENTS.md
 /CLAUDE.md
+.worktrees/
