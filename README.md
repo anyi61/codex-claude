@@ -142,7 +142,7 @@ claude_task(mode="write", cwd="/path/to/your/repo", task="Implement feature X")
 
 ### 高级 / 调试工具
 
-普通任务用 `claude_task`，不要直接调用底层工具。如确实需要，在 `~/.codex/config.toml` 的 `[mcp_servers.codex-claude-delegate]` 中设置：
+普通任务用 `claude_task`，不要直接调用底层工具。如确实需要，在 `~/.codex/config.toml` 的 `[mcp_servers.claude_delegate]` 中设置：
 
 ```toml
 enabled_tools = ["claude_status", "claude_runs", "claude_run_inspect", "claude_workspace_status", "claude_review_gate", "claude_query", "claude_review", "claude_implement", "claude_jobs", "claude_job_result", "claude_job_cancel", "claude_job_cleanup"]

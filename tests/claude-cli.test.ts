@@ -64,7 +64,7 @@ async function createWorkflowFixture() {
   const jobs = await import("../src/jobs.js");
   const session = await import("../src/session.js");
   const jobStore = new jobs.JobStore(stateDir);
-  const sessionStore = new session.SessionStore(stateDir);
+  const sessionStore = new session.SessionStore(path.join(repo, ".codex-claude-delegate"));
   await jobStore.init();
   await sessionStore.init();
   const repoKey = await session.computeRepoKey(repo);
@@ -149,8 +149,8 @@ describe("claude cli argument construction", () => {
 
   it("does not resume old query sessions when resume is explicitly false", async () => {
     const { repo } = await createGitRepoFixture("codex-query-no-resume-");
-    const stateDir = path.join(path.dirname(repo), ".codex-claude-delegate");
-    await mkdir(stateDir, { recursive: true });
+    const sessionDir = path.join(repo, ".codex-claude-delegate");
+    await mkdir(sessionDir, { recursive: true });
 
     let capturedArgs: string[] = [];
     vi.doMock("node:child_process", async () => {
@@ -168,11 +168,11 @@ describe("claude cli argument construction", () => {
     });
 
     process.chdir(path.dirname(repo));
-    process.env.CODEX_CLAUDE_RUN_LOG_DIR = path.join(stateDir, "runs");
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = path.join(sessionDir, "runs");
     vi.resetModules();
     const session = await import("../src/session.js");
     const repoKey = await session.computeRepoKey(repo);
-    await writeFile(path.join(stateDir, "sessions.json"), JSON.stringify({
+    await writeFile(path.join(sessionDir, "sessions.json"), JSON.stringify({
       version: 1,
       sessions: [
         {

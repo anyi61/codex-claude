@@ -88,6 +88,113 @@ try {
   fail(`unable to load plugin background job runner with node: ${stderr.trim() || "unknown error"}`);
 }
 
+// ---- Tool definition consistency checks ----
+
+function getToolBlock(content, toolName) {
+  const nameIdx = content.indexOf(`name: "${toolName}"`);
+  if (nameIdx < 0) return null;
+
+  let braceCount = 0;
+  let openBrace = nameIdx;
+  for (let i = nameIdx; i >= 0; i--) {
+    if (content[i] === "}") {
+      braceCount++;
+    } else if (content[i] === "{") {
+      braceCount--;
+      if (braceCount < 0) {
+        openBrace = i;
+        break;
+      }
+    }
+  }
+  if (braceCount >= 0) return null;
+
+  braceCount = 0;
+  let endIdx = openBrace;
+  for (let i = openBrace; i < content.length; i++) {
+    if (content[i] === "{") {
+      braceCount++;
+    } else if (content[i] === "}") {
+      braceCount--;
+    }
+    if (braceCount === 0) {
+      endIdx = i;
+      break;
+    }
+  }
+
+  return content.slice(openBrace, endIdx + 1);
+}
+
+function getPropertiesBlock(toolBlock) {
+  const propsKeyIdx = toolBlock.indexOf("properties:");
+  if (propsKeyIdx < 0) return null;
+
+  const openIdx = toolBlock.indexOf("{", propsKeyIdx);
+  if (openIdx < 0) return null;
+
+  let depth = 0;
+  let closeIdx = openIdx;
+  for (let i = openIdx; i < toolBlock.length; i++) {
+    if (toolBlock[i] === "{") {
+      depth++;
+    } else if (toolBlock[i] === "}") {
+      depth--;
+    }
+    if (depth === 0) {
+      closeIdx = i;
+      break;
+    }
+  }
+
+  return toolBlock.slice(openIdx + 1, closeIdx);
+}
+
+const serverContent = readFileSync(serverPath, "utf8");
+const toolSchemaChecks = [
+  {
+    name: "claude_query",
+    requires: ["instruction_files"],
+    forbids: ["background"],
+  },
+  {
+    name: "claude_review",
+    requires: ["instruction_files"],
+    forbids: ["background"],
+  },
+  {
+    name: "claude_implement",
+    requires: [],
+    forbids: ["background"],
+  },
+];
+
+for (const check of toolSchemaChecks) {
+  const block = getToolBlock(serverContent, check.name);
+  if (!block) {
+    fail(`tool definition "${check.name}" not found in bundled server.js`);
+  }
+
+  const propsBlock = getPropertiesBlock(block);
+  if (!propsBlock) {
+    fail(`tool "${check.name}" is missing inputSchema.properties section`);
+  }
+
+  for (const requiredProp of check.requires) {
+    const pattern = new RegExp(`(?:${requiredProp}|"${requiredProp}"):`);
+    if (!pattern.test(propsBlock)) {
+      fail(`tool "${check.name}" inputSchema missing required property "${requiredProp}"`);
+    }
+  }
+
+  for (const forbiddenProp of check.forbids) {
+    const pattern = new RegExp(`(?:${forbiddenProp}|"${forbiddenProp}"):`);
+    if (pattern.test(propsBlock)) {
+      fail(`tool "${check.name}" inputSchema should not expose property "${forbiddenProp}"`);
+    }
+  }
+}
+
 const expectedHookManifestPath = path.join(pluginRoot, "hooks", "hooks.json");
 
 try {

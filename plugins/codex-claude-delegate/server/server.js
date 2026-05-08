@@ -6913,8 +6913,8 @@ async function isGitRepo(cwd) {
 }
 async function supportsWorktree(cwd) {
   try {
-    const out = await execCapture("git", ["worktree", "list"], { cwd });
-    return out.length > 0 || true;
+    await execCapture("git", ["worktree", "list"], { cwd });
+    return true;
   } catch {
     return false;
   }
@@ -25201,59 +25201,59 @@ var SessionStore = class {
   }
   // Find the most recent unexpired session matching type + repo, within the time window.
   getRecent(repoKey, type, withinMinutes = RECENT_WINDOW_MINUTES) {
-    const store2 = this.read();
+    const store = this.read();
     const cutoff = Date.now() - withinMinutes * 60 * 1e3;
-    const candidates = store2.sessions.filter((s) => s.repo_key === repoKey && s.type === type && !s.expired).filter((s) => new Date(s.last_used).getTime() > cutoff).sort((a, b) => new Date(b.last_used).getTime() - new Date(a.last_used).getTime());
+    const candidates = store.sessions.filter((s) => s.repo_key === repoKey && s.type === type && !s.expired).filter((s) => new Date(s.last_used).getTime() > cutoff).sort((a, b) => new Date(b.last_used).getTime() - new Date(a.last_used).getTime());
     return candidates[0] ?? null;
   }
   getById(sessionId) {
-    const store2 = this.read();
-    return store2.sessions.find((session) => session.session_id === sessionId) ?? null;
+    const store = this.read();
+    return store.sessions.find((session) => session.session_id === sessionId) ?? null;
   }
   listByRepo(repoKey, limit = 10) {
-    const store2 = this.read();
-    return store2.sessions.filter((session) => session.repo_key === repoKey).sort((a, b) => new Date(b.last_used).getTime() - new Date(a.last_used).getTime()).slice(0, limit);
+    const store = this.read();
+    return store.sessions.filter((session) => session.repo_key === repoKey).sort((a, b) => new Date(b.last_used).getTime() - new Date(a.last_used).getTime()).slice(0, limit);
   }
   // Create or update a session record.
   upsert(sessionId, type, repoKey, repoPath, summary) {
-    const store2 = this.read();
-    const idx = store2.sessions.findIndex((s) => s.session_id === sessionId);
+    const store = this.read();
+    const idx = store.sessions.findIndex((s) => s.session_id === sessionId);
     const now = (/* @__PURE__ */ new Date()).toISOString();
     const entry = {
       session_id: sessionId,
       type,
       repo_key: repoKey,
       repo_path: repoPath,
-      created_at: idx >= 0 ? store2.sessions[idx].created_at : now,
+      created_at: idx >= 0 ? store.sessions[idx].created_at : now,
       last_used: now,
-      use_count: idx >= 0 ? store2.sessions[idx].use_count + 1 : 1,
+      use_count: idx >= 0 ? store.sessions[idx].use_count + 1 : 1,
       summary: summary ?? "",
       expired: false
     };
     if (idx >= 0) {
-      store2.sessions[idx] = entry;
+      store.sessions[idx] = entry;
     } else {
-      store2.sessions.push(entry);
+      store.sessions.push(entry);
     }
-    this.atomicWrite(store2);
+    this.atomicWrite(store);
   }
   markExpired(sessionId) {
-    const store2 = this.read();
-    const session = store2.sessions.find((s) => s.session_id === sessionId);
+    const store = this.read();
+    const session = store.sessions.find((s) => s.session_id === sessionId);
     if (session) {
       session.expired = true;
-      this.atomicWrite(store2);
+      this.atomicWrite(store);
     }
   }
   // Remove sessions expired longer than MAX_AGE_HOURS ago.
   prune() {
-    const store2 = this.read();
+    const store = this.read();
     const cutoff = Date.now() - MAX_AGE_HOURS * 60 * 60 * 1e3;
-    store2.sessions = store2.sessions.filter((s) => {
+    store.sessions = store.sessions.filter((s) => {
       if (!s.expired) return true;
       return new Date(s.last_used).getTime() > cutoff;
     });
-    this.atomicWrite(store2);
+    this.atomicWrite(store);
   }
   getAll() {
     return this.read().sessions;
@@ -25302,9 +25302,9 @@ var claudeSetupInputSchema = external_exports.object({
 var claudeQueryInputSchema = external_exports.object({
   task: taskSchema,
   cwd: cwdSchema,
+  instruction_files: filesSchema,
   timeout_sec: timeoutSchema.optional(),
   max_turns: maxTurnsSchema.optional(),
-  background: external_exports.boolean().optional(),
   fast: external_exports.boolean().optional(),
   resume: external_exports.boolean().optional()
 });
@@ -25312,10 +25312,10 @@ var claudeReviewInputSchema = external_exports.object({
   task: taskSchema,
   cwd: cwdSchema,
   diff: external_exports.string().optional(),
+  instruction_files: filesSchema,
   files: filesSchema,
   timeout_sec: timeoutSchema.default(180),
-  max_turns: maxTurnsSchema.optional(),
-  background: external_exports.boolean().optional()
+  max_turns: maxTurnsSchema.optional()
 });
 var claudeImplementInputSchema = external_exports.object({
   task: taskSchema,
@@ -25330,7 +25330,6 @@ var claudeImplementInputSchema = external_exports.object({
   max_cost_usd: external_exports.number().positive().max(10).optional(),
   max_changed_files: external_exports.number().int().positive().max(100).optional(),
   worktreeName: worktreeNameSchema,
-  background: external_exports.boolean().optional(),
   dirty_policy: dirtyPolicySchema
 }).refine((value) => !value.fork_session || !!value.session_key, {
   message: "fork_session requires session_key",
@@ -25458,20 +25457,28 @@ function errorResult(error51) {
 
 // src/claude-cli.ts
 var CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
-var LOG_DIR = process.env.CODEX_CLAUDE_RUN_LOG_DIR ? path5.resolve(process.env.CODEX_CLAUDE_RUN_LOG_DIR) : path5.join(process.cwd(), ".codex-claude-delegate", "runs");
-var SESSION_DIR = path5.join(process.cwd(), ".codex-claude-delegate");
+function getRunLogDir(cwd) {
+  if (process.env.CODEX_CLAUDE_RUN_LOG_DIR) {
+    return path5.resolve(process.env.CODEX_CLAUDE_RUN_LOG_DIR);
+  }
+  const base = cwd ?? process.cwd();
+  return path5.join(base, ".codex-claude-delegate", "runs");
+}
 var JOB_STATE_DIR_ENV = "CODEX_CLAUDE_BACKGROUND_STATE_DIR";
 var REVIEW_GATE_RELATIVE_PATH = path5.join(".codex-claude-delegate", "review-gate.json");
 var REVIEW_GATE_HOOK_COMMAND = "node '${CLAUDE_PLUGIN_ROOT}/hooks/review-gate-stop.mjs'";
 var STALE_CANDIDATE_HEARTBEAT_MS = 9e4;
 var STALE_HEARTBEAT_MS = 3e5;
-var store = null;
-async function getStore() {
-  if (!store) {
-    store = new SessionStore(SESSION_DIR);
-    await store.init();
+var stores = /* @__PURE__ */ new Map();
+async function getStore(cwd) {
+  let sessionStore = stores.get(cwd);
+  if (!sessionStore) {
+    const sessionDir = path5.join(cwd, ".codex-claude-delegate");
+    sessionStore = new SessionStore(sessionDir);
+    await sessionStore.init();
+    stores.set(cwd, sessionStore);
   }
-  return store;
+  return sessionStore;
 }
 function getBackgroundStateDir() {
   if (process.env[JOB_STATE_DIR_ENV]) {
@@ -25483,9 +25490,9 @@ function getBackgroundStateDir() {
   return path5.join(process.cwd(), ".codex-claude-delegate");
 }
 async function getJobStore() {
-  const store2 = new JobStore(getBackgroundStateDir());
-  await store2.init();
-  return store2;
+  const store = new JobStore(getBackgroundStateDir());
+  await store.init();
+  return store;
 }
 function getRepoRootFromModule() {
   return path5.resolve(path5.dirname(fileURLToPath(import.meta.url)), "..");
@@ -25804,12 +25811,13 @@ function log(msg) {
   process.stderr.write(`[claude-delegate] ${msg}
 `);
 }
-async function logRun(runId, data) {
+async function logRun(runId, data, cwd) {
+  const logDir = getRunLogDir(cwd);
   try {
-    await mkdir4(LOG_DIR, { recursive: true });
+    await mkdir4(logDir, { recursive: true });
     const timestamp = (/* @__PURE__ */ new Date()).toISOString();
     await writeFile3(
-      path5.join(LOG_DIR, `${runId}.json`),
+      path5.join(logDir, `${runId}.json`),
       JSON.stringify({ started_at: timestamp, updated_at: timestamp, ...data }, null, 2)
     );
   } catch {
@@ -25831,12 +25839,13 @@ function normalizeRequestedFiles(cwd, files) {
   }
   return [...normalized].sort();
 }
-async function findImplementLogForWorktree(worktreePath) {
+async function findImplementLogForWorktree(worktreePath, cwd) {
+  const logDir = getRunLogDir(cwd);
   try {
-    const entries = await readdir2(LOG_DIR);
+    const entries = await readdir2(logDir);
     const candidates = await Promise.all(
       entries.filter((name) => name.endsWith(".json")).map(async (name) => {
-        const file2 = path5.join(LOG_DIR, name);
+        const file2 = path5.join(logDir, name);
         try {
           return { file: file2, mtimeMs: (await stat2(file2)).mtimeMs };
         } catch {
@@ -25857,12 +25866,13 @@ async function findImplementLogForWorktree(worktreePath) {
   }
   return null;
 }
-async function findImplementLogRecordForWorktree(worktreePath) {
+async function findImplementLogRecordForWorktree(worktreePath, cwd) {
+  const logDir = getRunLogDir(cwd);
   try {
-    const entries = await readdir2(LOG_DIR);
+    const entries = await readdir2(logDir);
     const candidates = await Promise.all(
       entries.filter((name) => name.endsWith(".json")).map(async (name) => {
-        const file2 = path5.join(LOG_DIR, name);
+        const file2 = path5.join(logDir, name);
         try {
           return { file: file2, mtimeMs: (await stat2(file2)).mtimeMs };
         } catch {
@@ -25885,8 +25895,8 @@ async function findImplementLogRecordForWorktree(worktreePath) {
   }
   return null;
 }
-async function updateImplementLifecycleForWorktree(worktreePath, update) {
-  const record2 = await findImplementLogRecordForWorktree(worktreePath);
+async function updateImplementLifecycleForWorktree(worktreePath, update, cwd) {
+  const record2 = await findImplementLogRecordForWorktree(worktreePath, cwd);
   if (!record2) return;
   const parsed = record2.parsed;
   const timestamp = (/* @__PURE__ */ new Date()).toISOString();
@@ -25968,8 +25978,9 @@ function summarizeRecentRuns(entries) {
   }
   return { entries, lifecycle_counts: lifecycleCounts };
 }
-async function readRunLogFile(runId) {
-  const file2 = path5.join(LOG_DIR, `${runId}.json`);
+async function readRunLogFile(runId, cwd) {
+  const logDir = getRunLogDir(cwd);
+  const file2 = path5.join(logDir, `${runId}.json`);
   try {
     return JSON.parse(await readFile3(file2, "utf8"));
   } catch {
@@ -25978,11 +25989,12 @@ async function readRunLogFile(runId) {
 }
 async function listRunLogs(input) {
   const limit = input.limit ?? 20;
+  const logDir = getRunLogDir(input.cwd);
   try {
-    const entries = await readdir2(LOG_DIR);
+    const entries = await readdir2(logDir);
     const candidates = await Promise.all(
       entries.filter((name) => name.endsWith(".json")).map(async (name) => {
-        const file2 = path5.join(LOG_DIR, name);
+        const file2 = path5.join(logDir, name);
         try {
           const stats = await stat2(file2);
           return { file: file2, runId: name.replace(/\.json$/, ""), mtimeMs: stats.mtimeMs, updatedAt: new Date(stats.mtimeMs).toISOString() };
@@ -26016,7 +26028,7 @@ async function getRecentRunsSummary(cwd, limit = 5) {
   return summarizeRecentRuns(runs.entries);
 }
 async function getRunLogById(input) {
-  const raw = await readRunLogFile(input.run_id);
+  const raw = await readRunLogFile(input.run_id, input.cwd);
   if (!raw) return null;
   const summary = summarizeRunLog(input.run_id, raw);
   if (summary.cwd && summary.cwd !== input.cwd) return null;
@@ -26049,11 +26061,11 @@ function buildResultSummaryFromRun(entry) {
   return `${entry.type} ${entry.lifecycle}`;
 }
 async function resolveWorkflowSessionSummary(input) {
-  const store2 = await getStore();
+  const store = await getStore(input.cwd);
   const repoKey = await computeRepoKey(input.cwd);
   const run = input.run;
   if (run?.returned_session_id) {
-    const stored = store2.getById(run.returned_session_id);
+    const stored = store.getById(run.returned_session_id);
     if (stored) {
       return {
         ...toWorkflowSessionSummaryFromStore(stored),
@@ -26077,7 +26089,7 @@ async function resolveWorkflowSessionSummary(input) {
   }
   const type = normalizeSessionType(run?.type);
   if (!type) return void 0;
-  const recent = store2.listByRepo(repoKey, 20).find((session) => session.type === type && !session.expired);
+  const recent = store.listByRepo(repoKey, 20).find((session) => session.type === type && !session.expired);
   return recent ? toWorkflowSessionSummaryFromStore(recent) : void 0;
 }
 function buildNextActions(input) {
@@ -26211,7 +26223,7 @@ async function getClaudeResult(input) {
     if (!resolvedRun) {
       throw new Error(`Run not found: ${input.run_id}`);
     }
-    resultPayload = buildRunResultPayload(await readRunLogFile(input.run_id) ?? {});
+    resultPayload = buildRunResultPayload(await readRunLogFile(input.run_id, input.cwd) ?? {});
   } else {
     const runTypeFilter = prefer === "latest-implement" ? "implement" : prefer === "latest-review" ? "review" : void 0;
     const jobTypeFilter = runTypeFilter;
@@ -26225,7 +26237,7 @@ async function getClaudeResult(input) {
     if (prefer === "latest-run" || !latestJob && latestRun) {
       if (latestRun) {
         resolvedRun = await getRunLogById({ cwd: input.cwd, run_id: latestRun.run_id });
-        resultPayload = buildRunResultPayload(await readRunLogFile(latestRun.run_id) ?? {});
+        resultPayload = buildRunResultPayload(await readRunLogFile(latestRun.run_id, input.cwd) ?? {});
       }
     } else if (prefer === "latest-job" || !latestRun) {
       if (latestJob) {
@@ -26246,7 +26258,7 @@ async function getClaudeResult(input) {
         }
       } else {
         resolvedRun = await getRunLogById({ cwd: input.cwd, run_id: latestRun.run_id });
-        resultPayload = buildRunResultPayload(await readRunLogFile(latestRun.run_id) ?? {});
+        resultPayload = buildRunResultPayload(await readRunLogFile(latestRun.run_id, input.cwd) ?? {});
       }
     }
   }
@@ -26298,9 +26310,9 @@ async function getWorkspaceStatus(input) {
     ...worktree,
     orphaned: !referencedWorktreeNames.has(worktree.worktree_name)
   }));
-  const store2 = await getStore();
+  const store = await getStore(input.cwd);
   const repoKey = await computeRepoKey(input.cwd);
-  const latestSessions = store2.listByRepo(repoKey, limit).filter((session) => !session.expired).map(toWorkflowSessionSummaryFromStore);
+  const latestSessions = store.listByRepo(repoKey, limit).filter((session) => !session.expired).map(toWorkflowSessionSummaryFromStore);
   const attentionItems = [];
   const queuedCutoff = Date.now() - 10 * 60 * 1e3;
   for (const job of queuedJobs.entries) {
@@ -27093,21 +27105,21 @@ async function runClaudeApply(input, runId) {
       conflicts: result.conflicts,
       error: result.error,
       duration_ms: Date.now() - startTime
-    });
+    }, input.cwd);
     const wtRelPath2 = path5.join(".claude", "worktrees", path5.basename(path5.resolve(input.cwd, input.worktree_path)));
     if (input.preview === true) {
       await updateImplementLifecycleForWorktree(wtRelPath2, {
         current_lifecycle: result.error ? "apply_blocked" : "success",
         previewed_at: (/* @__PURE__ */ new Date()).toISOString(),
         last_apply_run_id: runId
-      }).catch(() => {
+      }, input.cwd).catch(() => {
       });
     } else {
       await updateImplementLifecycleForWorktree(wtRelPath2, {
         current_lifecycle: result.error ? "apply_blocked" : result.applied_files.length > 0 ? "applied" : "unknown",
         applied_at: result.applied_files.length > 0 ? (/* @__PURE__ */ new Date()).toISOString() : void 0,
         last_apply_run_id: runId
-      }).catch(() => {
+      }, input.cwd).catch(() => {
       });
     }
     if (!result.error && input.preview !== true && result.applied_files.length > 0) {
@@ -27128,12 +27140,12 @@ async function runClaudeApply(input, runId) {
     return finish({ applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: `worktree directory not found: ${wtReal}` });
   }
   const wtRelPath = path5.join(".claude", "worktrees", path5.basename(wtReal));
-  const implementLog = await findImplementLogForWorktree(wtRelPath);
+  const implementLog = await findImplementLogForWorktree(wtRelPath, input.cwd);
   const observedBaseCommit = typeof implementLog?.observed?.base_commit === "string" ? implementLog.observed.base_commit.trim() : "";
   const baseCommit = observedBaseCommit || void 0;
   const observedChangedFiles = Array.isArray(implementLog?.observed?.changed_files) ? implementLog.observed.changed_files.filter((item) => typeof item === "string" && item.length > 0) : [];
   const hasObservedScope = baseCommit !== void 0 && observedChangedFiles.length > 0;
-  const pathspecs = hasObservedScope ? observedChangedFiles : ["src/"];
+  const pathspecs = hasObservedScope ? observedChangedFiles : [];
   let diffStat = "";
   if (baseCommit) {
     diffStat = await execCapture("git", ["diff", "--stat", baseCommit, "HEAD", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => "");
@@ -27145,9 +27157,7 @@ async function runClaudeApply(input, runId) {
   ]);
   const changesByFile = /* @__PURE__ */ new Map();
   function addChange(change) {
-    if (hasObservedScope) {
-      if (!observedChangedFiles.some((observed) => isUnderRequestedFile(change.file, observed))) return;
-    } else if (!change.file.startsWith("src/")) {
+    if (hasObservedScope && !observedChangedFiles.some((observed) => isUnderRequestedFile(change.file, observed))) {
       return;
     }
     changesByFile.set(change.file, change);
@@ -27159,15 +27169,15 @@ async function runClaudeApply(input, runId) {
   if (!baseCommit) {
     usedFallback = true;
     const [legacyDiffStatus, legacyHeadStatus, legacyStatus] = await Promise.all([
-      execCapture("git", ["diff", "--name-status", "-z", "--", "src/"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => ""),
-      execCapture("git", ["diff", "--name-status", "-z", "HEAD~1", "--", "src/"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => ""),
-      execCapture("git", ["status", "--porcelain=v1", "-z", "--", "src/"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => "")
+      execCapture("git", ["diff", "--name-status", "-z", "--"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => ""),
+      execCapture("git", ["diff", "--name-status", "-z", "HEAD~1", "--"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => ""),
+      execCapture("git", ["status", "--porcelain=v1", "-z", "--"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => "")
     ]);
     for (const change of parseNameStatusPorcelainZ(legacyDiffStatus)) addChange(change);
     for (const change of parseNameStatusPorcelainZ(legacyHeadStatus)) addChange(change);
     for (const change of parseStatusPorcelainZ(legacyStatus)) addChange(change);
     if (!diffStat.trim()) {
-      diffStat = await execCapture("git", ["diff", "--stat", "HEAD~1", "--", "src/"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => "");
+      diffStat = await execCapture("git", ["diff", "--stat", "HEAD~1", "--"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => "");
     }
   }
   const changes = (await Promise.all(
@@ -27316,7 +27326,7 @@ async function runClaudeCleanup(input, runId) {
           current_lifecycle: "cleaned",
           cleaned_at: (/* @__PURE__ */ new Date()).toISOString(),
           last_cleanup_run_id: runId
-        }).catch(() => {
+        }, input.cwd).catch(() => {
         });
       } catch (err) {
         failedCount++;
@@ -27342,7 +27352,7 @@ async function runClaudeCleanup(input, runId) {
     removed_count: removedCount,
     failed_count: failedCount,
     duration_ms: Date.now() - startTime
-  });
+  }, input.cwd);
   return { dry_run: dryRun, removed_count: removedCount, failed_count: failedCount, entries };
 }
 
@@ -27471,6 +27481,7 @@ var TOOL_DEFINITIONS = [
       properties: {
         task: { type: "string", description: "The question or analysis task" },
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
+        instruction_files: { type: "array", items: { type: "string" }, description: "Task instruction/context files for the query" },
         timeout_sec: { type: "number", description: "Timeout in seconds (default 120)" },
         max_turns: { type: "number", description: "Maximum Claude turns for this query. Omitted means no explicit turn cap; fast=true uses 2 unless max_turns is provided." },
         fast: {
@@ -27480,8 +27491,7 @@ var TOOL_DEFINITIONS = [
         resume: {
           type: "boolean",
           description: "Control query session resume behavior. Defaults to true, but fast mode defaults to false."
-        },
-        background: { type: "boolean", description: "Queue the query as a persistent background job" }
+        }
       }
     }
   },
@@ -27494,11 +27504,11 @@ var TOOL_DEFINITIONS = [
       properties: {
         task: { type: "string", description: "Review instructions (what to look for)" },
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
+        instruction_files: { type: "array", items: { type: "string" }, description: "Review instruction/context files" },
         diff: { type: "string", description: "The diff to review (optional; Claude can also git diff itself)" },
         files: { type: "array", items: { type: "string" }, description: "Specific files to focus on" },
         timeout_sec: { type: "number", description: "Timeout in seconds (default 180)" },
-        max_turns: { type: "number", description: "Maximum Claude turns for this review. Omitted means no explicit turn cap." },
-        background: { type: "boolean", description: "Queue the review as a persistent background job" }
+        max_turns: { type: "number", description: "Maximum Claude turns for this review. Omitted means no explicit turn cap." }
       }
     }
   },
@@ -27521,7 +27531,6 @@ var TOOL_DEFINITIONS = [
         max_cost_usd: { type: "number", description: "Maximum USD budget for this task (passed as --max-budget-usd to Claude). Must be > 0 and <= 10." },
         max_changed_files: { type: "number", description: "Warn if Claude changes more than this many files. Must be a positive integer <= 100." },
         worktreeName: { type: "string", description: "Optional delegated worktree name override" },
-        background: { type: "boolean", description: "Queue the implementation as a persistent background job; execution tools queue by default" },
         dirty_policy: { type: "string", enum: ["ask", "committed", "snapshot"], description: "Handling for uncommitted main-workspace changes: ask (default), committed (ignore dirty changes and use HEAD), or snapshot (copy dirty files into the delegated worktree)." }
       }
     }
@@ -27572,7 +27581,8 @@ var TOOL_DEFINITIONS = [
       required: ["cwd", "job_id"],
       properties: {
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
-        job_id: { type: "string", description: "Background job id" }
+        job_id: { type: "string", description: "Background job id" },
+        not_before: { type: "string", description: "ISO timestamp; skip polling until this time to enforce recommended delays" }
       }
     }
   },
@@ -27746,33 +27756,36 @@ async function handleToolCall(name, args, runId = randomUUID2()) {
       case "claude_query": {
         const parsed = claudeQueryInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, timeout_sec, max_turns, fast, resume } = parsed.data;
+        const { task, cwd, instruction_files, timeout_sec, max_turns, fast, resume } = parsed.data;
         const resolvedTimeout = timeout_sec ?? (fast ? 45 : 120);
         const resolvedMaxTurns = max_turns ?? (fast ? 2 : void 0);
         const check2 = await validateCwd(cwd);
         if (!check2.ok) return errorResult(check2.error);
+        const fileCheck = await validateFilesWithinCwd(check2.resolved, instruction_files);
+        if (!fileCheck.ok) return errorResult(fileCheck.error);
         return jsonResult(await startBackgroundQuery(
           {
             task,
             cwd: check2.resolved,
+            instruction_files,
             timeout_sec: resolvedTimeout,
             max_turns: resolvedMaxTurns,
             fast,
-            resume,
-            background: true
+            resume
           }
         ));
       }
       case "claude_review": {
         const parsed = claudeReviewInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, diff, files, timeout_sec, max_turns } = parsed.data;
+        const { task, cwd, diff, instruction_files, files, timeout_sec, max_turns } = parsed.data;
         const check2 = await validateCwd(cwd);
         if (!check2.ok) return errorResult(check2.error);
-        const fileCheck = await validateFilesWithinCwd(check2.resolved, files);
+        const mergedFiles = [...files ?? [], ...instruction_files ?? []];
+        const fileCheck = await validateFilesWithinCwd(check2.resolved, mergedFiles.length > 0 ? mergedFiles : void 0);
         if (!fileCheck.ok) return errorResult(fileCheck.error);
         return jsonResult(await startBackgroundReview(
-          { task, cwd: check2.resolved, diff, files, timeout_sec, max_turns, background: true }
+          { task, cwd: check2.resolved, diff, instruction_files, files, timeout_sec, max_turns }
         ));
       }
       case "claude_implement": {
@@ -27801,7 +27814,6 @@ async function handleToolCall(name, args, runId = randomUUID2()) {
           max_cost_usd,
           max_changed_files,
           worktreeName,
-          background: true,
           dirty_policy
         }));
       }
@@ -27942,6 +27954,7 @@ if (isMainModule()) {
   await startServer();
 }
 export {
+  TOOL_DEFINITIONS,
   createServer,
   handleToolCall,
   registerToolDefinitions,

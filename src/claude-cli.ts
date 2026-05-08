@@ -73,7 +73,6 @@ import {
 } from "./schema.js";
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
-const SESSION_DIR = path.join(process.cwd(), ".codex-claude-delegate");
 
 function getRunLogDir(cwd?: string): string {
   if (process.env.CODEX_CLAUDE_RUN_LOG_DIR) {
@@ -90,17 +89,20 @@ const JOB_HEARTBEAT_INTERVAL_MS = 15000;
 const STALE_CANDIDATE_HEARTBEAT_MS = 90_000;
 const STALE_HEARTBEAT_MS = 300_000;
 
-// ---- Session store (lazy init) ----
+// ---- Session store (cwd-scoped, lazy init) ----
 
-let store: SessionStore | null = null;
+const stores = new Map<string, SessionStore>();
 let activeClaudeChild: ChildProcess | null = null;
 
-async function getStore(): Promise<SessionStore> {
-  if (!store) {
-    store = new SessionStore(SESSION_DIR);
-    await store.init();
+async function getStore(cwd: string): Promise<SessionStore> {
+  let sessionStore = stores.get(cwd);
+  if (!sessionStore) {
+    const sessionDir = path.join(cwd, ".codex-claude-delegate");
+    sessionStore = new SessionStore(sessionDir);
+    await sessionStore.init();
+    stores.set(cwd, sessionStore);
   }
-  return store;
+  return sessionStore;
 }
 
 function getBackgroundStateDir(): string {
@@ -968,7 +970,7 @@ async function resolveWorkflowSessionSummary(input: {
   cwd: string;
   run?: RunLogEntrySummary;
 }): Promise<WorkflowSessionSummary | undefined> {
-  const store = await getStore();
+  const store = await getStore(input.cwd);
   const repoKey = await computeRepoKey(input.cwd);
   const run = input.run;
 
@@ -1254,7 +1256,7 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
     orphaned: !referencedWorktreeNames.has(worktree.worktree_name),
   }));
 
-  const store = await getStore();
+  const store = await getStore(input.cwd);
   const repoKey = await computeRepoKey(input.cwd);
   const latestSessions = store.listByRepo(repoKey, limit)
     .filter((session) => !session.expired)
@@ -2855,7 +2857,7 @@ export async function runClaudeQuery(
   runId: string
 ): Promise<ToolEnvelope<Record<string, unknown>>> {
   const queryStart = Date.now();
-  const store = await getStore();
+  const store = await getStore(input.cwd);
   const repoKey = await computeRepoKey(input.cwd);
   const sessionLookupStart = Date.now();
 
@@ -3050,7 +3052,7 @@ export async function runClaudeImplement(
   input: ClaudeImplementInput,
   runId: string
 ): Promise<ClaudeResult> {
-  const store = await getStore();
+  const store = await getStore(input.cwd);
   const repoKey = await computeRepoKey(input.cwd);
   let implementInput = input;
 

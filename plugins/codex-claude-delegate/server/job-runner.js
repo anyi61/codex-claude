@@ -277,59 +277,59 @@ var SessionStore = class {
   }
   // Find the most recent unexpired session matching type + repo, within the time window.
   getRecent(repoKey, type, withinMinutes = RECENT_WINDOW_MINUTES) {
-    const store2 = this.read();
+    const store = this.read();
     const cutoff = Date.now() - withinMinutes * 60 * 1e3;
-    const candidates = store2.sessions.filter((s) => s.repo_key === repoKey && s.type === type && !s.expired).filter((s) => new Date(s.last_used).getTime() > cutoff).sort((a, b) => new Date(b.last_used).getTime() - new Date(a.last_used).getTime());
+    const candidates = store.sessions.filter((s) => s.repo_key === repoKey && s.type === type && !s.expired).filter((s) => new Date(s.last_used).getTime() > cutoff).sort((a, b) => new Date(b.last_used).getTime() - new Date(a.last_used).getTime());
     return candidates[0] ?? null;
   }
   getById(sessionId) {
-    const store2 = this.read();
-    return store2.sessions.find((session) => session.session_id === sessionId) ?? null;
+    const store = this.read();
+    return store.sessions.find((session) => session.session_id === sessionId) ?? null;
   }
   listByRepo(repoKey, limit = 10) {
-    const store2 = this.read();
-    return store2.sessions.filter((session) => session.repo_key === repoKey).sort((a, b) => new Date(b.last_used).getTime() - new Date(a.last_used).getTime()).slice(0, limit);
+    const store = this.read();
+    return store.sessions.filter((session) => session.repo_key === repoKey).sort((a, b) => new Date(b.last_used).getTime() - new Date(a.last_used).getTime()).slice(0, limit);
   }
   // Create or update a session record.
   upsert(sessionId, type, repoKey, repoPath, summary) {
-    const store2 = this.read();
-    const idx = store2.sessions.findIndex((s) => s.session_id === sessionId);
+    const store = this.read();
+    const idx = store.sessions.findIndex((s) => s.session_id === sessionId);
     const now = (/* @__PURE__ */ new Date()).toISOString();
     const entry = {
       session_id: sessionId,
       type,
       repo_key: repoKey,
       repo_path: repoPath,
-      created_at: idx >= 0 ? store2.sessions[idx].created_at : now,
+      created_at: idx >= 0 ? store.sessions[idx].created_at : now,
       last_used: now,
-      use_count: idx >= 0 ? store2.sessions[idx].use_count + 1 : 1,
+      use_count: idx >= 0 ? store.sessions[idx].use_count + 1 : 1,
       summary: summary ?? "",
       expired: false
     };
     if (idx >= 0) {
-      store2.sessions[idx] = entry;
+      store.sessions[idx] = entry;
     } else {
-      store2.sessions.push(entry);
+      store.sessions.push(entry);
     }
-    this.atomicWrite(store2);
+    this.atomicWrite(store);
   }
   markExpired(sessionId) {
-    const store2 = this.read();
-    const session = store2.sessions.find((s) => s.session_id === sessionId);
+    const store = this.read();
+    const session = store.sessions.find((s) => s.session_id === sessionId);
     if (session) {
       session.expired = true;
-      this.atomicWrite(store2);
+      this.atomicWrite(store);
     }
   }
   // Remove sessions expired longer than MAX_AGE_HOURS ago.
   prune() {
-    const store2 = this.read();
+    const store = this.read();
     const cutoff = Date.now() - MAX_AGE_HOURS * 60 * 60 * 1e3;
-    store2.sessions = store2.sessions.filter((s) => {
+    store.sessions = store.sessions.filter((s) => {
       if (!s.expired) return true;
       return new Date(s.last_used).getTime() > cutoff;
     });
-    this.atomicWrite(store2);
+    this.atomicWrite(store);
   }
   getAll() {
     return this.read().sessions;
@@ -14877,9 +14877,9 @@ var claudeSetupInputSchema = external_exports.object({
 var claudeQueryInputSchema = external_exports.object({
   task: taskSchema,
   cwd: cwdSchema,
+  instruction_files: filesSchema,
   timeout_sec: timeoutSchema.optional(),
   max_turns: maxTurnsSchema.optional(),
-  background: external_exports.boolean().optional(),
   fast: external_exports.boolean().optional(),
   resume: external_exports.boolean().optional()
 });
@@ -14887,10 +14887,10 @@ var claudeReviewInputSchema = external_exports.object({
   task: taskSchema,
   cwd: cwdSchema,
   diff: external_exports.string().optional(),
+  instruction_files: filesSchema,
   files: filesSchema,
   timeout_sec: timeoutSchema.default(180),
-  max_turns: maxTurnsSchema.optional(),
-  background: external_exports.boolean().optional()
+  max_turns: maxTurnsSchema.optional()
 });
 var claudeImplementInputSchema = external_exports.object({
   task: taskSchema,
@@ -14905,7 +14905,6 @@ var claudeImplementInputSchema = external_exports.object({
   max_cost_usd: external_exports.number().positive().max(10).optional(),
   max_changed_files: external_exports.number().int().positive().max(100).optional(),
   worktreeName: worktreeNameSchema,
-  background: external_exports.boolean().optional(),
   dirty_policy: dirtyPolicySchema
 }).refine((value) => !value.fork_session || !!value.session_key, {
   message: "fork_session requires session_key",
@@ -15196,19 +15195,27 @@ var StructuredToolError = class extends Error {
 
 // src/claude-cli.ts
 var CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
-var LOG_DIR = process.env.CODEX_CLAUDE_RUN_LOG_DIR ? path4.resolve(process.env.CODEX_CLAUDE_RUN_LOG_DIR) : path4.join(process.cwd(), ".codex-claude-delegate", "runs");
-var SESSION_DIR = path4.join(process.cwd(), ".codex-claude-delegate");
+function getRunLogDir(cwd) {
+  if (process.env.CODEX_CLAUDE_RUN_LOG_DIR) {
+    return path4.resolve(process.env.CODEX_CLAUDE_RUN_LOG_DIR);
+  }
+  const base = cwd ?? process.cwd();
+  return path4.join(base, ".codex-claude-delegate", "runs");
+}
 var JOB_STATE_DIR_ENV = "CODEX_CLAUDE_BACKGROUND_STATE_DIR";
 var REVIEW_GATE_RELATIVE_PATH = path4.join(".codex-claude-delegate", "review-gate.json");
 var JOB_HEARTBEAT_INTERVAL_MS = 15e3;
-var store = null;
+var stores = /* @__PURE__ */ new Map();
 var activeClaudeChild = null;
-async function getStore() {
-  if (!store) {
-    store = new SessionStore(SESSION_DIR);
-    await store.init();
+async function getStore(cwd) {
+  let sessionStore = stores.get(cwd);
+  if (!sessionStore) {
+    const sessionDir = path4.join(cwd, ".codex-claude-delegate");
+    sessionStore = new SessionStore(sessionDir);
+    await sessionStore.init();
+    stores.set(cwd, sessionStore);
   }
-  return store;
+  return sessionStore;
 }
 function getBackgroundStateDir() {
   if (process.env[JOB_STATE_DIR_ENV]) {
@@ -15220,9 +15227,9 @@ function getBackgroundStateDir() {
   return path4.join(process.cwd(), ".codex-claude-delegate");
 }
 async function getJobStore() {
-  const store2 = new JobStore(getBackgroundStateDir());
-  await store2.init();
-  return store2;
+  const store = new JobStore(getBackgroundStateDir());
+  await store.init();
+  return store;
 }
 function getRepoRootFromModule() {
   return path4.resolve(path4.dirname(fileURLToPath(import.meta.url)), "..");
@@ -15364,12 +15371,13 @@ function log(msg) {
   process.stderr.write(`[claude-delegate] ${msg}
 `);
 }
-async function logRun(runId, data) {
+async function logRun(runId, data, cwd) {
+  const logDir = getRunLogDir(cwd);
   try {
-    await mkdir3(LOG_DIR, { recursive: true });
+    await mkdir3(logDir, { recursive: true });
     const timestamp = (/* @__PURE__ */ new Date()).toISOString();
     await writeFile2(
-      path4.join(LOG_DIR, `${runId}.json`),
+      path4.join(logDir, `${runId}.json`),
       JSON.stringify({ started_at: timestamp, updated_at: timestamp, ...data }, null, 2)
     );
   } catch {
@@ -15391,12 +15399,13 @@ function normalizeRequestedFiles(cwd, files) {
   }
   return [...normalized].sort();
 }
-async function findImplementLogForWorktree(worktreePath) {
+async function findImplementLogForWorktree(worktreePath, cwd) {
+  const logDir = getRunLogDir(cwd);
   try {
-    const entries = await readdir2(LOG_DIR);
+    const entries = await readdir2(logDir);
     const candidates = await Promise.all(
       entries.filter((name) => name.endsWith(".json")).map(async (name) => {
-        const file2 = path4.join(LOG_DIR, name);
+        const file2 = path4.join(logDir, name);
         try {
           return { file: file2, mtimeMs: (await stat(file2)).mtimeMs };
         } catch {
@@ -15417,12 +15426,13 @@ async function findImplementLogForWorktree(worktreePath) {
   }
   return null;
 }
-async function findImplementLogRecordForWorktree(worktreePath) {
+async function findImplementLogRecordForWorktree(worktreePath, cwd) {
+  const logDir = getRunLogDir(cwd);
   try {
-    const entries = await readdir2(LOG_DIR);
+    const entries = await readdir2(logDir);
     const candidates = await Promise.all(
       entries.filter((name) => name.endsWith(".json")).map(async (name) => {
-        const file2 = path4.join(LOG_DIR, name);
+        const file2 = path4.join(logDir, name);
         try {
           return { file: file2, mtimeMs: (await stat(file2)).mtimeMs };
         } catch {
@@ -15445,8 +15455,8 @@ async function findImplementLogRecordForWorktree(worktreePath) {
   }
   return null;
 }
-async function updateImplementLifecycleForWorktree(worktreePath, update) {
-  const record2 = await findImplementLogRecordForWorktree(worktreePath);
+async function updateImplementLifecycleForWorktree(worktreePath, update, cwd) {
+  const record2 = await findImplementLogRecordForWorktree(worktreePath, cwd);
   if (!record2) return;
   const parsed = record2.parsed;
   const timestamp = (/* @__PURE__ */ new Date()).toISOString();
@@ -15521,8 +15531,9 @@ function summarizeRunLog(runId, raw, updatedAt) {
     updated_at: typeof raw.updated_at === "string" ? raw.updated_at : updatedAt
   };
 }
-async function readRunLogFile(runId) {
-  const file2 = path4.join(LOG_DIR, `${runId}.json`);
+async function readRunLogFile(runId, cwd) {
+  const logDir = getRunLogDir(cwd);
+  const file2 = path4.join(logDir, `${runId}.json`);
   try {
     return JSON.parse(await readFile2(file2, "utf8"));
   } catch {
@@ -15531,11 +15542,12 @@ async function readRunLogFile(runId) {
 }
 async function listRunLogs(input) {
   const limit = input.limit ?? 20;
+  const logDir = getRunLogDir(input.cwd);
   try {
-    const entries = await readdir2(LOG_DIR);
+    const entries = await readdir2(logDir);
     const candidates = await Promise.all(
       entries.filter((name) => name.endsWith(".json")).map(async (name) => {
-        const file2 = path4.join(LOG_DIR, name);
+        const file2 = path4.join(logDir, name);
         try {
           const stats = await stat(file2);
           return { file: file2, runId: name.replace(/\.json$/, ""), mtimeMs: stats.mtimeMs, updatedAt: new Date(stats.mtimeMs).toISOString() };
@@ -15567,7 +15579,7 @@ async function listRunLogs(input) {
 async function resolveLatestImplementSession(input) {
   const runs = await listRunLogs({ cwd: input.cwd, type: "implement", limit: 50 });
   for (const run of runs.entries) {
-    const raw = await readRunLogFile(run.run_id);
+    const raw = await readRunLogFile(run.run_id, input.cwd);
     const sessionId = raw && typeof raw.session?.returned_session_id === "string" ? raw.session.returned_session_id : null;
     if (sessionId) {
       return { run_id: run.run_id, session_id: sessionId };
@@ -16269,11 +16281,11 @@ function createImplementOptions(input, resumeSessionId, forked) {
 }
 async function runClaudeQuery(input, runId) {
   const queryStart = Date.now();
-  const store2 = await getStore();
+  const store = await getStore(input.cwd);
   const repoKey = await computeRepoKey(input.cwd);
   const sessionLookupStart = Date.now();
   const shouldResume = input.resume ?? !input.fast;
-  const recent = shouldResume ? store2.getRecent(repoKey, "query", RECENT_WINDOW_MINUTES) : null;
+  const recent = shouldResume ? store.getRecent(repoKey, "query", RECENT_WINDOW_MINUTES) : null;
   const requestedSessionId = shouldResume ? recent?.session_id ?? null : null;
   const sessionLookupMs = Date.now() - sessionLookupStart;
   let resumed = false;
@@ -16290,14 +16302,14 @@ async function runClaudeQuery(input, runId) {
     returnedSessionId = session_id;
     resumed = !!requestedSessionId;
     if (session_id) {
-      store2.upsert(session_id, "query", repoKey, input.cwd, String(report.answer ?? "").slice(0, 200));
+      store.upsert(session_id, "query", repoKey, input.cwd, String(report.answer ?? "").slice(0, 200));
     }
     const sessionLog = { requested_session_id: requestedSessionId, resumed, forked, returned_session_id: session_id };
     const logWriteStart = Date.now();
-    await logRun(runId, { type: "query", input, report, session: sessionLog });
+    await logRun(runId, { type: "query", input, report, session: sessionLog }, input.cwd);
     const logWriteMs = Date.now() - logWriteStart;
     const pruneStart = Date.now();
-    store2.prune();
+    store.prune();
     const pruneMs = Date.now() - pruneStart;
     return makeEnvelope(
       "success",
@@ -16318,7 +16330,7 @@ async function runClaudeQuery(input, runId) {
   } catch (err) {
     const errorMsg = err.message;
     if (requestedSessionId && isSessionNotFoundError(errorMsg)) {
-      store2.markExpired(requestedSessionId);
+      store.markExpired(requestedSessionId);
       log(`Session ${requestedSessionId} not found, falling back to new session`);
       const retryOpts = { ...opts, resumeSessionId: void 0 };
       try {
@@ -16327,11 +16339,11 @@ async function runClaudeQuery(input, runId) {
         const claudeRunMs = Date.now() - claudeRunStart;
         returnedSessionId = session_id;
         if (session_id) {
-          store2.upsert(session_id, "query", repoKey, input.cwd, String(report.answer ?? "").slice(0, 200));
+          store.upsert(session_id, "query", repoKey, input.cwd, String(report.answer ?? "").slice(0, 200));
         }
         const sessionLog = { requested_session_id: requestedSessionId, resumed: false, forked: false, returned_session_id: session_id };
         const logWriteStart = Date.now();
-        await logRun(runId, { type: "query", input, report, session: sessionLog, retried_after_session_expired: true });
+        await logRun(runId, { type: "query", input, report, session: sessionLog, retried_after_session_expired: true }, input.cwd);
         const logWriteMs = Date.now() - logWriteStart;
         return makeEnvelope(
           "success",
@@ -16350,11 +16362,11 @@ async function runClaudeQuery(input, runId) {
           { claude_report: report }
         );
       } catch (retryErr) {
-        await logRun(runId, { type: "query", input, error: retryErr.message, retried_after_session_expired: true });
+        await logRun(runId, { type: "query", input, error: retryErr.message, retried_after_session_expired: true }, input.cwd);
         throw retryErr;
       }
     }
-    await logRun(runId, { type: "query", input, error: errorMsg });
+    await logRun(runId, { type: "query", input, error: errorMsg }, input.cwd);
     throw err;
   }
 }
@@ -16425,17 +16437,17 @@ async function runClaudeReview(input, runId) {
   const opts = createReviewOptions(input);
   try {
     const { report, execution } = await spawnClaude(opts);
-    await logRun(runId, { type: "review", input, report });
+    await logRun(runId, { type: "review", input, report }, input.cwd);
     await markReviewGatePending(input.cwd, false, "review").catch(() => {
     });
     return makeEnvelope("success", report, execution, [], { claude_report: report });
   } catch (err) {
-    await logRun(runId, { type: "review", input, error: err.message });
+    await logRun(runId, { type: "review", input, error: err.message }, input.cwd);
     throw err;
   }
 }
 async function runClaudeImplement(input, runId) {
-  const store2 = await getStore();
+  const store = await getStore(input.cwd);
   const repoKey = await computeRepoKey(input.cwd);
   let implementInput = input;
   if (implementInput.resume_latest) {
@@ -16465,7 +16477,7 @@ async function runClaudeImplement(input, runId) {
       dirty_requested_files: dirtyFiles,
       error: message,
       duration_ms: 0
-    });
+    }, implementInput.cwd);
     return result;
   }
   try {
@@ -16488,7 +16500,7 @@ async function runClaudeImplement(input, runId) {
       input: implementInput,
       error: `Failed to prepare worktree/base commit: ${err instanceof Error ? err.message : String(err)}`,
       duration_ms: 0
-    });
+    }, implementInput.cwd);
     throw err;
   }
   const resumeSessionId = implementInput.session_key ?? void 0;
@@ -16511,7 +16523,7 @@ async function runClaudeImplement(input, runId) {
   } catch (err) {
     const errorMsg = err.message;
     if (resumeSessionId && isSessionNotFoundError(errorMsg)) {
-      store2.markExpired(resumeSessionId);
+      store.markExpired(resumeSessionId);
       log(`Session ${resumeSessionId} not found, marked expired`);
       const durationMs = Date.now() - startTime;
       const failedExecution = {
@@ -16553,17 +16565,17 @@ async function runClaudeImplement(input, runId) {
         session: sessionLog2,
         error: errorMsg,
         duration_ms: durationMs
-      });
+      }, implementInput.cwd);
       return makeEnvelope("failed", void 0, failedExecution, warnings2, {
         claude_report: failedReport,
         server_observed: observed2
       });
     }
-    await logRun(runId, { type: "implement", input: implementInput, error: errorMsg, duration_ms: Date.now() - startTime });
+    await logRun(runId, { type: "implement", input: implementInput, error: errorMsg, duration_ms: Date.now() - startTime }, implementInput.cwd);
     throw err;
   }
   if (returnedSessionId) {
-    store2.upsert(returnedSessionId, "implement", repoKey, implementInput.cwd, report.summary ?? "");
+    store.upsert(returnedSessionId, "implement", repoKey, implementInput.cwd, report.summary ?? "");
   }
   const observed = await observeResult(implementInput.cwd, worktreeName, baseCommit, requestedFiles);
   if (implementInput.max_changed_files !== void 0 || implementInput.max_cost_usd !== void 0) {
@@ -16601,8 +16613,8 @@ async function runClaudeImplement(input, runId) {
     execution,
     session: sessionLog,
     duration_ms: Date.now() - startTime
-  });
-  store2.prune();
+  }, implementInput.cwd);
+  store.prune();
   const status = implementEnvelopeStatus(report, execution, observed);
   const recoveryWarnings = status === "partial" ? [
     "Claude ended before a clean completion, but changed files were observed. Inspect the worktree with claude_result or claude_run_inspect before preview/apply, and consider resuming with claude_implement if needed."
@@ -16635,21 +16647,21 @@ async function runClaudeApply(input, runId) {
       conflicts: result.conflicts,
       error: result.error,
       duration_ms: Date.now() - startTime
-    });
+    }, input.cwd);
     const wtRelPath2 = path4.join(".claude", "worktrees", path4.basename(path4.resolve(input.cwd, input.worktree_path)));
     if (input.preview === true) {
       await updateImplementLifecycleForWorktree(wtRelPath2, {
         current_lifecycle: result.error ? "apply_blocked" : "success",
         previewed_at: (/* @__PURE__ */ new Date()).toISOString(),
         last_apply_run_id: runId
-      }).catch(() => {
+      }, input.cwd).catch(() => {
       });
     } else {
       await updateImplementLifecycleForWorktree(wtRelPath2, {
         current_lifecycle: result.error ? "apply_blocked" : result.applied_files.length > 0 ? "applied" : "unknown",
         applied_at: result.applied_files.length > 0 ? (/* @__PURE__ */ new Date()).toISOString() : void 0,
         last_apply_run_id: runId
-      }).catch(() => {
+      }, input.cwd).catch(() => {
       });
     }
     if (!result.error && input.preview !== true && result.applied_files.length > 0) {
@@ -16670,12 +16682,12 @@ async function runClaudeApply(input, runId) {
     return finish({ applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: `worktree directory not found: ${wtReal}` });
   }
   const wtRelPath = path4.join(".claude", "worktrees", path4.basename(wtReal));
-  const implementLog = await findImplementLogForWorktree(wtRelPath);
+  const implementLog = await findImplementLogForWorktree(wtRelPath, input.cwd);
   const observedBaseCommit = typeof implementLog?.observed?.base_commit === "string" ? implementLog.observed.base_commit.trim() : "";
   const baseCommit = observedBaseCommit || void 0;
   const observedChangedFiles = Array.isArray(implementLog?.observed?.changed_files) ? implementLog.observed.changed_files.filter((item) => typeof item === "string" && item.length > 0) : [];
   const hasObservedScope = baseCommit !== void 0 && observedChangedFiles.length > 0;
-  const pathspecs = hasObservedScope ? observedChangedFiles : ["src/"];
+  const pathspecs = hasObservedScope ? observedChangedFiles : [];
   let diffStat = "";
   if (baseCommit) {
     diffStat = await execCapture("git", ["diff", "--stat", baseCommit, "HEAD", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => "");
@@ -16687,9 +16699,7 @@ async function runClaudeApply(input, runId) {
   ]);
   const changesByFile = /* @__PURE__ */ new Map();
   function addChange(change) {
-    if (hasObservedScope) {
-      if (!observedChangedFiles.some((observed) => isUnderRequestedFile(change.file, observed))) return;
-    } else if (!change.file.startsWith("src/")) {
+    if (hasObservedScope && !observedChangedFiles.some((observed) => isUnderRequestedFile(change.file, observed))) {
       return;
     }
     changesByFile.set(change.file, change);
@@ -16701,15 +16711,15 @@ async function runClaudeApply(input, runId) {
   if (!baseCommit) {
     usedFallback = true;
     const [legacyDiffStatus, legacyHeadStatus, legacyStatus] = await Promise.all([
-      execCapture("git", ["diff", "--name-status", "-z", "--", "src/"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => ""),
-      execCapture("git", ["diff", "--name-status", "-z", "HEAD~1", "--", "src/"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => ""),
-      execCapture("git", ["status", "--porcelain=v1", "-z", "--", "src/"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => "")
+      execCapture("git", ["diff", "--name-status", "-z", "--"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => ""),
+      execCapture("git", ["diff", "--name-status", "-z", "HEAD~1", "--"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => ""),
+      execCapture("git", ["status", "--porcelain=v1", "-z", "--"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => "")
     ]);
     for (const change of parseNameStatusPorcelainZ(legacyDiffStatus)) addChange(change);
     for (const change of parseNameStatusPorcelainZ(legacyHeadStatus)) addChange(change);
     for (const change of parseStatusPorcelainZ(legacyStatus)) addChange(change);
     if (!diffStat.trim()) {
-      diffStat = await execCapture("git", ["diff", "--stat", "HEAD~1", "--", "src/"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => "");
+      diffStat = await execCapture("git", ["diff", "--stat", "HEAD~1", "--"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => "");
     }
   }
   const changes = (await Promise.all(
@@ -16858,7 +16868,7 @@ async function runClaudeCleanup(input, runId) {
           current_lifecycle: "cleaned",
           cleaned_at: (/* @__PURE__ */ new Date()).toISOString(),
           last_cleanup_run_id: runId
-        }).catch(() => {
+        }, input.cwd).catch(() => {
         });
       } catch (err) {
         failedCount++;
@@ -16884,7 +16894,7 @@ async function runClaudeCleanup(input, runId) {
     removed_count: removedCount,
     failed_count: failedCount,
     duration_ms: Date.now() - startTime
-  });
+  }, input.cwd);
   return { dry_run: dryRun, removed_count: removedCount, failed_count: failedCount, entries };
 }
 
@@ -16900,9 +16910,9 @@ function getBackgroundStateDir2() {
   return path5.join(process.cwd(), ".codex-claude-delegate");
 }
 async function markCancelled(jobId, createStore) {
-  const store2 = createStore ? createStore() : new JobStore(getBackgroundStateDir2());
-  await store2.init();
-  await store2.update(jobId, {
+  const store = createStore ? createStore() : new JobStore(getBackgroundStateDir2());
+  await store.init();
+  await store.update(jobId, {
     status: "cancelled",
     updated_at: (/* @__PURE__ */ new Date()).toISOString(),
     summary: "Cancelled by user",
