@@ -38,6 +38,8 @@ claude_task(mode="read", cwd="/path/to/your/repo", task="Summarize this repo")
 
 ### 作为 Codex 插件安装
 
+> **注意：** 以下命令基于代码观察编写，未在干净 Codex 配置上逐一验证。如果实际安装名称与文档不符，运行 `codex plugin marketplace list` 确认后再执行卸载。
+
 1. 克隆本仓库并进入目录：
 
    ```bash
@@ -73,6 +75,8 @@ npm run check:plugin
 
 ### 卸载
 
+> **需手工验证：** 以下卸载步骤中的 marketplace 名称基于代码观察推断，未在干净 Codex 配置上验证。如果 `codex plugin marketplace remove codex-claude-local` 报错，先运行 `codex plugin marketplace list` 查看实际名称。
+
 1. 在 Codex 中输入 `/plugins`，卸载或禁用 `codex-claude-delegate`。
 2. 确认本地 marketplace 中的插件名称：
    ```bash
@@ -93,6 +97,8 @@ npm run check:plugin
 - **Claude Code CLI**：需要 `claude` 命令行可用，支持 `--permission-mode dontAsk`、`--allowedTools`、`--disallowedTools`、`--json-schema` 等标志。
 - **Git**：写入模式需要 worktree 支持（`git worktree add --detach`）。
 - **Node.js**：≥ 20（ESM 模块）。
+
+> **注意：** 上述兼容性声明基于代码中已使用的 API 表面和 CLI 标志，未在 Codex 或 Claude Code CLI 的每个版本上逐一验证。外部工具的向后不兼容变更可能影响本插件。发布前建议运行 `npm run check:plugin` 确认基本 MCP 加载和 hook 路径可用。
 
 ## 使用流程
 
@@ -228,3 +234,23 @@ npm run check:plugin
 - 不自动清理 worktree（需 `claude_cleanup`）
 - 旧 job 记录无 fingerprint/heartbeat，stale 分类回退到 updated_at
 - Stale 检测仅为建议，不自动杀进程
+
+## 维护者发布检查清单
+
+发布前运行以下验证：
+
+```bash
+npm run typecheck          # TypeScript 编译检查
+npm test                   # 单元测试 + 集成测试（158+）
+npm run build:plugin       # 构建 MCP runtime bundle
+npm run check:plugin       # 插件 runtime 完整性检查
+```
+
+### 需手工验证的项
+
+- 从干净 Codex 配置安装/卸载插件（目前未在 CI 中自动化）
+- Codex 插件市场实际注册的名称（`codex plugin marketplace list`）
+- Claude Code CLI 最新版本对 `--permission-mode`、`--allowedTools` 等标志的兼容性
+- Windows 平台路径分隔符和环境变量行为
+- 升级 Codex 或 Claude Code CLI 后插件工具是否全部可见
+- 不同目标仓库路径（`~/projects`、`~/work`、自定义路径）下 `claude_setup` + `claude_apply` 端到端流程

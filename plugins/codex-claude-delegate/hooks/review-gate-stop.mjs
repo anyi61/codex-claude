@@ -16,10 +16,26 @@ function findReviewGateState(cwd) {
   return null;
 }
 
-const startCwd = process.env.PWD ? path.resolve(process.env.PWD) : process.cwd();
-const resolved = findReviewGateState(startCwd);
+// Try workspace paths in priority order: hook payload hint, PWD, then cwd.
+const candidates = [
+  process.env.CODEX_WORKSPACE_ROOT,
+  process.env.PWD,
+  process.cwd(),
+].filter(Boolean);
+
+let resolved = null;
+for (const candidate of candidates) {
+  resolved = findReviewGateState(path.resolve(candidate));
+  if (resolved) break;
+}
 
 if (!resolved) {
+  // Quiet exit is correct for workspaces without a review gate.
+  // If PWD hints exist but no gate state was found, emit
+  // a brief diagnostic to stderr for troubleshooting.
+  if (process.env.CODEX_WORKSPACE_ROOT && !existsSync(path.resolve(process.env.CODEX_WORKSPACE_ROOT))) {
+    process.stderr.write(`[codex-claude-review-gate] CODEX_WORKSPACE_ROOT="${process.env.CODEX_WORKSPACE_ROOT}" does not exist; no review gate check performed.\n`);
+  }
   process.exit(0);
 }
 

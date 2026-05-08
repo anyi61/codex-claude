@@ -15399,6 +15399,17 @@ function normalizeRequestedFiles(cwd, files) {
   }
   return [...normalized].sort();
 }
+async function findImplementJobForWorktree(worktreePath, cwd) {
+  const wtName = path4.basename(worktreePath);
+  const jobStore = await getJobStore();
+  const jobs = await jobStore.list({
+    cwd,
+    limit: 100,
+    type: "implement"
+  });
+  const terminalStatuses = /* @__PURE__ */ new Set(["succeeded", "failed", "cancelled"]);
+  return jobs.find((job) => job.worktree_name === wtName && terminalStatuses.has(job.status)) ?? null;
+}
 async function findImplementLogForWorktree(worktreePath, cwd) {
   const logDir = getRunLogDir(cwd);
   try {
@@ -16682,18 +16693,38 @@ async function runClaudeApply(input, runId) {
     return finish({ applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: `worktree directory not found: ${wtReal}` });
   }
   const wtRelPath = path4.join(".claude", "worktrees", path4.basename(wtReal));
-  const implementLog = await findImplementLogForWorktree(wtRelPath, input.cwd);
+  const jobMatch = await findImplementJobForWorktree(wtRelPath, input.cwd);
+  let implementLog = null;
+  if (jobMatch?.run_id) {
+    const raw = await readRunLogFile(jobMatch.run_id, input.cwd);
+    if (raw) {
+      implementLog = raw;
+    }
+  }
+  if (!implementLog) {
+    implementLog = await findImplementLogForWorktree(wtRelPath, input.cwd);
+  }
   const observedBaseCommit = typeof implementLog?.observed?.base_commit === "string" ? implementLog.observed.base_commit.trim() : "";
   const baseCommit = observedBaseCommit || void 0;
   const observedChangedFiles = Array.isArray(implementLog?.observed?.changed_files) ? implementLog.observed.changed_files.filter((item) => typeof item === "string" && item.length > 0) : [];
   const hasObservedScope = baseCommit !== void 0 && observedChangedFiles.length > 0;
   const pathspecs = hasObservedScope ? observedChangedFiles : [];
-  let diffStat = "";
-  if (baseCommit) {
-    diffStat = await execCapture("git", ["diff", "--stat", baseCommit, "HEAD", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => "");
+  if (!baseCommit) {
+    const wtName = path4.basename(wtReal);
+    return finish({
+      applied_files: [],
+      diff_stat: "",
+      cleanup_performed: false,
+      conflicts: [],
+      error: `No implement metadata found for worktree "${wtName}". The implement run's base commit and changed files could not be resolved. Use claude_result or claude_run_inspect to find the implement session, then retry apply with the correct worktree_path.`,
+      preview: input.preview === true,
+      planned_changes: []
+    });
   }
+  let diffStat = "";
+  diffStat = await execCapture("git", ["diff", "--stat", baseCommit, "HEAD", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => "");
   const [trackedStatus, uncommittedStatus, untrackedStatus] = await Promise.all([
-    baseCommit ? execCapture("git", ["diff", "--name-status", "-z", baseCommit, "HEAD", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => "") : Promise.resolve(""),
+    execCapture("git", ["diff", "--name-status", "-z", baseCommit, "HEAD", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => ""),
     execCapture("git", ["diff", "--name-status", "-z", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => ""),
     execCapture("git", ["status", "--porcelain=v1", "-z", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => "")
   ]);
@@ -16707,30 +16738,11 @@ async function runClaudeApply(input, runId) {
   for (const change of parseNameStatusPorcelainZ(trackedStatus)) addChange(change);
   for (const change of parseNameStatusPorcelainZ(uncommittedStatus)) addChange(change);
   for (const change of parseStatusPorcelainZ(untrackedStatus)) addChange(change);
-  let usedFallback = false;
-  if (!baseCommit) {
-    usedFallback = true;
-    const [legacyDiffStatus, legacyHeadStatus, legacyStatus] = await Promise.all([
-      execCapture("git", ["diff", "--name-status", "-z", "--"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => ""),
-      execCapture("git", ["diff", "--name-status", "-z", "HEAD~1", "--"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => ""),
-      execCapture("git", ["status", "--porcelain=v1", "-z", "--"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => "")
-    ]);
-    for (const change of parseNameStatusPorcelainZ(legacyDiffStatus)) addChange(change);
-    for (const change of parseNameStatusPorcelainZ(legacyHeadStatus)) addChange(change);
-    for (const change of parseStatusPorcelainZ(legacyStatus)) addChange(change);
-    if (!diffStat.trim()) {
-      diffStat = await execCapture("git", ["diff", "--stat", "HEAD~1", "--"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => "");
-    }
-  }
   const changes = (await Promise.all(
     [...changesByFile.values()].map((change) => expandDirectoryChange(change, wtReal))
   )).flat().sort((a, b) => a.file.localeCompare(b.file));
   if (!diffStat.trim() && changes.length > 0) {
     diffStat = changes.map((c) => `${c.status}	${c.file}`).join("\n");
-  }
-  if (usedFallback) {
-    diffStat = `[fallback_without_base_commit]
-${diffStat || "(no stat)"}`;
   }
   const plannedChanges = changes.map((c) => ({ status: c.status, file: c.file }));
   if (changes.length === 0) {

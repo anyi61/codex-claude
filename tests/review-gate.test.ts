@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -69,5 +70,32 @@ describe("review gate persistence", () => {
     const statusDisabled = await reloaded.manageClaudeReviewGate({ cwd: repo, action: "status" });
     expect(statusDisabled.enabled).toBe(false);
     expect(statusDisabled.changed).toBe(false);
+  });
+
+  it("review gate hook resolves workspace from CODEX_WORKSPACE_ROOT", async () => {
+    const { repo } = await createFixtureRepo();
+    const stateDir = path.join(repo, ".codex-claude-delegate");
+    await mkdir(stateDir, { recursive: true });
+    writeFileSync(path.join(stateDir, "review-gate.json"), JSON.stringify({
+      enabled: true,
+      pending_review: true,
+    }));
+
+    const hookPath = path.join(projectRoot, "plugins", "codex-claude-delegate", "hooks", "review-gate-stop.mjs");
+    const output = execFileSync(process.execPath, [hookPath], {
+      cwd: projectRoot,
+      env: {
+        ...process.env,
+        CODEX_WORKSPACE_ROOT: repo,
+        PWD: projectRoot,
+      },
+      encoding: "utf8",
+    });
+    const payload = JSON.parse(output);
+
+    expect(payload.review_gate.enabled).toBe(true);
+    expect(payload.review_gate.pending_review).toBe(true);
+    expect(payload.review_gate.workspace_root).toBe(repo);
+    expect(payload.systemMessage).toMatch(/Review gate is enabled/);
   });
 });

@@ -677,6 +677,18 @@ function normalizeRequestedFiles(cwd: string, files?: string[]): string[] {
   return [...normalized].sort();
 }
 
+async function findImplementJobForWorktree(worktreePath: string, cwd: string): Promise<BackgroundJobRecord | null> {
+  const wtName = path.basename(worktreePath);
+  const jobStore = await getJobStore();
+  const jobs = await jobStore.list({
+    cwd,
+    limit: 100,
+    type: "implement",
+  });
+  const terminalStatuses = new Set(["succeeded", "failed", "cancelled"]);
+  return jobs.find((job) => job.worktree_name === wtName && terminalStatuses.has(job.status)) ?? null;
+}
+
 async function findImplementLogForWorktree(worktreePath: string, cwd?: string): Promise<ImplementRunLog | null> {
   const logDir = getRunLogDir(cwd);
   try {
@@ -1474,7 +1486,6 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
       instruction_files: instructionFiles,
       timeout_sec: input.timeout_sec,
       max_turns: input.max_turns,
-      background: true,
     });
     return {
       delegated_mode: delegatedMode,
@@ -1495,7 +1506,6 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
       instruction_files: instructionFiles,
       timeout_sec: input.timeout_sec,
       max_turns: input.max_turns,
-      background: true,
     });
     return {
       delegated_mode: delegatedMode,
@@ -1516,7 +1526,6 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
     timeout_sec: input.timeout_sec,
     max_turns: input.max_turns,
     resume_latest: input.resume_latest,
-    background: true,
     dirty_policy: input.dirty_policy,
   });
   if (!("job" in queued)) {
@@ -3314,7 +3323,22 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   }
 
   const wtRelPath = path.join(".claude", "worktrees", path.basename(wtReal));
-  const implementLog = await findImplementLogForWorktree(wtRelPath, input.cwd);
+
+  // Try deterministic job-based lookup first, then scan-based fallback
+  const jobMatch = await findImplementJobForWorktree(wtRelPath, input.cwd);
+  let implementLog: ImplementRunLog | null = null;
+
+  if (jobMatch?.run_id) {
+    const raw = await readRunLogFile(jobMatch.run_id, input.cwd);
+    if (raw) {
+      implementLog = raw as unknown as ImplementRunLog;
+    }
+  }
+
+  if (!implementLog) {
+    implementLog = await findImplementLogForWorktree(wtRelPath, input.cwd);
+  }
+
   const observedBaseCommit =
     typeof implementLog?.observed?.base_commit === "string" ? implementLog.observed.base_commit.trim() : "";
   const baseCommit = observedBaseCommit || undefined;
@@ -3324,15 +3348,25 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   const hasObservedScope = baseCommit !== undefined && observedChangedFiles.length > 0;
   const pathspecs = hasObservedScope ? observedChangedFiles : [];
 
-  let diffStat = "";
-  if (baseCommit) {
-    diffStat = await execCapture("git", ["diff", "--stat", baseCommit, "HEAD", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 10000 }).catch(() => "");
+  // Fail closed when implement metadata is missing — no legacy fallback
+  if (!baseCommit) {
+    const wtName = path.basename(wtReal);
+    return finish({
+      applied_files: [],
+      diff_stat: "",
+      cleanup_performed: false,
+      conflicts: [],
+      error: `No implement metadata found for worktree "${wtName}". The implement run's base commit and changed files could not be resolved. Use claude_result or claude_run_inspect to find the implement session, then retry apply with the correct worktree_path.`,
+      preview: input.preview === true,
+      planned_changes: [],
+    });
   }
 
+  let diffStat = "";
+  diffStat = await execCapture("git", ["diff", "--stat", baseCommit, "HEAD", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 10000 }).catch(() => "");
+
   const [trackedStatus, uncommittedStatus, untrackedStatus] = await Promise.all([
-    baseCommit
-      ? execCapture("git", ["diff", "--name-status", "-z", baseCommit, "HEAD", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 10000 }).catch(() => "")
-      : Promise.resolve(""),
+    execCapture("git", ["diff", "--name-status", "-z", baseCommit, "HEAD", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
     execCapture("git", ["diff", "--name-status", "-z", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
     execCapture("git", ["status", "--porcelain=v1", "-z", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
   ]);
@@ -3349,22 +3383,6 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   for (const change of parseNameStatusPorcelainZ(uncommittedStatus)) addChange(change);
   for (const change of parseStatusPorcelainZ(untrackedStatus)) addChange(change);
 
-  let usedFallback = false;
-  if (!baseCommit) {
-    usedFallback = true;
-    const [legacyDiffStatus, legacyHeadStatus, legacyStatus] = await Promise.all([
-      execCapture("git", ["diff", "--name-status", "-z", "--"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
-      execCapture("git", ["diff", "--name-status", "-z", "HEAD~1", "--"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
-      execCapture("git", ["status", "--porcelain=v1", "-z", "--"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
-    ]);
-    for (const change of parseNameStatusPorcelainZ(legacyDiffStatus)) addChange(change);
-    for (const change of parseNameStatusPorcelainZ(legacyHeadStatus)) addChange(change);
-    for (const change of parseStatusPorcelainZ(legacyStatus)) addChange(change);
-    if (!diffStat.trim()) {
-      diffStat = await execCapture("git", ["diff", "--stat", "HEAD~1", "--"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => "");
-    }
-  }
-
   const changes = (await Promise.all(
     [...changesByFile.values()].map((change) => expandDirectoryChange(change, wtReal))
   ))
@@ -3372,9 +3390,6 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
     .sort((a, b) => a.file.localeCompare(b.file));
   if (!diffStat.trim() && changes.length > 0) {
     diffStat = changes.map((c) => `${c.status}\t${c.file}`).join("\n");
-  }
-  if (usedFallback) {
-    diffStat = `[fallback_without_base_commit]\n${diffStat || "(no stat)"}`;
   }
   const plannedChanges: ApplyPlannedChange[] = changes.map((c) => ({ status: c.status, file: c.file }));
   if (changes.length === 0) {

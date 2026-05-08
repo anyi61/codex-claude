@@ -17,7 +17,6 @@ export interface ClaudeQueryInput {
   instruction_files?: string[];
   timeout_sec?: number;
   max_turns?: number;
-  background?: boolean;
   fast?: boolean;
   resume?: boolean;
 }
@@ -30,7 +29,6 @@ export interface ClaudeReviewInput {
   files?: string[];
   timeout_sec?: number;
   max_turns?: number;
-  background?: boolean;
 }
 
 export interface ClaudeImplementInput {
@@ -47,7 +45,6 @@ export interface ClaudeImplementInput {
   max_cost_usd?: number;
   max_changed_files?: number;
   worktreeName?: string;
-  background?: boolean;
   dirty_policy?: "ask" | "committed" | "snapshot";
 }
 

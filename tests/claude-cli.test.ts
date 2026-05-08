@@ -1693,7 +1693,6 @@ describe("claude cli argument construction", () => {
     expect(stored?.payload).toMatchObject({
       cwd: repo,
       task: "Implement input validation for README updates.",
-      background: true,
       instruction_files: ["README.md"],
     });
     expect(stored?.payload.files).toBeUndefined();
@@ -1745,5 +1744,180 @@ describe("claude cli argument construction", () => {
     expect(stored?.payload.files).toBeUndefined();
     expect(stored?.payload.instruction_files).toEqual(["README.md"]);
     expect(result.next_actions.map((action) => action.tool)).toEqual(["claude_job_wait"]);
+  });
+
+  it("fails apply closed when implement metadata is missing (no run log, no job record)", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-no-meta-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+    const worktreeRel = ".claude/worktrees/codex-delegated-no-meta";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+
+    // No implement run log or job record written — metadata is missing.
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+    }, "run-no-meta");
+
+    expect(preview.error).toContain("No implement metadata found");
+    expect(preview.error).toContain("codex-delegated-no-meta");
+    expect(preview.applied_files).toEqual([]);
+    expect(preview.preview).toBe(true);
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("finds apply metadata through job-based lookup before falling back to run log scan", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-job-lookup-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const logDir = path.join(stateDir, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    await writeFile(path.join(repo, "package.json"), '{"name":"test"}\n');
+    await mkdir(path.join(repo, "tests"), { recursive: true });
+    await writeFile(path.join(repo, "tests", "test.js"), "// test\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-job-lookup";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+    await writeFile(path.join(worktree, "package.json"), '{"name":"test","version":"2"}\n');
+    await mkdir(path.join(worktree, "tests"), { recursive: true });
+    await writeFile(path.join(worktree, "tests", "test.js"), '// updated test\n');
+
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+    // Write run log
+    const runId = "run-job-lookup";
+    await writeFile(path.join(logDir, `${runId}.json`), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "success", summary: "Changed multiple files" },
+      observed: {
+        worktree_path: worktreeRel,
+        worktree_name: "codex-delegated-job-lookup",
+        base_commit: baseCommit,
+        changed_files: ["README.md", "package.json", "tests/test.js"],
+        scope: { requested_files: undefined, out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 3, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    // Create job record linking to the run via worktree_name
+    const jobs = await import("../src/jobs.js");
+    const jobStore = new jobs.JobStore(stateDir);
+    await jobStore.init();
+    await jobStore.create({
+      job_id: "job-impl-lookup",
+      type: "implement",
+      status: "succeeded",
+      cwd: repo,
+      created_at: "2026-05-05T00:00:00.000Z",
+      updated_at: "2026-05-05T00:01:00.000Z",
+      payload: { cwd: repo, task: "Multiple changes" },
+      run_id: runId,
+      worktree_name: "codex-delegated-job-lookup",
+      summary: "Implement job completed",
+      result: { status: "success" },
+    });
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+    }, "run-job-lookup-apply");
+
+    expect(preview.error).toBeUndefined();
+    expect(preview.preview).toBe(true);
+    const changedFiles = (preview.planned_changes ?? []).map((c) => c.file).sort();
+    expect(changedFiles).toEqual(["README.md", "package.json", "tests/test.js"]);
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    delete process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR;
+    vi.resetModules();
+  });
+
+  it("includes non-src file changes (README, package.json, tests) in apply preview", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-non-src-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    await writeFile(path.join(repo, "package.json"), '{"name":"test"}\n');
+    await mkdir(path.join(repo, "tests"), { recursive: true });
+    await mkdir(path.join(repo, "src"), { recursive: true });
+    await writeFile(path.join(repo, "src", "index.js"), "// original\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+    const worktreeRel = ".claude/worktrees/codex-delegated-non-src";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+    await writeFile(path.join(worktree, "package.json"), '{"name":"test","version":"2"}\n');
+    await mkdir(path.join(worktree, "tests"), { recursive: true });
+    await writeFile(path.join(worktree, "tests", "test.js"), '// new test\n');
+    await writeFile(path.join(worktree, "src", "index.js"), "// updated\n");
+
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(logDir, "implement-non-src.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "success", summary: "Changed everything" },
+      observed: {
+        worktree_path: worktreeRel,
+        worktree_name: "codex-delegated-non-src",
+        base_commit: baseCommit,
+        changed_files: ["README.md", "package.json", "src/index.js", "tests/test.js"],
+        scope: { requested_files: undefined, out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 4, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+    }, "run-non-src");
+
+    expect(preview.error).toBeUndefined();
+    expect(preview.preview).toBe(true);
+    const changedFiles = (preview.planned_changes ?? []).map((c) => c.file).sort();
+    expect(changedFiles).toEqual(["README.md", "package.json", "src/index.js", "tests/test.js"]);
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
   });
 });
