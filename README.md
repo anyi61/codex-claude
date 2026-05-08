@@ -83,6 +83,8 @@ npm run uninstall -- --yes  # 非交互卸载，状态目录默认全部保留
 
 卸载脚本会处理插件市场条目、MCP server、Codex 配置残留和 review-gate hook。`.codex-claude-delegate/` 会在交互中询问如何处理：全部删除、全部保留或指定保留项。仓库目录和 delegated worktree 不会被自动删除。
 
+`uninstall:dry-run` 会报告 delegated worktree 残留。检测范围不只限于当前仓库目录，还会包含 `CODEX_CLAUDE_ALLOW_ROOTS` 中配置的 workspace，以及状态记录中的 `jobs`、`runs`、`review-gate.json` 所引用的 workspace。输出会显示 worktree 的绝对路径；如需清理，进入对应 workspace 后使用 `claude_cleanup(cwd="...", dry_run=true)` 确认，再用 `dry_run=false` 删除。
+
 卸载后建议重启 Codex。
 
 > **已实现自动化：** 卸载过程已通过 `scripts/uninstall-plugin.mjs` 实现自动化。但以下项仍需人工验证：
@@ -91,6 +93,7 @@ npm run uninstall -- --yes  # 非交互卸载，状态目录默认全部保留
 > - `.codex-claude-delegate/` 三种交互选项的正确行为
 > - `--yes --keep-state=none` 删除全部状态，`--yes` 未指定时保留全部
 > - dry-run 不修改 TOML、不删除文件、不执行 remove 命令
+> - dry-run 跨配置和状态记录中的 workspace 报告 delegated worktree 残留
 > - 卸载后重启 Codex 无 MCP 启动错误
 
 ## 兼容性

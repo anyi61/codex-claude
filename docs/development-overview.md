@@ -230,6 +230,8 @@ npm install → npm run build:plugin → npm run check:plugin → npm test → n
 | Plugin MCP entry | `plugins/codex-claude-delegate/server/server.js` | **[NEW]** 仓库追踪 |
 | Plugin runner | `plugins/codex-claude-delegate/server/job-runner.js` | **[NEW]** 仓库追踪 |
 
+卸载 dry-run 的 worktree 检测会汇总当前卸载仓库、`CODEX_CLAUDE_ALLOW_ROOTS`、以及 state 中 `jobs` / `runs` / `review-gate.json` 记录的 workspace，再逐个报告 `.claude/worktrees/codex-delegated-*`。检测只报告绝对路径，不自动删除。
+
 ---
 
 ## 10. [CHANGED] .gitignore
@@ -279,7 +281,7 @@ debug/                       # [NEW]
 
 1. 无实时双向通信
 2. 每次 Claude 调用冷启动 ~2-5s
-3. 不自动清理 worktree — 需 `claude_cleanup`
+3. 不自动清理 worktree — 卸载 dry-run 会跨已知 workspace 报告残留，但仍需按 workspace 执行 `claude_cleanup`
 4. 旧 job 记录无 fingerprint/heartbeat_at
 5. Stale 检测仅为建议，不自动杀进程
 6. **[NEW]** Bundle 无 source map（调试用 `npm run dev` 或 `dist/` 产物）
