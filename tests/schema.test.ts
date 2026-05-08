@@ -19,8 +19,11 @@ import {
   claudeRunsInputSchema,
   claudeReviewInputSchema,
   claudeWorkspaceStatusInputSchema,
+  claudeCleanupInputSchema,
+  claudeStatusInputSchema,
   buildImplementPrompt,
 } from "../src/schema.js";
+import { TOOL_DEFINITIONS } from "../src/server.js";
 
 describe("schema definitions", () => {
   it("defines implement structured output fields", () => {
@@ -91,10 +94,10 @@ describe("schema definitions", () => {
   });
 
   it("accepts background job inputs", () => {
-    expect(claudeQueryInputSchema.safeParse({ cwd: "/repo", task: "explain", background: true }).success).toBe(true);
+    expect(claudeQueryInputSchema.safeParse({ cwd: "/repo", task: "explain" }).success).toBe(true);
     expect(claudeQueryInputSchema.safeParse({ cwd: "/repo", task: "explain", fast: true, resume: false }).success).toBe(true);
-    expect(claudeReviewInputSchema.safeParse({ cwd: "/repo", task: "review this", background: true }).success).toBe(true);
-    expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "ship it", background: true }).success).toBe(true);
+    expect(claudeReviewInputSchema.safeParse({ cwd: "/repo", task: "review this" }).success).toBe(true);
+    expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "ship it" }).success).toBe(true);
     expect(claudeJobsInputSchema.safeParse({ cwd: "/repo", limit: 10, type: "query" }).success).toBe(true);
     expect(claudeJobResultInputSchema.safeParse({ cwd: "/repo", job_id: "job-123" }).success).toBe(true);
     expect(claudeJobCancelInputSchema.safeParse({ cwd: "/repo", job_id: "job-123" }).success).toBe(true);
@@ -163,4 +166,54 @@ describe("schema definitions", () => {
     expect(claudeReviewGateInputSchema.safeParse({ cwd: "/repo", action: "disable" }).success).toBe(true);
     expect(claudeReviewGateInputSchema.safeParse({ cwd: "/repo", action: "bad" }).success).toBe(false);
   });
+});
+
+describe("schema-to-tool-definition contract", () => {
+  const SCHEMA_MAP: Record<string, { schema: import("zod").ZodTypeAny; exposedInternal?: string[] }> = {
+    claude_status: { schema: claudeStatusInputSchema },
+    claude_setup: { schema: claudeSetupInputSchema },
+    claude_runs: { schema: claudeRunsInputSchema },
+    claude_run_inspect: { schema: claudeRunInspectInputSchema },
+    claude_result: { schema: claudeResultInputSchema },
+    claude_workspace_status: { schema: claudeWorkspaceStatusInputSchema },
+    claude_task: { schema: claudeTaskInputSchema },
+    claude_review_gate: { schema: claudeReviewGateInputSchema },
+    claude_query: { schema: claudeQueryInputSchema },
+    claude_review: { schema: claudeReviewInputSchema },
+    claude_implement: { schema: claudeImplementInputSchema },
+    claude_jobs: { schema: claudeJobsInputSchema },
+    claude_job_result: { schema: claudeJobResultInputSchema },
+    claude_job_cancel: { schema: claudeJobCancelInputSchema },
+    claude_job_wait: { schema: claudeJobWaitInputSchema },
+    claude_job_cleanup: { schema: claudeJobCleanupInputSchema },
+    claude_apply: { schema: claudeApplyInputSchema },
+    claude_cleanup: { schema: claudeCleanupInputSchema },
+  };
+
+  function getZodKeys(schema: import("zod").ZodTypeAny): string[] {
+    return Object.keys((schema as unknown as { _def: { shape: Record<string, unknown> } })._def.shape);
+  }
+
+  for (const def of TOOL_DEFINITIONS) {
+    const entry = SCHEMA_MAP[def.name];
+    if (!entry) continue;
+
+    it(`${def.name}: every Zod schema field has a matching tool definition property`, () => {
+      const zodKeys = getZodKeys(entry.schema);
+      const toolKeys = Object.keys(def.inputSchema.properties ?? {});
+
+      for (const key of zodKeys) {
+        expect(toolKeys).toContain(key);
+      }
+    });
+
+    it(`${def.name}: every tool definition property has a matching Zod schema field`, () => {
+      const zodKeys = getZodKeys(entry.schema);
+      const toolKeys = Object.keys(def.inputSchema.properties ?? {});
+
+      for (const key of toolKeys) {
+        expect(zodKeys).toContain(key);
+      }
+    });
+  }
 });

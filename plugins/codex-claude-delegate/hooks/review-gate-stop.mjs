@@ -3,12 +3,27 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
-const cwd = process.env.PWD ? path.resolve(process.env.PWD) : process.cwd();
-const statePath = path.join(cwd, ".codex-claude-delegate", "review-gate.json");
+function findReviewGateState(cwd) {
+  const marker = path.join(".codex-claude-delegate", "review-gate.json");
+  let current = path.resolve(cwd);
+  for (let i = 0; i < 10; i++) {
+    const candidate = path.join(current, marker);
+    if (existsSync(candidate)) return { cwd: current, statePath: candidate };
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
+}
 
-if (!existsSync(statePath)) {
+const startCwd = process.env.PWD ? path.resolve(process.env.PWD) : process.cwd();
+const resolved = findReviewGateState(startCwd);
+
+if (!resolved) {
   process.exit(0);
 }
+
+const { cwd, statePath } = resolved;
 
 try {
   const parsed = JSON.parse(readFileSync(statePath, "utf8"));

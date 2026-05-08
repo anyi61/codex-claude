@@ -123,8 +123,8 @@ export async function isGitRepo(cwd: string): Promise<boolean> {
 
 export async function supportsWorktree(cwd: string): Promise<boolean> {
   try {
-    const out = await execCapture("git", ["worktree", "list"], { cwd });
-    return out.length > 0 || true; // command succeeded = worktree support exists
+    await execCapture("git", ["worktree", "list"], { cwd });
+    return true;
   } catch {
     return false;
   }

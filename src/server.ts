@@ -59,7 +59,7 @@ import {
   validationErrorMessage,
 } from "./schema.js";
 
-const TOOL_DEFINITIONS = [
+export const TOOL_DEFINITIONS = [
   {
     name: "claude_status",
     description:
@@ -193,6 +193,7 @@ const TOOL_DEFINITIONS = [
       properties: {
         task: { type: "string", description: "The question or analysis task" },
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
+        instruction_files: { type: "array", items: { type: "string" }, description: "Task instruction/context files for the query" },
         timeout_sec: { type: "number", description: "Timeout in seconds (default 120)" },
         max_turns: { type: "number", description: "Maximum Claude turns for this query. Omitted means no explicit turn cap; fast=true uses 2 unless max_turns is provided." },
         fast: {
@@ -203,7 +204,6 @@ const TOOL_DEFINITIONS = [
           type: "boolean",
           description: "Control query session resume behavior. Defaults to true, but fast mode defaults to false.",
         },
-        background: { type: "boolean", description: "Queue the query as a persistent background job" },
       },
     },
   },
@@ -217,11 +217,11 @@ const TOOL_DEFINITIONS = [
       properties: {
         task: { type: "string", description: "Review instructions (what to look for)" },
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
+        instruction_files: { type: "array", items: { type: "string" }, description: "Review instruction/context files" },
         diff: { type: "string", description: "The diff to review (optional; Claude can also git diff itself)" },
         files: { type: "array", items: { type: "string" }, description: "Specific files to focus on" },
         timeout_sec: { type: "number", description: "Timeout in seconds (default 180)" },
         max_turns: { type: "number", description: "Maximum Claude turns for this review. Omitted means no explicit turn cap." },
-        background: { type: "boolean", description: "Queue the review as a persistent background job" },
       },
     },
   },
@@ -245,7 +245,6 @@ const TOOL_DEFINITIONS = [
         max_cost_usd: { type: "number", description: "Maximum USD budget for this task (passed as --max-budget-usd to Claude). Must be > 0 and <= 10." },
         max_changed_files: { type: "number", description: "Warn if Claude changes more than this many files. Must be a positive integer <= 100." },
         worktreeName: { type: "string", description: "Optional delegated worktree name override" },
-        background: { type: "boolean", description: "Queue the implementation as a persistent background job; execution tools queue by default" },
         dirty_policy: { type: "string", enum: ["ask", "committed", "snapshot"], description: "Handling for uncommitted main-workspace changes: ask (default), committed (ignore dirty changes and use HEAD), or snapshot (copy dirty files into the delegated worktree)." },
       },
     },
@@ -301,6 +300,7 @@ const TOOL_DEFINITIONS = [
       properties: {
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
         job_id: { type: "string", description: "Background job id" },
+        not_before: { type: "string", description: "ISO timestamp; skip polling until this time to enforce recommended delays" },
       },
     },
   },
@@ -490,22 +490,24 @@ export async function handleToolCall(name: string, args: unknown, runId = random
       case "claude_query": {
         const parsed = claudeQueryInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, timeout_sec, max_turns, fast, resume } = parsed.data;
+        const { task, cwd, instruction_files, timeout_sec, max_turns, fast, resume } = parsed.data;
         const resolvedTimeout = timeout_sec ?? (fast ? 45 : 120);
         const resolvedMaxTurns = max_turns ?? (fast ? 2 : undefined);
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
+        const fileCheck = await validateFilesWithinCwd(check.resolved, instruction_files);
+        if (!fileCheck.ok) return errorResult(fileCheck.error!);
 
         return jsonResult(await startBackgroundQuery(
           {
             task,
             cwd: check.resolved,
+            instruction_files,
             timeout_sec: resolvedTimeout,
             max_turns: resolvedMaxTurns,
             fast,
             resume,
-            background: true,
           },
         ));
       }
@@ -513,15 +515,16 @@ export async function handleToolCall(name: string, args: unknown, runId = random
       case "claude_review": {
         const parsed = claudeReviewInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, diff, files, timeout_sec, max_turns } = parsed.data;
+        const { task, cwd, diff, instruction_files, files, timeout_sec, max_turns } = parsed.data;
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
-        const fileCheck = await validateFilesWithinCwd(check.resolved, files);
+        const mergedFiles = [...(files ?? []), ...(instruction_files ?? [])];
+        const fileCheck = await validateFilesWithinCwd(check.resolved, mergedFiles.length > 0 ? mergedFiles : undefined);
         if (!fileCheck.ok) return errorResult(fileCheck.error!);
 
         return jsonResult(await startBackgroundReview(
-          { task, cwd: check.resolved, diff, files, timeout_sec, max_turns, background: true },
+          { task, cwd: check.resolved, diff, instruction_files, files, timeout_sec, max_turns },
         ));
       }
 
@@ -555,7 +558,6 @@ export async function handleToolCall(name: string, args: unknown, runId = random
           max_cost_usd,
           max_changed_files,
           worktreeName,
-          background: true,
           dirty_policy,
         }));
       }

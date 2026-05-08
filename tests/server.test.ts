@@ -422,7 +422,6 @@ describe("server background job handlers", () => {
     const result = await handleToolCall("claude_query", {
       cwd: "/repo/input",
       task: "explain this",
-      background: true,
     });
     const payload = parsePayload(result);
 
@@ -434,7 +433,6 @@ describe("server background job handlers", () => {
       max_turns: undefined,
       fast: undefined,
       resume: undefined,
-      background: true,
     });
     expect((payload.job as Record<string, unknown>).type).toBe("query");
   });
@@ -458,7 +456,6 @@ describe("server background job handlers", () => {
       max_turns: undefined,
       fast: undefined,
       resume: undefined,
-      background: true,
     });
     expect((payload.job as Record<string, unknown>).job_id).toBe("job-query-default");
     expect(result.isError).toBeUndefined();
@@ -474,7 +471,6 @@ describe("server background job handlers", () => {
       task: "explain this quickly",
       fast: true,
       resume: false,
-      background: true,
     });
     const payload = parsePayload(result);
 
@@ -486,7 +482,6 @@ describe("server background job handlers", () => {
       max_turns: 2,
       fast: true,
       resume: false,
-      background: true,
     });
     expect((payload.job as Record<string, unknown>).type).toBe("query");
   });
@@ -509,10 +504,10 @@ describe("server background job handlers", () => {
       cwd: "/repo/resolved",
       task: "review this",
       diff: undefined,
+      instruction_files: undefined,
       files: ["README.md"],
       timeout_sec: 180,
       max_turns: undefined,
-      background: true,
     });
     expect((payload.job as Record<string, unknown>).job_id).toBe("job-review-default");
     expect(result.isError).toBeUndefined();
@@ -547,7 +542,6 @@ describe("server background job handlers", () => {
       max_cost_usd: undefined,
       max_changed_files: undefined,
       worktreeName: undefined,
-      background: true,
       dirty_policy: "committed",
     });
     expect((payload.job as Record<string, unknown>).job_id).toBe("job-implement-default");

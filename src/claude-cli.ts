@@ -73,10 +73,15 @@ import {
 } from "./schema.js";
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
-const LOG_DIR = process.env.CODEX_CLAUDE_RUN_LOG_DIR
-  ? path.resolve(process.env.CODEX_CLAUDE_RUN_LOG_DIR)
-  : path.join(process.cwd(), ".codex-claude-delegate", "runs");
 const SESSION_DIR = path.join(process.cwd(), ".codex-claude-delegate");
+
+function getRunLogDir(cwd?: string): string {
+  if (process.env.CODEX_CLAUDE_RUN_LOG_DIR) {
+    return path.resolve(process.env.CODEX_CLAUDE_RUN_LOG_DIR);
+  }
+  const base = cwd ?? process.cwd();
+  return path.join(base, ".codex-claude-delegate", "runs");
+}
 const JOB_STATE_DIR_ENV = "CODEX_CLAUDE_BACKGROUND_STATE_DIR";
 const REVIEW_GATE_RELATIVE_PATH = path.join(".codex-claude-delegate", "review-gate.json");
 const REVIEW_GATE_HOOK_COMMAND = "node '${CLAUDE_PLUGIN_ROOT}/hooks/review-gate-stop.mjs'";
@@ -572,12 +577,13 @@ function log(msg: string): void {
   process.stderr.write(`[claude-delegate] ${msg}\n`);
 }
 
-async function logRun(runId: string, data: Record<string, unknown>): Promise<void> {
+async function logRun(runId: string, data: Record<string, unknown>, cwd?: string): Promise<void> {
+  const logDir = getRunLogDir(cwd);
   try {
-    await mkdir(LOG_DIR, { recursive: true });
+    await mkdir(logDir, { recursive: true });
     const timestamp = new Date().toISOString();
     await writeFile(
-      path.join(LOG_DIR, `${runId}.json`),
+      path.join(logDir, `${runId}.json`),
       JSON.stringify({ started_at: timestamp, updated_at: timestamp, ...data }, null, 2)
     );
   } catch {
@@ -669,14 +675,15 @@ function normalizeRequestedFiles(cwd: string, files?: string[]): string[] {
   return [...normalized].sort();
 }
 
-async function findImplementLogForWorktree(worktreePath: string): Promise<ImplementRunLog | null> {
+async function findImplementLogForWorktree(worktreePath: string, cwd?: string): Promise<ImplementRunLog | null> {
+  const logDir = getRunLogDir(cwd);
   try {
-    const entries = await readdir(LOG_DIR);
+    const entries = await readdir(logDir);
     const candidates = await Promise.all(
       entries
         .filter((name) => name.endsWith(".json"))
         .map(async (name) => {
-          const file = path.join(LOG_DIR, name);
+          const file = path.join(logDir, name);
           try {
             return { file, mtimeMs: (await stat(file)).mtimeMs };
           } catch {
@@ -703,14 +710,15 @@ async function findImplementLogForWorktree(worktreePath: string): Promise<Implem
   return null;
 }
 
-async function findImplementLogRecordForWorktree(worktreePath: string): Promise<{ file: string; parsed: ImplementRunLog } | null> {
+async function findImplementLogRecordForWorktree(worktreePath: string, cwd?: string): Promise<{ file: string; parsed: ImplementRunLog } | null> {
+  const logDir = getRunLogDir(cwd);
   try {
-    const entries = await readdir(LOG_DIR);
+    const entries = await readdir(logDir);
     const candidates = await Promise.all(
       entries
         .filter((name) => name.endsWith(".json"))
         .map(async (name) => {
-          const file = path.join(LOG_DIR, name);
+          const file = path.join(logDir, name);
           try {
             return { file, mtimeMs: (await stat(file)).mtimeMs };
           } catch {
@@ -739,9 +747,10 @@ async function findImplementLogRecordForWorktree(worktreePath: string): Promise<
 
 async function updateImplementLifecycleForWorktree(
   worktreePath: string,
-  update: Partial<NonNullable<GenericRunLog["downstream"]>>
+  update: Partial<NonNullable<GenericRunLog["downstream"]>>,
+  cwd?: string,
 ): Promise<void> {
-  const record = await findImplementLogRecordForWorktree(worktreePath);
+  const record = await findImplementLogRecordForWorktree(worktreePath, cwd);
   if (!record) return;
   const parsed = record.parsed as GenericRunLog;
   const timestamp = new Date().toISOString();
@@ -857,8 +866,9 @@ function summarizeRecentRuns(entries: RunLogEntrySummary[]): { entries: RunLogEn
   return { entries, lifecycle_counts: lifecycleCounts };
 }
 
-async function readRunLogFile(runId: string): Promise<GenericRunLog | null> {
-  const file = path.join(LOG_DIR, `${runId}.json`);
+async function readRunLogFile(runId: string, cwd?: string): Promise<GenericRunLog | null> {
+  const logDir = getRunLogDir(cwd);
+  const file = path.join(logDir, `${runId}.json`);
   try {
     return JSON.parse(await readFile(file, "utf8")) as GenericRunLog;
   } catch {
@@ -868,13 +878,14 @@ async function readRunLogFile(runId: string): Promise<GenericRunLog | null> {
 
 export async function listRunLogs(input: ClaudeRunsInput): Promise<ClaudeRunsResult> {
   const limit = input.limit ?? 20;
+  const logDir = getRunLogDir(input.cwd);
   try {
-    const entries = await readdir(LOG_DIR);
+    const entries = await readdir(logDir);
     const candidates = await Promise.all(
       entries
         .filter((name) => name.endsWith(".json"))
         .map(async (name) => {
-          const file = path.join(LOG_DIR, name);
+          const file = path.join(logDir, name);
           try {
             const stats = await stat(file);
             return { file, runId: name.replace(/\.json$/, ""), mtimeMs: stats.mtimeMs, updatedAt: new Date(stats.mtimeMs).toISOString() };
@@ -914,7 +925,7 @@ export async function getRecentRunsSummary(cwd: string, limit = 5): Promise<{ en
 }
 
 export async function getRunLogById(input: ClaudeRunInspectInput): Promise<ClaudeRunInspectResult | null> {
-  const raw = await readRunLogFile(input.run_id);
+  const raw = await readRunLogFile(input.run_id, input.cwd);
   if (!raw) return null;
 
   const summary = summarizeRunLog(input.run_id, raw);
@@ -1142,7 +1153,7 @@ export async function getClaudeResult(input: ClaudeResultInput): Promise<ClaudeR
     if (!resolvedRun) {
       throw new Error(`Run not found: ${input.run_id}`);
     }
-    resultPayload = buildRunResultPayload((await readRunLogFile(input.run_id)) ?? {} as GenericRunLog);
+    resultPayload = buildRunResultPayload((await readRunLogFile(input.run_id, input.cwd)) ?? {} as GenericRunLog);
   } else {
     const runTypeFilter = prefer === "latest-implement" ? "implement" : prefer === "latest-review" ? "review" : undefined;
     const jobTypeFilter = runTypeFilter;
@@ -1162,7 +1173,7 @@ export async function getClaudeResult(input: ClaudeResultInput): Promise<ClaudeR
     if (prefer === "latest-run" || (!latestJob && latestRun)) {
       if (latestRun) {
         resolvedRun = await getRunLogById({ cwd: input.cwd, run_id: latestRun.run_id });
-        resultPayload = buildRunResultPayload((await readRunLogFile(latestRun.run_id)) ?? {} as GenericRunLog);
+        resultPayload = buildRunResultPayload((await readRunLogFile(latestRun.run_id, input.cwd)) ?? {} as GenericRunLog);
       }
     } else if (prefer === "latest-job" || !latestRun) {
       if (latestJob) {
@@ -1183,7 +1194,7 @@ export async function getClaudeResult(input: ClaudeResultInput): Promise<ClaudeR
         }
       } else {
         resolvedRun = await getRunLogById({ cwd: input.cwd, run_id: latestRun.run_id });
-        resultPayload = buildRunResultPayload((await readRunLogFile(latestRun.run_id)) ?? {} as GenericRunLog);
+        resultPayload = buildRunResultPayload((await readRunLogFile(latestRun.run_id, input.cwd)) ?? {} as GenericRunLog);
       }
     }
   }
@@ -1807,7 +1818,7 @@ export async function cleanupBackgroundJobs(
 export async function resolveLatestImplementSession(input: { cwd: string }): Promise<{ run_id: string; session_id: string } | null> {
   const runs = await listRunLogs({ cwd: input.cwd, type: "implement", limit: 50 });
   for (const run of runs.entries) {
-    const raw = await readRunLogFile(run.run_id);
+    const raw = await readRunLogFile(run.run_id, input.cwd);
     const sessionId =
       raw && typeof raw.session?.returned_session_id === "string"
         ? raw.session.returned_session_id
@@ -2877,7 +2888,7 @@ export async function runClaudeQuery(
 
     const sessionLog: SessionLog = { requested_session_id: requestedSessionId, resumed, forked, returned_session_id: session_id };
     const logWriteStart = Date.now();
-    await logRun(runId, { type: "query", input, report, session: sessionLog });
+    await logRun(runId, { type: "query", input, report, session: sessionLog }, input.cwd);
     const logWriteMs = Date.now() - logWriteStart;
     const pruneStart = Date.now();
     store.prune();
@@ -2918,7 +2929,7 @@ export async function runClaudeQuery(
         }
         const sessionLog: SessionLog = { requested_session_id: requestedSessionId, resumed: false, forked: false, returned_session_id: session_id };
         const logWriteStart = Date.now();
-        await logRun(runId, { type: "query", input, report, session: sessionLog, retried_after_session_expired: true });
+        await logRun(runId, { type: "query", input, report, session: sessionLog, retried_after_session_expired: true }, input.cwd);
         const logWriteMs = Date.now() - logWriteStart;
         return makeEnvelope(
           "success",
@@ -2937,12 +2948,12 @@ export async function runClaudeQuery(
           { claude_report: report }
         );
       } catch (retryErr) {
-        await logRun(runId, { type: "query", input, error: (retryErr as Error).message, retried_after_session_expired: true });
+        await logRun(runId, { type: "query", input, error: (retryErr as Error).message, retried_after_session_expired: true }, input.cwd);
         throw retryErr;
       }
     }
 
-    await logRun(runId, { type: "query", input, error: errorMsg });
+    await logRun(runId, { type: "query", input, error: errorMsg }, input.cwd);
     throw err;
   }
 }
@@ -3026,11 +3037,11 @@ export async function runClaudeReview(
 
   try {
     const { report, execution } = await spawnClaude(opts);
-    await logRun(runId, { type: "review", input, report });
+    await logRun(runId, { type: "review", input, report }, input.cwd);
     await markReviewGatePending(input.cwd, false, "review").catch(() => {});
     return makeEnvelope("success", report, execution, [], { claude_report: report });
   } catch (err) {
-    await logRun(runId, { type: "review", input, error: (err as Error).message });
+    await logRun(runId, { type: "review", input, error: (err as Error).message }, input.cwd);
     throw err;
   }
 }
@@ -3072,7 +3083,7 @@ export async function runClaudeImplement(
       dirty_requested_files: dirtyFiles,
       error: message,
       duration_ms: 0,
-    });
+    }, implementInput.cwd);
     return result;
   }
 
@@ -3096,8 +3107,8 @@ export async function runClaudeImplement(
       input: implementInput,
       error: `Failed to prepare worktree/base commit: ${err instanceof Error ? err.message : String(err)}`,
       duration_ms: 0,
-    });
-    throw err;
+    }, implementInput.cwd);
+      throw err;
   }
 
   const resumeSessionId = implementInput.session_key ?? undefined;
@@ -3166,14 +3177,14 @@ export async function runClaudeImplement(
         session: sessionLog,
         error: errorMsg,
         duration_ms: durationMs,
-      });
+      }, implementInput.cwd);
       return makeEnvelope("failed", undefined, failedExecution, warnings, {
         claude_report: failedReport,
         server_observed: observed,
       });
     }
 
-    await logRun(runId, { type: "implement", input: implementInput, error: errorMsg, duration_ms: Date.now() - startTime });
+    await logRun(runId, { type: "implement", input: implementInput, error: errorMsg, duration_ms: Date.now() - startTime }, implementInput.cwd);
     throw err;
   }
 
@@ -3225,7 +3236,7 @@ export async function runClaudeImplement(
     execution,
     session: sessionLog,
     duration_ms: Date.now() - startTime,
-  });
+  }, implementInput.cwd);
 
   store.prune();
   const status = implementEnvelopeStatus(report, execution, observed);
@@ -3266,20 +3277,20 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
       conflicts: result.conflicts,
       error: result.error,
       duration_ms: Date.now() - startTime,
-    });
+    }, input.cwd);
     const wtRelPath = path.join(".claude", "worktrees", path.basename(path.resolve(input.cwd, input.worktree_path)));
     if (input.preview === true) {
       await updateImplementLifecycleForWorktree(wtRelPath, {
         current_lifecycle: result.error ? "apply_blocked" : "success",
         previewed_at: new Date().toISOString(),
         last_apply_run_id: runId,
-      }).catch(() => {});
+      }, input.cwd).catch(() => {});
     } else {
       await updateImplementLifecycleForWorktree(wtRelPath, {
         current_lifecycle: result.error ? "apply_blocked" : (result.applied_files.length > 0 ? "applied" : "unknown"),
         applied_at: result.applied_files.length > 0 ? new Date().toISOString() : undefined,
         last_apply_run_id: runId,
-      }).catch(() => {});
+      }, input.cwd).catch(() => {});
     }
     if (!result.error && input.preview !== true && result.applied_files.length > 0) {
       await markReviewGatePending(input.cwd, true, "write").catch(() => {});
@@ -3301,7 +3312,7 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   }
 
   const wtRelPath = path.join(".claude", "worktrees", path.basename(wtReal));
-  const implementLog = await findImplementLogForWorktree(wtRelPath);
+  const implementLog = await findImplementLogForWorktree(wtRelPath, input.cwd);
   const observedBaseCommit =
     typeof implementLog?.observed?.base_commit === "string" ? implementLog.observed.base_commit.trim() : "";
   const baseCommit = observedBaseCommit || undefined;
@@ -3309,7 +3320,7 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
     ? implementLog.observed.changed_files.filter((item): item is string => typeof item === "string" && item.length > 0)
     : [];
   const hasObservedScope = baseCommit !== undefined && observedChangedFiles.length > 0;
-  const pathspecs = hasObservedScope ? observedChangedFiles : ["src/"];
+  const pathspecs = hasObservedScope ? observedChangedFiles : [];
 
   let diffStat = "";
   if (baseCommit) {
@@ -3326,9 +3337,7 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
 
   const changesByFile = new Map<string, { status: string; file: string }>();
   function addChange(change: { status: string; file: string }): void {
-    if (hasObservedScope) {
-      if (!observedChangedFiles.some((observed) => isUnderRequestedFile(change.file, observed))) return;
-    } else if (!change.file.startsWith("src/")) {
+    if (hasObservedScope && !observedChangedFiles.some((observed) => isUnderRequestedFile(change.file, observed))) {
       return;
     }
     changesByFile.set(change.file, change);
@@ -3342,15 +3351,15 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   if (!baseCommit) {
     usedFallback = true;
     const [legacyDiffStatus, legacyHeadStatus, legacyStatus] = await Promise.all([
-      execCapture("git", ["diff", "--name-status", "-z", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
-      execCapture("git", ["diff", "--name-status", "-z", "HEAD~1", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
-      execCapture("git", ["status", "--porcelain=v1", "-z", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
+      execCapture("git", ["diff", "--name-status", "-z", "--"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
+      execCapture("git", ["diff", "--name-status", "-z", "HEAD~1", "--"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
+      execCapture("git", ["status", "--porcelain=v1", "-z", "--"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
     ]);
     for (const change of parseNameStatusPorcelainZ(legacyDiffStatus)) addChange(change);
     for (const change of parseNameStatusPorcelainZ(legacyHeadStatus)) addChange(change);
     for (const change of parseStatusPorcelainZ(legacyStatus)) addChange(change);
     if (!diffStat.trim()) {
-      diffStat = await execCapture("git", ["diff", "--stat", "HEAD~1", "--", "src/"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => "");
+      diffStat = await execCapture("git", ["diff", "--stat", "HEAD~1", "--"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => "");
     }
   }
 
@@ -3534,7 +3543,7 @@ export async function runClaudeCleanup(input: ClaudeCleanupInput, runId: string)
           current_lifecycle: "cleaned",
           cleaned_at: new Date().toISOString(),
           last_cleanup_run_id: runId,
-        }).catch(() => {});
+        }, input.cwd).catch(() => {});
       } catch (err) {
         failedCount++;
         entries.push({ worktree_name: name, removed: false, error: err instanceof Error ? err.message : String(err) });
@@ -3560,7 +3569,7 @@ export async function runClaudeCleanup(input: ClaudeCleanupInput, runId: string)
     removed_count: removedCount,
     failed_count: failedCount,
     duration_ms: Date.now() - startTime,
-  });
+  }, input.cwd);
 
   return { dry_run: dryRun, removed_count: removedCount, failed_count: failedCount, entries };
 }

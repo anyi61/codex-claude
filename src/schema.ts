@@ -559,9 +559,9 @@ export const claudeSetupInputSchema = z.object({
 export const claudeQueryInputSchema = z.object({
   task: taskSchema,
   cwd: cwdSchema,
+  instruction_files: filesSchema,
   timeout_sec: timeoutSchema.optional(),
   max_turns: maxTurnsSchema.optional(),
-  background: z.boolean().optional(),
   fast: z.boolean().optional(),
   resume: z.boolean().optional(),
 });
@@ -570,10 +570,10 @@ export const claudeReviewInputSchema = z.object({
   task: taskSchema,
   cwd: cwdSchema,
   diff: z.string().optional(),
+  instruction_files: filesSchema,
   files: filesSchema,
   timeout_sec: timeoutSchema.default(180),
   max_turns: maxTurnsSchema.optional(),
-  background: z.boolean().optional(),
 });
 
 export const claudeImplementInputSchema = z.object({
@@ -589,7 +589,6 @@ export const claudeImplementInputSchema = z.object({
   max_cost_usd: z.number().positive().max(10).optional(),
   max_changed_files: z.number().int().positive().max(100).optional(),
   worktreeName: worktreeNameSchema,
-  background: z.boolean().optional(),
   dirty_policy: dirtyPolicySchema,
 }).refine((value) => !value.fork_session || !!value.session_key, {
   message: "fork_session requires session_key",
