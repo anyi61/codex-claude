@@ -43,7 +43,7 @@ claude_task(mode="read", cwd="/path/to/your/repo", task="Summarize this repo")
 1. 克隆本仓库并进入目录：
 
    ```bash
-   git clone https://github.com/anyi/codex-claude.git
+   git clone https://github.com/anyi61/codex-claude.git
    cd codex-claude
    ```
 
