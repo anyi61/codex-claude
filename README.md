@@ -81,9 +81,12 @@ npm run uninstall           # 交互式卸载
 npm run uninstall -- --yes  # 非交互卸载，状态目录默认全部保留
 ```
 
-卸载脚本会处理插件市场条目、MCP server、Codex 配置残留和 review-gate hook。`.codex-claude-delegate/` 会在交互中询问如何处理：全部删除、全部保留或指定保留项。仓库目录和 delegated worktree 不会被自动删除。
+卸载脚本按两个主体工作：
 
-`uninstall:dry-run` 会报告 delegated worktree 残留。检测范围不只限于当前仓库目录，还会包含 `CODEX_CLAUDE_ALLOW_ROOTS` 中配置的 workspace，以及状态记录中的 `jobs`、`runs`、`review-gate.json` 所引用的 workspace。输出会显示 worktree 的绝对路径；如需清理，进入对应 workspace 后使用 `claude_cleanup(cwd="...", dry_run=true)` 确认，再用 `dry_run=false` 删除。
+- **全局 Codex/plugin 配置**：插件市场条目、MCP server、`~/.codex/config.toml` 中的 `claude_delegate` 配置和 `CODEX_CLAUDE_ALLOW_ROOTS`。
+- **所有已知 workspace**：当前卸载仓库、`CODEX_CLAUDE_ALLOW_ROOTS` 中配置的仓库、其直接子目录中带 `.codex-claude-delegate/` 的仓库、以及 `.codex-claude-delegate/jobs`、`runs`、`review-gate.json` 中引用过的仓库。
+
+`uninstall:dry-run` 会完整报告两个主体，不修改 TOML、不删除文件、不执行 remove 命令。`uninstall` 会清理全局配置；workspace-local `.codex-claude-delegate/` 按交互或 `--keep-state` 处理。delegated worktree 只报告绝对路径，不自动删除；如需清理，先按 workspace 检查，再运行 `claude_cleanup(cwd="...", dry_run=true)` 确认，随后用 `dry_run=false` 删除。若 MCP 已被移除，则在对应仓库中手动使用 git worktree 命令清理。
 
 卸载后建议重启 Codex。
 

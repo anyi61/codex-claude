@@ -230,7 +230,7 @@ npm install → npm run build:plugin → npm run check:plugin → npm test → n
 | Plugin MCP entry | `plugins/codex-claude-delegate/server/server.js` | **[NEW]** 仓库追踪 |
 | Plugin runner | `plugins/codex-claude-delegate/server/job-runner.js` | **[NEW]** 仓库追踪 |
 
-卸载 dry-run 的 worktree 检测会汇总当前卸载仓库、`CODEX_CLAUDE_ALLOW_ROOTS`、以及 state 中 `jobs` / `runs` / `review-gate.json` 记录的 workspace，再逐个报告 `.claude/worktrees/codex-delegated-*`。检测只报告绝对路径，不自动删除。
+卸载模型分为 global resources 和 workspace resources。Global resources 只处理一次；workspace resources 会按已知 workspace 分组扫描。已知 workspace 来源包括当前卸载仓库、`CODEX_CLAUDE_ALLOW_ROOTS`、配置根目录直接子目录中的 `.codex-claude-delegate/`、以及 state JSON 中记录的 `cwd` / `input.cwd` / `workspace_root` / `repo_root`。扫描是有界的：只检查明确配置的路径及其直接子目录，不递归扫整个磁盘，并跳过 `/`、`/tmp`、`/etc` 和用户 home 这类过宽根目录。
 
 ---
 

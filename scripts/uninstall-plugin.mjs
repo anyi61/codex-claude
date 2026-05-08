@@ -127,9 +127,17 @@ function splitAllowRootsValue(value) {
   return value.split(delimiterPattern).map((part) => part.trim()).filter(Boolean);
 }
 
+function dangerousScanRoot(rawPath) {
+  const resolved = path.resolve(rawPath);
+  const home = process.env.HOME ? path.resolve(process.env.HOME) : "";
+  return resolved === "/" || resolved === "/etc" || resolved === "/tmp" || (!!home && resolved === home);
+}
+
 function addCandidateWorkspace(candidates, rawPath) {
   if (!rawPath || typeof rawPath !== "string") return;
-  candidates.add(path.resolve(rawPath));
+  const resolved = path.resolve(rawPath);
+  if (dangerousScanRoot(resolved)) return;
+  candidates.add(resolved);
 }
 
 async function addWorkspaceCandidatesFromJsonFile(candidates, filePath) {
@@ -139,28 +147,57 @@ async function addWorkspaceCandidatesFromJsonFile(candidates, filePath) {
     addCandidateWorkspace(candidates, parsed?.cwd);
     addCandidateWorkspace(candidates, parsed?.input?.cwd);
     addCandidateWorkspace(candidates, parsed?.workspace_root);
+    addCandidateWorkspace(candidates, parsed?.repo_root);
   } catch {
     // Ignore malformed or concurrently written state files.
   }
 }
 
-async function discoverWorkspaceCandidates(configScan, stateDir) {
+async function discoverStateDirsUnderRoot(rawRoot) {
+  const root = path.resolve(rawRoot);
+  if (dangerousScanRoot(root)) return [];
+
+  const discovered = [];
+  if (existsSync(path.join(root, STATE_DIR_NAME))) {
+    discovered.push(root);
+  }
+
+  let children = [];
+  try {
+    children = await readdir(root, { withFileTypes: true });
+  } catch {
+    return discovered;
+  }
+
+  for (const child of children) {
+    if (!child.isDirectory()) continue;
+    const workspace = path.join(root, child.name);
+    if (existsSync(path.join(workspace, STATE_DIR_NAME))) {
+      discovered.push(workspace);
+    }
+  }
+
+  return discovered;
+}
+
+async function discoverWorkspaceCandidates(configScan, rootStateDir) {
   const candidates = new Set();
   addCandidateWorkspace(candidates, repoRoot);
 
-  if (configScan.allowRootsValue) {
-    for (const root of splitAllowRootsValue(configScan.allowRootsValue)) {
+  const allowRoots = [];
+  if (configScan.allowRootsValue) allowRoots.push(...splitAllowRootsValue(configScan.allowRootsValue));
+
+  for (const root of allowRoots) {
+    const resolvedRoot = path.resolve(root);
+    if (resolvedRoot === path.resolve(repoRoot) || existsSync(resolvedRoot)) {
       addCandidateWorkspace(candidates, root);
+    }
+    for (const workspace of await discoverStateDirsUnderRoot(root)) {
+      addCandidateWorkspace(candidates, workspace);
     }
   }
 
-  if (process.env.CODEX_CLAUDE_ALLOW_ROOTS) {
-    for (const root of splitAllowRootsValue(process.env.CODEX_CLAUDE_ALLOW_ROOTS)) {
-      addCandidateWorkspace(candidates, root);
-    }
-  }
-
-  const jobsDir = path.join(stateDir, "jobs");
+  const jobsDir = path.join(rootStateDir, "jobs");
   try {
     const jobs = await readdir(jobsDir);
     await Promise.all(
@@ -170,7 +207,7 @@ async function discoverWorkspaceCandidates(configScan, stateDir) {
     );
   } catch {}
 
-  const runsDir = path.join(stateDir, "runs");
+  const runsDir = path.join(rootStateDir, "runs");
   try {
     const runs = await readdir(runsDir);
     await Promise.all(
@@ -180,31 +217,50 @@ async function discoverWorkspaceCandidates(configScan, stateDir) {
     );
   } catch {}
 
-  await addWorkspaceCandidatesFromJsonFile(candidates, path.join(stateDir, "review-gate.json"));
+  await addWorkspaceCandidatesFromJsonFile(candidates, path.join(rootStateDir, "review-gate.json"));
 
   return [...candidates].sort();
 }
 
-async function scanDelegatedWorktrees(configScan, stateDir) {
-  const workspaces = await discoverWorkspaceCandidates(configScan, stateDir);
-  const delegatedWorktrees = [];
+async function scanWorkspaceResources(configScan, rootStateDir) {
+  const workspaces = await discoverWorkspaceCandidates(configScan, rootStateDir);
+  const resources = [];
 
   for (const workspace of workspaces) {
-    const worktreesDir = path.join(workspace, ".claude", "worktrees");
-    if (!existsSync(worktreesDir)) continue;
-    try {
-      const entries = await readdir(worktreesDir);
-      for (const name of entries.filter((entry) => entry.startsWith("codex-delegated-")).sort()) {
-        delegatedWorktrees.push({
-          workspace,
-          name,
-          path: path.join(worktreesDir, name),
-        });
+    const stateDir = path.join(workspace, STATE_DIR_NAME);
+    const stateExists = existsSync(stateDir);
+    let stateItems = [];
+    let stateDetails = [];
+    if (stateExists) {
+      try {
+        stateItems = await readdir(stateDir);
+      } catch {}
+      for (const subdir of ["runs", "jobs"]) {
+        const subdirPath = path.join(stateDir, subdir);
+        try {
+          const subItems = await readdir(subdirPath);
+          for (const item of subItems) {
+            stateDetails.push(`${subdir}/${item}`);
+          }
+        } catch {}
       }
-    } catch {}
+    }
+
+    const worktreesDir = path.join(workspace, ".claude", "worktrees");
+    const delegatedWorktrees = [];
+    if (existsSync(worktreesDir)) {
+      try {
+        const entries = await readdir(worktreesDir);
+        for (const name of entries.filter((entry) => entry.startsWith("codex-delegated-")).sort()) {
+          delegatedWorktrees.push({ workspace, name, path: path.join(worktreesDir, name) });
+        }
+      } catch {}
+    }
+
+    resources.push({ workspace, stateDir, stateExists, stateItems, stateDetails, delegatedWorktrees });
   }
 
-  return delegatedWorktrees;
+  return resources;
 }
 
 async function inlineScan() {
@@ -254,27 +310,14 @@ async function scanResources() {
 
   // 1. Codex config scan
   const configScan = await scanFn();
-  if (configScan.exists) {
-    console.log(`  Config:     ${configScan.configPath}`);
-    if (configScan.hasAllowRoots) {
-      console.log(`  Allow roots: ${configScan.allowRootsValue}`);
-    }
-    if (configScan.mcpClassification) {
-      console.log(`  MCP origin:  ${configScan.mcpClassification.origin}`);
-    }
-  } else {
-    console.log(`  Config:     (not found)`);
-  }
 
   // 2. Marketplace
   let marketplaceName = null;
   try {
     const listOut = execFileSync("codex", ["plugin", "marketplace", "list"], { encoding: "utf8", stdio: "pipe", timeout: 15000 });
-    // Try to find our plugin name from output
     const lines = listOut.split("\n").map(l => l.trim()).filter(Boolean);
     for (const line of lines) {
       if (line.includes("codex-claude") || line.includes("codex_claude")) {
-        // Extract the name (first word before whitespace or colon)
         const name = line.split(/[:\s]/)[0].trim();
         if (name) {
           marketplaceName = name;
@@ -282,41 +325,47 @@ async function scanResources() {
         }
       }
     }
-  } catch {
-    // codex CLI might not be available or no marketplace configured
-  }
-  console.log(`  Marketplace: ${marketplaceName ?? "(not detected)"}`);
+  } catch {}
 
-  // 3. State dir
-  const stateDir = path.join(repoRoot, STATE_DIR_NAME);
-  let stateItems = [];
-  if (existsSync(stateDir)) {
-    try {
-      stateItems = await readdir(stateDir);
-    } catch {}
-  }
-  console.log(`  State dir:   ${stateDir} (${stateItems.length} items)`);
-  for (const item of stateItems) {
-    console.log(`    - ${item}`);
-  }
-
-  // 4. Hooks
+  // 3. Hooks
   const hookManifest = path.join(repoRoot, "plugins", "codex-claude-delegate", "hooks", "hooks.json");
   const hookInstalled = existsSync(hookManifest);
-  console.log(`  Hooks:       ${hookInstalled ? hookManifest : "(not found)"}`);
 
-  // 5. Worktrees
-  const delegatedWorktrees = await scanDelegatedWorktrees(configScan, stateDir);
-  if (delegatedWorktrees.length > 0) {
-    console.log(`  Worktrees:`);
-    for (const wt of delegatedWorktrees) {
-      console.log(`    - ${wt.path}`);
+  // 4. Workspace resources
+  const rootStateDir = path.join(repoRoot, STATE_DIR_NAME);
+  const workspaceResources = await scanWorkspaceResources(configScan, rootStateDir);
+  const delegatedWorktrees = workspaceResources.flatMap((workspace) => workspace.delegatedWorktrees);
+  const globalResources = { configScan, marketplaceName, hookInstalled, hookManifest };
+
+  // Print global resources
+  console.log(`  Global resources:`);
+  console.log(`    Config:      ${configScan.exists ? configScan.configPath : "(not found)"}`);
+  if (configScan.hasAllowRoots) console.log(`    Allow roots: ${configScan.allowRootsValue}`);
+  if (configScan.mcpClassification) console.log(`    MCP origin:  ${configScan.mcpClassification.origin}`);
+  console.log(`    Marketplace: ${marketplaceName ?? "(not detected)"}`);
+  console.log(`    Hooks:       ${hookInstalled ? hookManifest : "(not found)"}`);
+
+  // Print workspace resources
+  console.log(`\n  Workspace resources:`);
+  for (const workspace of workspaceResources) {
+    console.log(`    workspace: ${workspace.workspace}`);
+    if (workspace.stateExists) {
+      const allDetailItems = [...workspace.stateItems, ...workspace.stateDetails];
+      console.log(`      State dir: ${workspace.stateDir} (${allDetailItems.length} items)`);
+      for (const item of workspace.stateItems) console.log(`        - ${item}`);
+      for (const item of workspace.stateDetails) console.log(`        - ${item}`);
+    } else {
+      console.log(`      State dir: (not found)`);
     }
-  } else {
-    console.log(`  Worktrees:   (none detected)`);
+    if (workspace.delegatedWorktrees.length > 0) {
+      console.log(`      Worktrees:`);
+      for (const wt of workspace.delegatedWorktrees) console.log(`        - ${wt.path}`);
+    } else {
+      console.log(`      Worktrees: (none detected)`);
+    }
   }
 
-  return { configScan, marketplaceName, stateDir, stateItems, hookInstalled, delegatedWorktrees };
+  return { configScan, marketplaceName, hookInstalled, globalResources, workspaceResources, delegatedWorktrees };
 }
 
 async function phaseRemoveMarketplace(scan) {
@@ -381,6 +430,33 @@ async function phaseCleanTomlRemainders(scan) {
   // Re-scan to get fresh state
   const freshScan = await scanFn();
 
+  // Handle allow-roots — cleans shell env policy section (MCP env section
+  // is already removed by codex mcp remove above, so only shell env remains)
+  if (freshScan.hasAllowRoots && removeAllowRootFn) {
+    const rootsToRemove = scan.workspaceResources.map((workspace) => workspace.workspace);
+    for (const root of rootsToRemove) {
+      try {
+        const result = await removeAllowRootFn(root);
+        if (result.changed) {
+          console.log(`  ${result.message}`);
+          recordSuccess("toml-allow-root", result.message);
+        } else {
+          console.log(`  Allow roots: ${result.message}`);
+          recordSkipped("toml-allow-root", result.message);
+        }
+      } catch (err) {
+        console.log(`  Failed to remove allow root ${root}: ${err.message}`);
+        recordFailed("toml-allow-root", err.message);
+      }
+    }
+  } else if (freshScan.hasAllowRoots) {
+    console.log("  Allow roots found but codex-config not available; remove manually.");
+    recordManual("toml-allow-root", `${ALLOW_ROOTS_KEY} remains in config`);
+  } else {
+    console.log("  No allow roots remain after MCP server removal.");
+    recordSkipped("toml-allow-root", "None remaining");
+  }
+
   // Handle MCP server section remains
   if (freshScan.mcpClassification) {
     if (freshScan.mcpClassification.origin === "manual") {
@@ -427,26 +503,6 @@ async function phaseCleanTomlRemainders(scan) {
     console.log("  No MCP server section remainders in TOML.");
     recordSkipped("toml-mcp", "No remainder");
   }
-
-  // Handle allow-roots
-  if (freshScan.hasAllowRoots && removeAllowRootFn) {
-    try {
-      const result = await removeAllowRootFn(repoRoot);
-      if (result.changed) {
-        console.log(`  ${result.message}`);
-        recordSuccess("toml-allow-root", result.message);
-      } else {
-        console.log(`  Allow roots: ${result.message}`);
-        recordSkipped("toml-allow-root", result.message);
-      }
-    } catch (err) {
-      console.log(`  Failed to remove allow root: ${err.message}`);
-      recordFailed("toml-allow-root", err.message);
-    }
-  } else {
-    console.log("  No allow-roots remainder for this repo.");
-    recordSkipped("toml-allow-root", "None");
-  }
 }
 
 async function confirmManualMcpRemoval() {
@@ -461,89 +517,92 @@ async function confirmManualMcpRemoval() {
   });
 }
 
-async function phaseHandleStateDir(scan) {
-  console.log("\n[phase] Handling .codex-claude-delegate/ state directory...");
+async function handleSingleStateDir(workspaceResource) {
   if (dryRun) {
-    if (scan.stateItems.length > 0) {
-      console.log(`  (dry-run) state directory has ${scan.stateItems.length} item(s):`);
-      for (const item of scan.stateItems) {
-        console.log(`    - ${item}`);
-      }
+    if (workspaceResource.stateExists && workspaceResource.stateItems.length > 0) {
+      const allItems = [...workspaceResource.stateItems, ...workspaceResource.stateDetails];
+      console.log(`  (dry-run) ${workspaceResource.stateDir} has ${allItems.length} item(s):`);
+      for (const item of workspaceResource.stateItems) console.log(`    - ${item}`);
+      for (const item of workspaceResource.stateDetails) console.log(`    - ${item}`);
     } else {
-      console.log("  (dry-run) state directory does not exist or is empty.");
+      console.log(`  (dry-run) ${workspaceResource.stateDir} does not exist or is empty.`);
     }
-    recordSkipped("state-dir", "dry-run");
     return;
   }
 
-  if (!existsSync(scan.stateDir)) {
+  if (!workspaceResource.stateExists) {
     console.log("  State directory does not exist; nothing to clean.");
-    recordSkipped("state-dir", "Not found");
+    recordSkipped("state-dir", `${workspaceResource.workspace}: not found`);
     return;
   }
 
+  const { stateDir, stateItems } = workspaceResource;
   const itemsToDelete = [];
   let itemsToKeep = [];
 
   if (yesMode) {
-    // --yes mode: default keep all, or respect --keep-state
     if (keepState === "all") {
       console.log("  --yes mode: keeping all state files.");
-      recordSkipped("state-dir", "All kept (--yes mode)");
+      recordSkipped("state-dir", `${workspaceResource.workspace}: All kept (--yes mode)`);
       return;
     } else if (keepState === "none") {
-      itemsToDelete.push(...scan.stateItems);
+      itemsToDelete.push(...stateItems);
     } else {
       const keepList = keepState.split(",").map(s => s.trim()).filter(Boolean);
       itemsToKeep = keepList;
       const knownFiles = { sessions: "sessions.json", runs: "runs", jobs: "jobs", "review-gate": "review-gate.json" };
-      for (const item of scan.stateItems) {
+      for (const item of stateItems) {
         const isKept = keepList.some(k => knownFiles[k] && item === knownFiles[k]);
         if (!isKept) itemsToDelete.push(item);
       }
     }
   } else {
-    // Interactive mode
-    const chosen = await interactiveStateDirPrompt(scan.stateItems);
+    const chosen = await interactiveStateDirPrompt(stateItems);
     if (chosen === "all") {
-      itemsToDelete.push(...scan.stateItems);
+      itemsToDelete.push(...stateItems);
     } else if (chosen === "none") {
       console.log("  Keeping all state files.");
-      recordSkipped("state-dir", "All kept by user choice");
+      recordSkipped("state-dir", `${workspaceResource.workspace}: All kept by user choice`);
       return;
     } else {
-      // chosen is an array of items to keep
       itemsToKeep = chosen;
-      for (const item of scan.stateItems) {
+      for (const item of stateItems) {
         if (!chosen.includes(item)) itemsToDelete.push(item);
       }
     }
   }
 
-  // Delete selected items
   for (const item of itemsToDelete) {
-    const itemPath = path.join(scan.stateDir, item);
+    const itemPath = path.join(stateDir, item);
     try {
       await rm(itemPath, { recursive: true, force: true });
       console.log(`  Deleted: ${item}`);
-      recordSuccess("state-dir", `Deleted ${item}`);
+      recordSuccess("state-dir", `${workspaceResource.workspace}: Deleted ${item}`);
     } catch (err) {
       console.log(`  Failed to delete ${item}: ${err.message}`);
-      recordFailed("state-dir", `Failed to delete ${item}`);
+      recordFailed("state-dir", `${workspaceResource.workspace}: Failed to delete ${item}`);
     }
   }
 
-  // If state dir is now empty, remove it
   if (itemsToDelete.length > 0) {
     try {
-      const remaining = await readdir(scan.stateDir);
+      const remaining = await readdir(stateDir);
       if (remaining.length === 0) {
-        await rm(scan.stateDir, { recursive: true, force: true });
+        await rm(stateDir, { recursive: true, force: true });
         console.log("  Removed empty state directory.");
-        recordSuccess("state-dir", "Removed empty directory");
+        recordSuccess("state-dir", `${workspaceResource.workspace}: Removed empty directory`);
       }
     } catch {}
   }
+}
+
+async function phaseHandleStateDir(scan) {
+  console.log("\n[phase] Handling workspace state directories...");
+  for (const workspaceResource of scan.workspaceResources) {
+    console.log(`  Workspace: ${workspaceResource.workspace}`);
+    await handleSingleStateDir(workspaceResource);
+  }
+  if (dryRun) recordSkipped("state-dir", "dry-run");
 }
 
 async function interactiveStateDirPrompt(items) {
@@ -603,7 +662,8 @@ async function phaseReportWorktrees(scan) {
     console.log(`    ${wt.path}`);
   }
   console.log("  These are not automatically deleted.");
-  console.log("  To clean up: run claude_cleanup(cwd=<workspace>, dry_run=true) then claude_cleanup(cwd=<workspace>, dry_run=false).");
+  console.log("  To clean up through this MCP before uninstall finishes, run claude_cleanup(cwd=<workspace>, dry_run=true) then claude_cleanup(cwd=<workspace>, dry_run=false).");
+  console.log("  If the MCP has already been removed, inspect the owning repository and remove stale worktrees manually with git worktree remove.");
   recordManual("worktrees", `${scan.delegatedWorktrees.length} worktree(s) found; manual cleanup required`);
 
   if (!dryRun) {
