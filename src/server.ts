@@ -150,7 +150,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "claude_task",
     description:
-      "Default tool. High-level rescue/task entrypoint that routes to query, review, or implement and returns a background job for polling.",
+      "Default tool. High-level rescue/task entrypoint that routes to query, review, or implement and returns a background job for polling. Does not accept max_turns \u2014 use Advanced/Debug tools (claude_query, claude_review, claude_implement) for explicit turn caps.",
     inputSchema: {
       type: "object",
       required: ["cwd", "task"],
@@ -165,7 +165,6 @@ export const TOOL_DEFINITIONS = [
         constraints: { type: "array", items: { type: "string" }, description: "Implementation constraints for write mode" },
         diff: { type: "string", description: "Diff to review. Presence strongly biases auto mode toward review." },
         timeout_sec: { type: "number", description: "Timeout in seconds for the delegated task" },
-        max_turns: { type: "number", description: "Maximum Claude turns for the delegated task" },
         dirty_policy: { type: "string", enum: ["ask", "committed", "snapshot"], description: "Write-mode handling for uncommitted main-workspace changes: ask (default), committed (ignore dirty changes and use HEAD), or snapshot (copy dirty files into the delegated worktree)." },
       },
     },
@@ -322,7 +321,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "claude_apply",
     description:
-      "Default tool. Apply a worktree's diff to the main working tree, then optionally clean up the worktree. Use after claude_implement to land changes.",
+      "Default tool. Preview a delegated worktree diff, or apply it only after explicit user approval. Non-preview apply requires confirmed_by_user=true.",
     inputSchema: {
       type: "object",
       required: ["cwd", "worktree_path"],
@@ -332,6 +331,10 @@ export const TOOL_DEFINITIONS = [
           cleanup: { type: "boolean", description: "Remove worktree after successful apply (default false)" },
           preview: { type: "boolean", description: "Preview which files would be applied without modifying the main working tree" },
           background: { type: "boolean", description: "Queue apply as a persistent background job" },
+          confirmed_by_user: {
+            type: "boolean",
+            description: "Required for non-preview apply after the user explicitly approves applying the previewed diff. Not required for preview=true.",
+          },
         },
       },
     },
@@ -612,19 +615,19 @@ export async function handleToolCall(name: string, args: unknown, runId = random
         const startTime = Date.now();
         const parsed = claudeApplyInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { cwd, worktree_path, cleanup, preview, background } = parsed.data;
+        const { cwd, worktree_path, cleanup, preview, background, confirmed_by_user } = parsed.data;
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
 
         if (background === true) {
           return jsonResult(await startBackgroundApply(
-            { cwd: check.resolved, worktree_path, cleanup, preview, background },
+            { cwd: check.resolved, worktree_path, cleanup, preview, background, confirmed_by_user },
           ));
         }
 
         const result = await runClaudeApply(
-          { cwd: check.resolved, worktree_path, cleanup, preview },
+          { cwd: check.resolved, worktree_path, cleanup, preview, confirmed_by_user },
           runId
         );
         return jsonResult({

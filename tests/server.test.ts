@@ -83,7 +83,7 @@ vi.mock("../src/claude-cli.js", () => ({
   waitForBackgroundJob: waitForBackgroundJobMock,
 }));
 
-const { handleToolCall, registerToolDefinitions } = await import("../src/server.js");
+const { handleToolCall, registerToolDefinitions, TOOL_DEFINITIONS } = await import("../src/server.js");
 
 function parsePayload(result: Awaited<ReturnType<typeof handleToolCall>>) {
   expect(result.content[0]?.type).toBe("text");
@@ -677,6 +677,42 @@ describe("server background job handlers", () => {
     expect((payload.job as Record<string, unknown>).type).toBe("apply");
   });
 
+  it("forwards confirmed_by_user to runClaudeApply", async () => {
+    const runClaudeApply = (await import("../src/claude-cli.js")).runClaudeApply as ReturnType<typeof vi.fn>;
+    runClaudeApply.mockResolvedValue({
+      applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [],
+      preview: false, planned_changes: [],
+    });
+
+    await handleToolCall("claude_apply", {
+      cwd: "/repo/input",
+      worktree_path: ".claude/worktrees/codex-delegated-x",
+      confirmed_by_user: true,
+    });
+
+    expect(runClaudeApply).toHaveBeenCalledWith(
+      expect.objectContaining({ confirmed_by_user: true }),
+      expect.any(String),
+    );
+  });
+
+  it("forwards confirmed_by_user to startBackgroundApply", async () => {
+    startBackgroundApplyMock.mockResolvedValue({
+      job: { job_id: "job-bg-apply", type: "apply", status: "queued" },
+    });
+
+    await handleToolCall("claude_apply", {
+      cwd: "/repo/input",
+      worktree_path: ".claude/worktrees/codex-delegated-x",
+      background: true,
+      confirmed_by_user: true,
+    });
+
+    expect(startBackgroundApplyMock).toHaveBeenCalledWith(
+      expect.objectContaining({ confirmed_by_user: true }),
+    );
+  });
+
   it("routes claude_cleanup background requests through startBackgroundCleanup", async () => {
     startBackgroundCleanupMock.mockResolvedValue({
       job: { job_id: "job-cleanup", type: "cleanup", status: "queued" },
@@ -698,6 +734,16 @@ describe("server background job handlers", () => {
       background: true,
     });
     expect((payload.job as Record<string, unknown>).type).toBe("cleanup");
+  });
+
+  it("does not expose max_turns on claude_task input schema", () => {
+    const taskTool = TOOL_DEFINITIONS.find((tool) => tool.name === "claude_task");
+    expect(taskTool?.inputSchema.properties).not.toHaveProperty("max_turns");
+  });
+
+  it("exposes confirmed_by_user on claude_apply input schema", () => {
+    const applyTool = TOOL_DEFINITIONS.find((tool) => tool.name === "claude_apply");
+    expect(applyTool?.inputSchema.properties).toHaveProperty("confirmed_by_user");
   });
 
   it("documents the six default tools and marks the rest as advanced", async () => {

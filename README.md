@@ -149,8 +149,8 @@ claude_task(mode="review", cwd="/path/to/your/repo", task="Check for security is
 claude_task(mode="write", cwd="/path/to/your/repo", task="Implement feature X")
   → claude_job_wait(cwd="...", job_id="...")
   → claude_result(cwd="...")
-  → claude_apply(cwd="...", worktree_path=".claude/worktrees/codex-delegated-xxx", preview=true)  # 预览
-  → claude_apply(cwd="...", worktree_path=".claude/worktrees/codex-delegated-xxx", cleanup=true) # 落地+清理
+   → claude_apply(cwd="...", worktree_path=".claude/worktrees/codex-delegated-xxx", preview=true)  # 预览
+   → 用户确认后：claude_apply(cwd="...", worktree_path=".claude/worktrees/codex-delegated-xxx", cleanup=true, confirmed_by_user=true) # 落地+清理
   → claude_cleanup(cwd="...", dry_run=true)  # 确认无残留
 ```
 
@@ -196,6 +196,8 @@ enabled_tools = ["claude_status", "claude_runs", "claude_run_inspect", "claude_w
 - **`claude_implement.files`** 是严格范围控制能力，用于需要精确限制修改范围的场景。
 - **工作区有未提交改动时：** 默认返回 `needs_user`。传 `dirty_policy=committed` 忽略本地改动，或 `dirty_policy=snapshot` 将当前未提交文件复制进 worktree。
 - **轮询行为：** `claude_job_wait` 不做长阻塞。返回 `poll_too_soon=true` 时等 `next_allowed_poll_at` 后重试。`waiting=true` 时不要本地重复执行或另起 job。
+- **回合上限：** `claude_task` 不接受 `max_turns`。只有用户明确要求限制 Claude 回合数时，才改用高级工具 `claude_query` / `claude_review` / `claude_implement` 并设置 `max_turns`。
+- **落地确认：** `preview=true` 只预览，不修改主工作区；非 preview 的 `claude_apply` 必须在用户确认后传 `confirmed_by_user=true`。
 
 ## 配置
 

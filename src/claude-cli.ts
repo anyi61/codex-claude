@@ -1044,13 +1044,8 @@ function buildNextActions(input: {
     if (worktreePath) {
       actions.push({
         tool: "claude_apply",
-        reason: "Preview the delegated worktree diff before modifying the main workspace.",
+        reason: "Preview the delegated worktree diff before modifying the main workspace. After preview, ask the user for explicit approval before any non-preview apply.",
         args: { cwd: input.cwd, worktree_path: worktreePath, preview: true },
-      });
-      actions.push({
-        tool: "claude_apply",
-        reason: "After preview and review, apply the delegated worktree diff and clean up the worktree.",
-        args: { cwd: input.cwd, worktree_path: worktreePath, cleanup: true },
       });
     }
     if (input.session?.session_id) {
@@ -1485,7 +1480,6 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
       task: input.task,
       instruction_files: instructionFiles,
       timeout_sec: input.timeout_sec,
-      max_turns: input.max_turns,
     });
     return {
       delegated_mode: delegatedMode,
@@ -1505,7 +1499,6 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
       diff: input.diff,
       instruction_files: instructionFiles,
       timeout_sec: input.timeout_sec,
-      max_turns: input.max_turns,
     });
     return {
       delegated_mode: delegatedMode,
@@ -1524,7 +1517,6 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
     instruction_files: instructionFiles,
     constraints: input.constraints,
     timeout_sec: input.timeout_sec,
-    max_turns: input.max_turns,
     resume_latest: input.resume_latest,
     dirty_policy: input.dirty_policy,
   });
@@ -3320,6 +3312,19 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   }
   if (!existsSync(wtReal)) {
     return finish({ applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: `worktree directory not found: ${wtReal}` });
+  }
+
+  // Non-preview apply requires explicit user approval
+  if (input.preview !== true && input.confirmed_by_user !== true) {
+    return finish({
+      applied_files: [],
+      diff_stat: "",
+      cleanup_performed: false,
+      conflicts: [],
+      error: "Non-preview claude_apply requires confirmed_by_user=true after the user explicitly approves applying the previewed diff.",
+      preview: false,
+      planned_changes: [],
+    });
   }
 
   const wtRelPath = path.join(".claude", "worktrees", path.basename(wtReal));

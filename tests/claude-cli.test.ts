@@ -444,6 +444,86 @@ describe("claude cli argument construction", () => {
     vi.resetModules();
   });
 
+  it("refuses non-preview apply without explicit user approval", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-approval-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const logDir = path.join(stateDir, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# original\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-approval";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    await writeFile(path.join(logDir, "approval-run.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["README.md"],
+      },
+    }, null, 2));
+
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+    }, "apply-without-approval");
+
+    expect(result.error).toContain("confirmed_by_user=true");
+    expect(result.applied_files).toEqual([]);
+    expect(await readFile(path.join(repo, "README.md"), "utf8")).toBe("# original\n");
+  });
+
+  it("refuses non-preview apply with confirmed_by_user=false", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-approval-false-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const logDir = path.join(stateDir, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# original\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+    const worktreeRel = ".claude/worktrees/codex-delegated-approval-false";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    await writeFile(path.join(logDir, "approval-false-run.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["README.md"],
+      },
+    }, null, 2));
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const explicitFalse = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      confirmed_by_user: false,
+    }, "apply-with-false-approval");
+    expect(explicitFalse.error).toContain("confirmed_by_user=true");
+    expect(explicitFalse.applied_files).toEqual([]);
+  });
+
   it("does not treat claude_task instruction files as apply scope", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-instruction-files-"));
     cleanupPaths.push(root);
@@ -491,6 +571,7 @@ describe("claude cli argument construction", () => {
     const applied = await reloaded.runClaudeApply({
       cwd: repo,
       worktree_path: worktreeRel,
+      confirmed_by_user: true,
     }, "apply-instruction-files");
 
     expect(applied.error).toBeUndefined();
@@ -544,6 +625,7 @@ describe("claude cli argument construction", () => {
     const applied = await reloaded.runClaudeApply({
       cwd: repo,
       worktree_path: worktreeRel,
+      confirmed_by_user: true,
     }, "apply-explicit-scope");
 
     expect(applied.error).toBe("Worktree contains changes outside requested files; apply refused");
@@ -591,6 +673,7 @@ describe("claude cli argument construction", () => {
     const applied = await reloaded.runClaudeApply({
       cwd: repo,
       worktree_path: worktreeRel,
+      confirmed_by_user: true,
     }, "apply-run");
     expect(applied.applied_files).toEqual(["README.md"]);
     let runs = await reloaded.listRunLogs({ cwd: repo, type: "implement" });
@@ -648,6 +731,7 @@ describe("claude cli argument construction", () => {
     const applied = await reloaded.runClaudeApply({
       cwd: repo,
       worktree_path: worktreeRel,
+      confirmed_by_user: true,
     }, "apply-directory");
 
     expect(applied.error).toBeUndefined();
@@ -1412,14 +1496,18 @@ describe("claude cli argument construction", () => {
     expect(result.run?.run_id).toBe("run-implement");
     expect(result.session?.session_id).toBe("sess-impl");
     expect(result.session?.source).toBe("run");
+    const applyActions = result.next_actions.filter(
+      (a: { tool: string }) => a.tool === "claude_apply"
+    );
+    expect(applyActions).toHaveLength(1);
+    expect(applyActions[0]).toMatchObject({
+      tool: "claude_apply",
+      reason: expect.stringContaining("ask the user for explicit approval"),
+      args: { cwd: repo, worktree_path: ".claude/worktrees/codex-delegated-123", preview: true },
+    });
     expect(result.next_actions.map((action) => action.tool)).toEqual(
       expect.arrayContaining(["claude_apply", "claude_implement"])
     );
-    expect(result.next_actions.find((action) => action.tool === "claude_apply" && action.args?.preview === true)?.args).toMatchObject({
-      cwd: repo,
-      worktree_path: ".claude/worktrees/codex-delegated-123",
-      preview: true,
-    });
   });
 
   it("resolves claude_result from an explicit run id", async () => {
@@ -1513,6 +1601,11 @@ describe("claude cli argument construction", () => {
     if (result.job) {
       expect(result.job.job_id).toBe("job-implement-new");
     }
+    const applyActions = result.next_actions.filter(
+      (a: { tool: string }) => a.tool === "claude_apply"
+    );
+    expect(applyActions).toHaveLength(1);
+    expect(applyActions[0]?.args?.preview).toBe(true);
     expect(result.next_actions.map((action) => action.tool)).toEqual(
       expect.arrayContaining(["claude_apply", "claude_implement"])
     );

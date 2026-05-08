@@ -14924,7 +14924,6 @@ var claudeTaskInputSchema = external_exports.object({
   constraints: constraintsSchema,
   diff: external_exports.string().optional(),
   timeout_sec: timeoutSchema.optional(),
-  max_turns: maxTurnsSchema.optional(),
   dirty_policy: dirtyPolicySchema
 }).refine((value) => value.mode !== "read" || !value.resume_latest, {
   message: "resume_latest is only supported for write mode",
@@ -14938,7 +14937,11 @@ var claudeApplyInputSchema = external_exports.object({
   worktree_path: external_exports.string().trim().min(1, "worktree_path is required"),
   cleanup: external_exports.boolean().optional(),
   preview: external_exports.boolean().optional(),
-  background: external_exports.boolean().optional()
+  background: external_exports.boolean().optional(),
+  confirmed_by_user: external_exports.boolean().optional()
+}).refine((value) => !(value.preview === true && value.cleanup === true), {
+  message: "preview=true cannot be combined with cleanup=true",
+  path: ["cleanup"]
 });
 var claudeCleanupInputSchema = external_exports.object({
   cwd: cwdSchema,
@@ -16691,6 +16694,17 @@ async function runClaudeApply(input, runId) {
   }
   if (!existsSync3(wtReal)) {
     return finish({ applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: `worktree directory not found: ${wtReal}` });
+  }
+  if (input.preview !== true && input.confirmed_by_user !== true) {
+    return finish({
+      applied_files: [],
+      diff_stat: "",
+      cleanup_performed: false,
+      conflicts: [],
+      error: "Non-preview claude_apply requires confirmed_by_user=true after the user explicitly approves applying the previewed diff.",
+      preview: false,
+      planned_changes: []
+    });
   }
   const wtRelPath = path4.join(".claude", "worktrees", path4.basename(wtReal));
   const jobMatch = await findImplementJobForWorktree(wtRelPath, input.cwd);

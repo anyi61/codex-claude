@@ -81,6 +81,32 @@ describe("schema definitions", () => {
     expect(claudeRunsInputSchema.safeParse({ cwd: "/repo", type: "bad-type" }).success).toBe(false);
   });
 
+  it("accepts preview without confirmed_by_user", () => {
+    expect(claudeApplyInputSchema.safeParse({
+      cwd: "/repo",
+      worktree_path: ".claude/worktrees/codex-delegated-x",
+      preview: true,
+    }).success).toBe(true);
+  });
+
+  it("accepts non-preview apply with confirmed_by_user", () => {
+    expect(claudeApplyInputSchema.safeParse({
+      cwd: "/repo",
+      worktree_path: ".claude/worktrees/codex-delegated-x",
+      cleanup: true,
+      confirmed_by_user: true,
+    }).success).toBe(true);
+  });
+
+  it("rejects preview=true combined with cleanup=true", () => {
+    expect(claudeApplyInputSchema.safeParse({
+      cwd: "/repo",
+      worktree_path: ".claude/worktrees/codex-delegated-x",
+      preview: true,
+      cleanup: true,
+    }).success).toBe(false);
+  });
+
   it("validates run inspect inputs", () => {
     expect(claudeRunInspectInputSchema.safeParse({ cwd: "/repo", run_id: "abc" }).success).toBe(true);
     expect(claudeRunInspectInputSchema.safeParse({ cwd: "/repo", run_id: "" }).success).toBe(false);
@@ -148,6 +174,18 @@ describe("schema definitions", () => {
     expect(claudeWorkspaceStatusInputSchema.safeParse({ cwd: "/repo" }).success).toBe(true);
     expect(claudeWorkspaceStatusInputSchema.safeParse({ cwd: "/repo", limit: 5, include_terminal: false }).success).toBe(true);
     expect(claudeWorkspaceStatusInputSchema.safeParse({ cwd: "/repo", limit: 0 }).success).toBe(false);
+  });
+
+  it("silently drops max_turns from claude_task input", () => {
+    const parsed = claudeTaskInputSchema.safeParse({
+      cwd: "/repo",
+      task: "write docs",
+      mode: "write",
+      max_turns: 2,
+    });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) throw new Error("unexpected parse failure");
+    expect(parsed.data).not.toHaveProperty("max_turns");
   });
 
   it("validates high-level task routing inputs", () => {

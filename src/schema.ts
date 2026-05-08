@@ -62,7 +62,6 @@ export interface ClaudeTaskInput {
   constraints?: string[];
   diff?: string;
   timeout_sec?: number;
-  max_turns?: number;
   dirty_policy?: "ask" | "committed" | "snapshot";
 }
 
@@ -439,6 +438,7 @@ export interface ClaudeApplyInput {
   cleanup?: boolean;
   preview?: boolean;
   background?: boolean;
+  confirmed_by_user?: boolean;
 }
 
 export interface ApplyPlannedChange {
@@ -606,7 +606,6 @@ export const claudeTaskInputSchema = z.object({
   constraints: constraintsSchema,
   diff: z.string().optional(),
   timeout_sec: timeoutSchema.optional(),
-  max_turns: maxTurnsSchema.optional(),
   dirty_policy: dirtyPolicySchema,
 }).refine((value) => value.mode !== "read" || !value.resume_latest, {
   message: "resume_latest is only supported for write mode",
@@ -622,6 +621,10 @@ export const claudeApplyInputSchema = z.object({
   cleanup: z.boolean().optional(),
   preview: z.boolean().optional(),
   background: z.boolean().optional(),
+  confirmed_by_user: z.boolean().optional(),
+}).refine((value) => !(value.preview === true && value.cleanup === true), {
+  message: "preview=true cannot be combined with cleanup=true",
+  path: ["cleanup"],
 });
 
 export const claudeCleanupInputSchema = z.object({

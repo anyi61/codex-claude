@@ -21,3 +21,5 @@ For ordinary review requests, prefer `claude_task mode=review` and poll with `cl
 - Typos or trivial formatting (use linters instead)
 - After you have already applied changes (review before apply)
 - When you just need to understand code (use `claude_query` instead)
+
+A review result is not apply approval. After reviewing a delegated worktree, ask the user before any non-preview `claude_apply` call.
