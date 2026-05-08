@@ -328,4 +328,5 @@ df5c762 fix: throttle waits and clarify task files
 - `claude_task` must not expose `max_turns`; explicit turn caps belong only to Advanced / Debug tools.
 - `claude_apply` is preview-first. Non-preview apply is a main-workspace write and must require `confirmed_by_user=true`.
 - `confirmed_by_user` is a pragmatic service-side guard against accidental non-preview apply. It is model-supplied and not cryptographic proof of human intent, so docs and agent instructions must still require explicit user approval before setting it.
-- Workflow `next_actions` must not suggest direct non-preview apply.
+- `preview=true` combined with `cleanup=true` is rejected by schema refinement — a preview must never remove the worktree.
+- Workflow `next_actions` must not suggest direct non-preview apply. Only preview actions are emitted from `buildNextActions()`.

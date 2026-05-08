@@ -5,7 +5,9 @@ First run sequence: `claude_setup` -> `claude_task` -> `claude_job_wait` -> `cla
 
 `claude_task` does not accept `max_turns`. If the user explicitly asks for a turn cap, use the appropriate Advanced / Debug tool (`claude_query`, `claude_review`, or `claude_implement`) instead of the default high-level entrypoint.
 
-For write tasks, non-preview `claude_apply` modifies the main workspace. Always run `claude_apply preview=true` first, show or summarize the planned diff, and wait for explicit user approval before calling non-preview `claude_apply` with `confirmed_by_user=true`.
+For write tasks, `claude_task` produces an isolated git worktree result only — it never directly applies changes to the main workspace. Non-preview `claude_apply` modifies the main workspace. Always run `claude_apply preview=true` first, show or summarize the planned diff, and wait for explicit user approval before calling non-preview `claude_apply` with `confirmed_by_user=true`.
+
+`preview=true` and `cleanup=true` must not be combined in a single `claude_apply` call — the server rejects this combination. Workflow `next_actions` from `claude_result` or `claude_job_wait` only suggests `preview=true` actions; it never emits direct non-preview apply suggestions.
 
 For normal `claude_task` calls, do not pass `files`. If Claude should read a plan or checklist, use `instruction_files` or mention the file in `task`; these files are context, not modification scope. Use Advanced / Debug `claude_implement.files` only when strict file modification limits are explicitly required.
 
@@ -22,7 +24,7 @@ For normal `claude_task` calls, do not pass `files`. If Claude should read a pla
 2. Capture the returned `job_id`.
 3. Poll with `claude_job_wait`, respecting `recommended_delay_ms`.
 4. When the job finishes terminal, call `claude_result`.
-5. Preview with `claude_apply preview=true`.
-6. Ask the user whether to apply the previewed diff.
-7. Only after explicit approval, apply with `claude_apply cleanup=true confirmed_by_user=true`.
+5. Preview with `claude_apply preview=true` (no user approval needed for preview).
+6. Show or summarize the planned diff to the user and ask whether to apply it.
+7. Only after explicit user approval, apply with `claude_apply cleanup=true confirmed_by_user=true`.
 8. Use `claude_cleanup` for leftover delegated worktrees.

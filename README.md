@@ -198,6 +198,8 @@ enabled_tools = ["claude_status", "claude_runs", "claude_run_inspect", "claude_w
 - **轮询行为：** `claude_job_wait` 不做长阻塞。返回 `poll_too_soon=true` 时等 `next_allowed_poll_at` 后重试。`waiting=true` 时不要本地重复执行或另起 job。
 - **回合上限：** `claude_task` 不接受 `max_turns`。只有用户明确要求限制 Claude 回合数时，才改用高级工具 `claude_query` / `claude_review` / `claude_implement` 并设置 `max_turns`。
 - **落地确认：** `preview=true` 只预览，不修改主工作区；非 preview 的 `claude_apply` 必须在用户确认后传 `confirmed_by_user=true`。
+- **非法组合：** `preview=true` 与 `cleanup=true` 同时使用会被拒绝——预览不应删除 worktree。
+- **下一步建议：** `claude_result` 和 `claude_job_wait` 返回的 `next_actions` 只会建议预览操作（`preview=true`），不会建议直接落地。非 preview 的 apply 只能由用户确认后发起，不应从自动化建议中调用。
 
 ## 配置
 
