@@ -1,9 +1,20 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { configureCodexAllowRoot } from "../src/codex-config.js";
+import {
+  classifyMcpServerSection,
+  configureCodexAllowRoot,
+  deleteTomlTableKey,
+  readTableKeys,
+  removeAllowRoot,
+  removeConfirmedMcpServerSection,
+  removeOrFlagMcpServerSection,
+  removePathFromAllowRootsValue,
+  scanClaudeDelegateConfig,
+} from "../src/codex-config.js";
 
 let root: string;
 let oldEnv: NodeJS.ProcessEnv;
@@ -105,5 +116,324 @@ describe("Codex MCP config helpers", () => {
 
   it("refuses to add dangerous roots to Codex config", async () => {
     await expect(configureCodexAllowRoot(root)).rejects.toThrow("dangerous allow root");
+  });
+});
+
+// =============== Uninstall support: pure function tests ===============
+
+describe("removePathFromAllowRootsValue", () => {
+  it("removes a path from a colon-separated list", () => {
+    const result = removePathFromAllowRootsValue("/a:/b:/c", "/b", ":");
+    expect(result).toBe("/a:/c");
+  });
+
+  it("returns unchanged value when path is not present", () => {
+    const result = removePathFromAllowRootsValue("/a:/b:/c", "/x", ":");
+    expect(result).toBe("/a:/b:/c");
+  });
+
+  it("returns null when removal empties the list", () => {
+    const result = removePathFromAllowRootsValue("/a", "/a", ":");
+    expect(result).toBeNull();
+  });
+
+  it("is case-sensitive (different case is not removed)", () => {
+    const result = removePathFromAllowRootsValue("/A:/B", "/b", ":");
+    expect(result).toBe("/A:/B");
+  });
+});
+
+describe("deleteTomlTableKey", () => {
+  const config = [
+    '[mcp_servers.claude_delegate]',
+    'command = "node"',
+    'args = ["./server/server.js"]',
+    "",
+    '[mcp_servers.claude_delegate.env]',
+    'CODEX_CLAUDE_ALLOW_ROOTS = "/a:/b"',
+    'OTHER_KEY = "keep"',
+    "",
+  ].join("\n");
+
+  it("deletes an existing key from a table", () => {
+    const result = deleteTomlTableKey(config, "mcp_servers.claude_delegate.env", "CODEX_CLAUDE_ALLOW_ROOTS");
+    expect(result).toContain("OTHER_KEY");
+    expect(result).not.toContain("CODEX_CLAUDE_ALLOW_ROOTS");
+  });
+
+  it("leaves config unchanged when key does not exist", () => {
+    const result = deleteTomlTableKey(config, "mcp_servers.claude_delegate.env", "NONEXISTENT");
+    expect(result).toBe(config);
+  });
+
+  it("does not affect other tables when deleting a key", () => {
+    const result = deleteTomlTableKey(config, "mcp_servers.claude_delegate.env", "CODEX_CLAUDE_ALLOW_ROOTS");
+    expect(result).toContain("[mcp_servers.claude_delegate]");
+    expect(result).toContain('command = "node"');
+  });
+});
+
+describe("readTableKeys", () => {
+  const config = [
+    '[mcp_servers.claude_delegate]',
+    'command = "node"',
+    'args = ["./server/server.js"]',
+    "",
+    '[mcp_servers.claude_delegate.env]',
+    'CODEX_CLAUDE_ALLOW_ROOTS = "/a"',
+    "",
+  ].join("\n");
+
+  it("returns keys from an existing table", () => {
+    const keys = readTableKeys(config, "mcp_servers.claude_delegate");
+    expect(keys).toEqual(["command", "args"]);
+  });
+
+  it("returns empty array for a non-existing table", () => {
+    const keys = readTableKeys(config, "nonexistent.table");
+    expect(keys).toEqual([]);
+  });
+});
+
+describe("classifyMcpServerSection", () => {
+  it("classifies auto when command=node and args points to server.js", () => {
+    const config = [
+      '[mcp_servers.claude_delegate]',
+      'command = "node"',
+      'args = ["./server/server.js"]',
+      "",
+    ].join("\n");
+    const result = classifyMcpServerSection(config);
+    expect(result?.origin).toBe("auto");
+  });
+
+  it("classifies custom node server paths as manual", () => {
+    const config = [
+      '[mcp_servers.claude_delegate]',
+      'command = "node"',
+      'args = ["/tmp/other-plugin/server/server.js"]',
+      "",
+    ].join("\n");
+    const result = classifyMcpServerSection(config);
+    expect(result?.origin).toBe("manual");
+  });
+
+  it("classifies env_only when only .env subsection exists without command/args", () => {
+    const config = [
+      '[mcp_servers.claude_delegate.env]',
+      'CODEX_CLAUDE_ALLOW_ROOTS = "/a"',
+      "",
+    ].join("\n");
+    const result = classifyMcpServerSection(config);
+    expect(result?.origin).toBe("env_only");
+  });
+
+  it("classifies manual for custom command", () => {
+    const config = [
+      '[mcp_servers.claude_delegate]',
+      'command = "python"',
+      'args = ["custom-server.py"]',
+      "",
+    ].join("\n");
+    const result = classifyMcpServerSection(config);
+    expect(result?.origin).toBe("manual");
+  });
+
+  it("returns null when no claude_delegate section exists", () => {
+    const config = '[other_section]\nkey = "value"\n';
+    const result = classifyMcpServerSection(config);
+    expect(result).toBeNull();
+  });
+
+  it("classifies env_only when main table exists but is empty, only env subsection", () => {
+    const config = [
+      '[mcp_servers.claude_delegate]',
+      "",
+      '[mcp_servers.claude_delegate.env]',
+      'CODEX_CLAUDE_ALLOW_ROOTS = "/a"',
+      "",
+    ].join("\n");
+    const result = classifyMcpServerSection(config);
+    expect(result?.origin).toBe("env_only");
+  });
+});
+
+// =============== Uninstall support: IO function tests ===============
+
+describe("scanClaudeDelegateConfig", () => {
+  it("returns empty scan when config file does not exist", async () => {
+    // Delete the config path created by parent beforeEach
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    const dirPath = path.dirname(configPath);
+    if (existsSync(dirPath)) {
+      await rm(dirPath, { recursive: true, force: true });
+    }
+    const scan = await scanClaudeDelegateConfig();
+    expect(scan.exists).toBe(false);
+    expect(scan.hasAllowRoots).toBe(false);
+  });
+});
+
+describe("removeAllowRoot", () => {
+  let envCwd: string;
+
+  beforeEach(async () => {
+    envCwd = await mkdtemp(path.join(root, "env-cwd-"));
+  });
+
+  it("removes allow root from .env subsection", async () => {
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, [
+      '[mcp_servers.claude_delegate]',
+      'command = "node"',
+      "",
+      '[mcp_servers.claude_delegate.env]',
+      `CODEX_CLAUDE_ALLOW_ROOTS = "${envCwd}:/other"`,
+      "",
+    ].join("\n"), "utf8");
+
+    const result = await removeAllowRoot(envCwd);
+    expect(result.changed).toBe(true);
+
+    const updated = await readFile(configPath, "utf8");
+    expect(updated).toContain("/other");
+    expect(updated).not.toContain(envCwd);
+  });
+
+  it("removes allow root from shell_environment_policy.set", async () => {
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, [
+      '[shell_environment_policy.set]',
+      `CODEX_CLAUDE_ALLOW_ROOTS = "${envCwd}:/other"`,
+      "",
+    ].join("\n"), "utf8");
+
+    const result = await removeAllowRoot(envCwd);
+    expect(result.changed).toBe(true);
+
+    const updated = await readFile(configPath, "utf8");
+    expect(updated).toContain("/other");
+    expect(updated).not.toContain(envCwd);
+  });
+
+  it("preserves other env keys when removing allow root", async () => {
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, [
+      '[mcp_servers.claude_delegate.env]',
+      `CODEX_CLAUDE_ALLOW_ROOTS = "${envCwd}:/other"`,
+      'ANTHROPIC_BASE_URL = "http://127.0.0.1:15721"',
+      "",
+    ].join("\n"), "utf8");
+
+    const result = await removeAllowRoot(envCwd);
+    expect(result.changed).toBe(true);
+
+    const updated = await readFile(configPath, "utf8");
+    expect(updated).toContain("ANTHROPIC_BASE_URL");
+    expect(updated).not.toContain(envCwd);
+  });
+
+  it("is idempotent on repeated calls", async () => {
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, [
+      '[mcp_servers.claude_delegate.env]',
+      `CODEX_CLAUDE_ALLOW_ROOTS = "${envCwd}:/other"`,
+      "",
+    ].join("\n"), "utf8");
+
+    const first = await removeAllowRoot(envCwd);
+    expect(first.changed).toBe(true);
+
+    const second = await removeAllowRoot(envCwd);
+    expect(second.changed).toBe(false);
+  });
+});
+
+describe("removeOrFlagMcpServerSection", () => {
+  it("deletes auto section entirely", async () => {
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, [
+      '[mcp_servers.claude_delegate]',
+      'command = "node"',
+      'args = ["./server/server.js"]',
+      "",
+      '[mcp_servers.claude_delegate.env]',
+      'CODEX_CLAUDE_ALLOW_ROOTS = "/a:/b"',
+      "",
+    ].join("\n"), "utf8");
+
+    const result = await removeOrFlagMcpServerSection();
+    expect(result.changed).toBe(true);
+    expect(result.action).toBe("deleted");
+
+    const updated = await readFile(configPath, "utf8");
+    expect(updated).not.toMatch(/\[mcp_servers\.claude_delegate\]/);
+  });
+
+  it("deletes env_only section but not other config", async () => {
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, [
+      '[mcp_servers.claude_delegate]',
+      "",
+      '[mcp_servers.claude_delegate.env]',
+      'CODEX_CLAUDE_ALLOW_ROOTS = "/a:/b"',
+      "",
+    ].join("\n"), "utf8");
+
+    const result = await removeOrFlagMcpServerSection();
+    expect(result.changed).toBe(true);
+    expect(result.action).toBe("env_deleted");
+
+    const updated = await readFile(configPath, "utf8");
+    expect(updated).not.toContain("claude_delegate");
+  });
+
+  it("skips manual section", async () => {
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    const original = [
+      '[mcp_servers.claude_delegate]',
+      'command = "python"',
+      'args = ["custom-server.py"]',
+      "",
+    ].join("\n");
+    await writeFile(configPath, original, "utf8");
+
+    const result = await removeOrFlagMcpServerSection();
+    expect(result.changed).toBe(false);
+    expect(result.action).toBe("manual_skip");
+
+    const updated = await readFile(configPath, "utf8");
+    expect(updated).toBe(original);
+  });
+
+  it("removes manual section only through explicit confirmation helper", async () => {
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    const original = [
+      '[mcp_servers.claude_delegate]',
+      'command = "python"',
+      'args = ["custom-server.py"]',
+      "",
+      "[other]",
+      'key = "value"',
+      "",
+    ].join("\n");
+    await writeFile(configPath, original, "utf8");
+
+    const result = await removeConfirmedMcpServerSection();
+    expect(result.changed).toBe(true);
+    expect(result.action).toBe("deleted");
+
+    const updated = await readFile(configPath, "utf8");
+    expect(updated).not.toContain("[mcp_servers.claude_delegate]");
+    expect(updated).toContain("[other]");
+    expect(updated).toContain('key = "value"');
   });
 });

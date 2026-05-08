@@ -107,6 +107,298 @@ function readConfiguredAllowRoots(config: string): string | null {
   );
 }
 
+// =============== Uninstall support: pure functions ===============
+
+/** Classification of an MCP server section in TOML config */
+export interface McpServerClassification {
+  origin: "auto" | "env_only" | "manual";
+  hasCommand: boolean;
+  hasArgs: boolean;
+  hasEnv: boolean;
+}
+
+/**
+ * Remove a resolved path from a delimiter-separated allow-roots value.
+ * Returns null when the result would be empty, the original value when
+ * nothing changed, or the new joined string.
+ */
+export function removePathFromAllowRootsValue(
+  currentValue: string,
+  pathToRemove: string,
+  delimiter: string,
+): string | null {
+  const normalizedToRemove = path.resolve(pathToRemove);
+  const parts = currentValue.split(delimiter).map((p) => p.trim()).filter(Boolean);
+  const remaining = parts.filter((p) => {
+    try {
+      return path.resolve(p) !== normalizedToRemove;
+    } catch {
+      return true; // keep unparsable paths
+    }
+  });
+  if (remaining.length === 0) return null;
+  if (remaining.length === parts.length) return currentValue;
+  return remaining.join(delimiter);
+}
+
+/** Extract the raw text content of a TOML table body. */
+function getTableContent(config: string, tableName: string): string | null {
+  const escapedTable = tableName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = config.match(new RegExp(`\\[${escapedTable}\\]\\n([\\s\\S]*?)(?=\\n\\[|$)`));
+  return match ? match[1] : null;
+}
+
+/**
+ * Delete a key assignment line from a TOML table section.
+ * Does not remove the table header or other keys.
+ */
+export function deleteTomlTableKey(config: string, tableName: string, key: string): string {
+  const escapedTable = tableName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const tablePattern = new RegExp(`(\\[${escapedTable}\\]\\n)([\\s\\S]*?)(?=\\n\\[|$)`);
+  return config.replace(tablePattern, (_match, header, body) => {
+    const newBody = body.replace(new RegExp(`^[ \\t]*${escapedKey}\\s*=.*\\n?`, "m"), "");
+    return `${header}${newBody}`;
+  });
+}
+
+/** Read the list of key names defined in a TOML table. */
+export function readTableKeys(config: string, tableName: string): string[] {
+  const content = getTableContent(config, tableName);
+  if (!content) return [];
+  const keyMatches = content.matchAll(/^\s*(\w+)\s*=/gm);
+  return [...keyMatches].map((m) => m[1]);
+}
+
+/**
+ * Classify the `[mcp_servers.claude_delegate]` section in a TOML config:
+ * - "auto": command="node" and args point to this plugin's server script.
+ * - "env_only": only an `.env` subsection exists, no command/args.
+ * - "manual": anything else (custom command, different args, etc.).
+ * Returns null when no claude_delegate MCP section exists.
+ */
+export function classifyMcpServerSection(config: string): McpServerClassification | null {
+  const mainTablePattern = new RegExp(`^\\s*\\[mcp_servers\\.${SERVER_NAME}\\]\\s*$`, "m");
+  const envTablePattern = new RegExp(`^\\s*\\[mcp_servers\\.${SERVER_NAME}\\.env\\]\\s*$`, "m");
+  const hasMain = mainTablePattern.test(config);
+  const hasEnv = envTablePattern.test(config);
+  if (!hasMain && !hasEnv) return null;
+
+  let hasCommand = false;
+  let hasArgs = false;
+  if (hasMain) {
+    const mainContent = getTableContent(config, `mcp_servers.${SERVER_NAME}`);
+    if (mainContent) {
+      hasCommand = /^\s*command\s*=/m.test(mainContent);
+      hasArgs = /^\s*args\s*=/m.test(mainContent);
+    }
+  }
+
+  const command = hasMain ? readTableValue(config, `mcp_servers.${SERVER_NAME}`, "command") : null;
+  const isNodeCommand = command === "node";
+  const mainContent = hasMain ? getTableContent(config, `mcp_servers.${SERVER_NAME}`) : "";
+  const pointsToPlugin = /(?:^|["'\s\[])(?:\.\/server\/server\.js|[^"'\s,\]]*codex-claude-delegate\/server\/server\.js)(?=["'\s,\]]|$)/.test(mainContent ?? "");
+
+  let origin: "auto" | "env_only" | "manual";
+  if (isNodeCommand && pointsToPlugin) {
+    origin = "auto";
+  } else if (!hasCommand && !hasArgs && hasEnv) {
+    origin = "env_only";
+  } else {
+    origin = "manual";
+  }
+
+  return { origin, hasCommand, hasArgs, hasEnv };
+}
+
+// =============== Uninstall support: IO functions ===============
+
+export interface ClaudeDelegateConfigScan {
+  configPath: string;
+  exists: boolean;
+  hasAllowRoots: boolean;
+  allowRootsValue: string | null;
+  mcpClassification: McpServerClassification | null;
+  mcpServerKeys: string[];
+  envKeys: string[];
+}
+
+/**
+ * Read-only scan of ~/.codex/config.toml for claude_delegate related configuration.
+ * Returns an empty result when the config file does not exist (never throws).
+ */
+export async function scanClaudeDelegateConfig(): Promise<ClaudeDelegateConfigScan> {
+  const configPath = codexConfigPath();
+  let config = "";
+  let exists = false;
+  try {
+    config = await readFile(configPath, "utf8");
+    exists = true;
+  } catch {
+    return { configPath, exists: false, hasAllowRoots: false, allowRootsValue: null, mcpClassification: null, mcpServerKeys: [], envKeys: [] };
+  }
+
+  const classification = classifyMcpServerSection(config);
+  const mcpServerKeys = classification ? readTableKeys(config, `mcp_servers.${SERVER_NAME}`) : [];
+  const envKeys = (classification?.hasEnv ?? false) ? readTableKeys(config, `mcp_servers.${SERVER_NAME}.env`) : [];
+
+  const envAllowRoot = readTableValue(config, `mcp_servers.${SERVER_NAME}.env`, ALLOW_ROOTS_KEY);
+  const shellAllowRoot = readTableValue(config, SHELL_ENV_TABLE, ALLOW_ROOTS_KEY);
+  const allowRootsValue = envAllowRoot ?? shellAllowRoot ?? null;
+  return { configPath, exists, hasAllowRoots: allowRootsValue !== null, allowRootsValue, mcpClassification: classification, mcpServerKeys, envKeys };
+}
+
+export interface RemoveAllowRootResult {
+  configPath: string;
+  changed: boolean;
+  message: string;
+}
+
+/**
+ * Remove the given cwd from CODEX_CLAUDE_ALLOW_ROWS in the TOML config.
+ * Only operates on `CODEX_CLAUDE_ALLOW_ROOTS`; preserves other keys in the same table.
+ * Idempotent: returns changed=false when the path is already absent.
+ */
+export async function removeAllowRoot(cwd: string): Promise<RemoveAllowRootResult> {
+  const configPath = codexConfigPath();
+  let config = "";
+  try {
+    config = await readFile(configPath, "utf8");
+  } catch {
+    return { configPath, changed: false, message: "Config file not found." };
+  }
+
+  // Use path.resolve (not realpath) to avoid symlink resolution differences
+  // (e.g. /var → /private/var on macOS).
+  const resolved = path.resolve(cwd);
+
+  let currentValue: string | null = null;
+  let sourceTable: string | null = null;
+
+  const envValue = readTableValue(config, `mcp_servers.${SERVER_NAME}.env`, ALLOW_ROOTS_KEY);
+  if (envValue !== null) {
+    currentValue = envValue;
+    sourceTable = `mcp_servers.${SERVER_NAME}.env`;
+  } else {
+    const shellValue = readTableValue(config, SHELL_ENV_TABLE, ALLOW_ROOTS_KEY);
+    if (shellValue !== null) {
+      currentValue = shellValue;
+      sourceTable = SHELL_ENV_TABLE;
+    }
+  }
+
+  if (currentValue === null || sourceTable === null) {
+    return { configPath, changed: false, message: `${ALLOW_ROOTS_KEY} not found in config.` };
+  }
+
+  const delimiter = currentValue.includes(path.delimiter)
+    ? path.delimiter
+    : currentValue.includes(",")
+      ? ","
+      : path.delimiter;
+  const newValue = removePathFromAllowRootsValue(currentValue, resolved, delimiter);
+
+  if (newValue === currentValue) {
+    return { configPath, changed: false, message: `Path ${resolved} not found in ${ALLOW_ROOTS_KEY}.` };
+  }
+
+  if (newValue === null) {
+    config = deleteTomlTableKey(config, sourceTable, ALLOW_ROOTS_KEY);
+  } else {
+    config = updateTomlTableValue(config, sourceTable, ALLOW_ROOTS_KEY, newValue);
+  }
+
+  await writeFile(configPath, config, "utf8");
+  return { configPath, changed: true, message: `Removed ${resolved} from ${ALLOW_ROOTS_KEY}.` };
+}
+
+export interface RemoveMcpServerResult {
+  configPath: string;
+  changed: boolean;
+  action: "deleted" | "env_deleted" | "manual_skip" | "not_found";
+  message: string;
+}
+
+function removeMcpServerTables(config: string): string {
+  let modified = config;
+  const envPattern = new RegExp(`\\n?\\[mcp_servers\\.${SERVER_NAME}\\.env\\]\\n[\\s\\S]*?(?=\\n\\[|$)`);
+  modified = modified.replace(envPattern, "");
+  const mainPattern = new RegExp(`\\n?\\[mcp_servers\\.${SERVER_NAME}\\]\\n[\\s\\S]*?(?=\\n\\[|$)`);
+  return modified.replace(mainPattern, "");
+}
+
+/**
+ * Remove or flag the `[mcp_servers.claude_delegate]` section:
+ * - "auto": delete the entire section (including .env subsection).
+ * - "env_only": delete .env subsection; also removes empty parent header.
+ * - "manual": no-op, returns manual_skip for caller to decide.
+ */
+export async function removeOrFlagMcpServerSection(): Promise<RemoveMcpServerResult> {
+  const configPath = codexConfigPath();
+  let config = "";
+  try {
+    config = await readFile(configPath, "utf8");
+  } catch {
+    return { configPath, changed: false, action: "not_found", message: "Config file not found." };
+  }
+
+  const classification = classifyMcpServerSection(config);
+  if (!classification) {
+    return { configPath, changed: false, action: "not_found", message: `[mcp_servers.${SERVER_NAME}] not found in config.` };
+  }
+
+  if (classification.origin === "manual") {
+    return { configPath, changed: false, action: "manual_skip", message: `[mcp_servers.${SERVER_NAME}] appears manually configured; skipped.` };
+  }
+
+  if (classification.origin === "auto") {
+    const modified = removeMcpServerTables(config);
+    if (modified !== config) {
+      await writeFile(configPath, modified, "utf8");
+    }
+    return { configPath, changed: modified !== config, action: "deleted", message: `Deleted [mcp_servers.${SERVER_NAME}] section.` };
+  }
+
+  // env_only: remove the .env subsection, then clean up empty parent
+  let modified = config;
+  const envPattern = new RegExp(`\\n?\\[mcp_servers\\.${SERVER_NAME}\\.env\\]\\n[\\s\\S]*?(?=\\n\\[|$)`, "m");
+  modified = modified.replace(envPattern, "");
+  const mainContent = getTableContent(modified, `mcp_servers.${SERVER_NAME}`);
+  if (mainContent !== null && mainContent.trim() === "") {
+    modified = modified.replace(new RegExp(`\\n?\\[mcp_servers\\.${SERVER_NAME}\\]\\n?`), "");
+  }
+  if (modified !== config) {
+    await writeFile(configPath, modified, "utf8");
+  }
+  return { configPath, changed: modified !== config, action: "env_deleted", message: `Deleted [mcp_servers.${SERVER_NAME}.env] section.` };
+}
+
+/**
+ * Remove the claude_delegate MCP section after an explicit user confirmation.
+ * This is intentionally separate from removeOrFlagMcpServerSection so --yes
+ * mode can keep manual MCP config fail-closed.
+ */
+export async function removeConfirmedMcpServerSection(): Promise<RemoveMcpServerResult> {
+  const configPath = codexConfigPath();
+  let config = "";
+  try {
+    config = await readFile(configPath, "utf8");
+  } catch {
+    return { configPath, changed: false, action: "not_found", message: "Config file not found." };
+  }
+
+  const classification = classifyMcpServerSection(config);
+  if (!classification) {
+    return { configPath, changed: false, action: "not_found", message: `[mcp_servers.${SERVER_NAME}] not found in config.` };
+  }
+
+  const modified = removeMcpServerTables(config);
+  if (modified !== config) {
+    await writeFile(configPath, modified, "utf8");
+  }
+  return { configPath, changed: modified !== config, action: "deleted", message: `Deleted [mcp_servers.${SERVER_NAME}] section after user confirmation.` };
+}
+
 export async function configureCodexAllowRoot(rawCwd: string): Promise<CodexAllowRootConfiguration> {
   let resolved: string;
   try {

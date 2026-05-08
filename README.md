@@ -75,21 +75,23 @@ npm run check:plugin
 
 ### 卸载
 
-> **需手工验证：** 以下卸载步骤中的 marketplace 名称基于代码观察推断，未在干净 Codex 配置上验证。如果 `codex plugin marketplace remove codex-claude-local` 报错，先运行 `codex plugin marketplace list` 查看实际名称。
+```bash
+npm run uninstall:dry-run   # 预览将处理的资源，不产生副作用
+npm run uninstall           # 交互式卸载
+npm run uninstall -- --yes  # 非交互卸载，状态目录默认全部保留
+```
 
-1. 在 Codex 中输入 `/plugins`，卸载或禁用 `codex-claude-delegate`。
-2. 确认本地 marketplace 中的插件名称：
-   ```bash
-   codex plugin marketplace list
-   ```
-   然后移除对应的 marketplace 条目（名称可能为 `codex-claude-local` 或基于仓库路径的自动名称）。
-3. 退出并重新进入 Codex。
-4. 如果曾使用手动 MCP 配置，移除对应 MCP server：
-   ```bash
-   codex mcp remove claude_delegate
-   ```
-5. 如果启动 Codex 仍提示 `invalid transport in mcp_servers.claude_delegate`，删除 `~/.codex/config.toml` 中残留的 `[mcp_servers.claude_delegate]` 或 `[mcp_servers.claude_delegate.env]` 配置块。
-6. 可选清理本地文件：删除克隆下来的本仓库目录；在不再需要历史 job/run 状态的工作区中删除 `.codex-claude-delegate/`。
+卸载脚本会处理插件市场条目、MCP server、Codex 配置残留和 review-gate hook。`.codex-claude-delegate/` 会在交互中询问如何处理：全部删除、全部保留或指定保留项。仓库目录和 delegated worktree 不会被自动删除。
+
+卸载后建议重启 Codex。
+
+> **已实现自动化：** 卸载过程已通过 `scripts/uninstall-plugin.mjs` 实现自动化。但以下项仍需人工验证：
+> - `codex plugin marketplace list` 返回的实际注册名称
+> - `codex mcp remove claude_delegate` 对 `~/.codex/config.toml` 的实际影响
+> - `.codex-claude-delegate/` 三种交互选项的正确行为
+> - `--yes --keep-state=none` 删除全部状态，`--yes` 未指定时保留全部
+> - dry-run 不修改 TOML、不删除文件、不执行 remove 命令
+> - 卸载后重启 Codex 无 MCP 启动错误
 
 ## 兼容性
 
