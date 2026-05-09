@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  DEFAULT_ENABLED_TOOLS,
   classifyMcpServerSection,
   configureCodexAllowRoot,
   deleteTomlTableKey,
@@ -13,7 +14,10 @@ import {
   removeConfirmedMcpServerSection,
   removeOrFlagMcpServerSection,
   removePathFromAllowRootsValue,
+  renderClaudeDelegateMcpConfig,
   scanClaudeDelegateConfig,
+  setupWrite,
+  upsertClaudeDelegateMcpServer,
 } from "../src/codex-config.js";
 
 let root: string;
@@ -435,5 +439,86 @@ describe("removeOrFlagMcpServerSection", () => {
     expect(updated).not.toContain("[mcp_servers.claude_delegate]");
     expect(updated).toContain("[other]");
     expect(updated).toContain('key = "value"');
+  });
+});
+
+describe("npm global setup config", () => {
+  it("renders only codex-claude command and default 6 tools", () => {
+    const toml = renderClaudeDelegateMcpConfig();
+    expect(toml).toContain("[mcp_servers.claude_delegate]");
+    expect(toml).toContain('command = "codex-claude"');
+    expect(toml).not.toContain('command = "npx"');
+    expect(toml).not.toContain('codex-claude-delegate-mcp"]');
+    for (const tool of DEFAULT_ENABLED_TOOLS) expect(toml).toContain(`"${tool}"`);
+    expect(toml).not.toContain("claude_implement");
+    expect(toml).not.toContain("claude_job_cancel");
+  });
+
+  it("does not overwrite an existing server unless force is true", () => {
+    const existing = '[mcp_servers.claude_delegate]\ncommand = "custom"\n';
+    const result = upsertClaudeDelegateMcpServer(existing, { force: false });
+    expect(result.changed).toBe(false);
+    expect(result.content).toBe(existing);
+  });
+
+  it("replaces an existing server when force is true", () => {
+    const existing = '[mcp_servers.claude_delegate]\ncommand = "custom"\n';
+    const result = upsertClaudeDelegateMcpServer(existing, { force: true });
+    expect(result.changed).toBe(true);
+    expect(result.content).toContain('command = "codex-claude"');
+    expect(result.content).not.toContain('command = "custom"');
+  });
+});
+
+describe("setupWrite", () => {
+  it("runs allow-root even when upsert is no-op (existing config)", async () => {
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, renderClaudeDelegateMcpConfig(), "utf8");
+
+    const projectDir = path.join(root, "my-project");
+    await mkdir(projectDir, { recursive: true });
+
+    const result = await setupWrite({ allowRoot: projectDir });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.message).toContain("Added");
+    expect(result.message).toContain(projectDir);
+  });
+
+  it("returns non-zero exit code when allow-root fails (bad path)", async () => {
+    const result = await setupWrite({ allowRoot: "/nonexistent-path-12345" });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.message).toContain("Error");
+    expect(result.message).toContain("does not exist");
+  });
+});
+
+describe("scanClaudeDelegateConfig fields", () => {
+  it("returns mcpCommand and mcpEnabledTools for codex-claude config", async () => {
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, renderClaudeDelegateMcpConfig(), "utf8");
+
+    const scan = await scanClaudeDelegateConfig();
+    expect(scan.mcpCommand).toBe("codex-claude");
+    expect(scan.mcpEnabledTools).toEqual(["claude_setup", "claude_task", "claude_job_wait", "claude_result", "claude_apply", "claude_cleanup"]);
+  });
+
+  it("returns null mcpCommand for non-standard command", async () => {
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, [
+      '[mcp_servers.claude_delegate]',
+      'command = "npx"',
+      'args = ["codex-claude-delegate-mcp"]',
+      'enabled_tools = ["claude_setup"]',
+      "",
+    ].join("\n"), "utf8");
+
+    const scan = await scanClaudeDelegateConfig();
+    expect(scan.mcpCommand).toBe("npx");
+    expect(scan.mcpEnabledTools).toEqual(["claude_setup"]);
   });
 });

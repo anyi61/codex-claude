@@ -161,13 +161,40 @@ ClaudeTaskResult                — deduped?, do_not_start_duplicate_job?
 
 ## 6. [CHANGED] 安装与上手路径
 
-### 6.1 用户路径（插件优先）[NEW]
+### 6.1 用户路径（npm 全局安装优先）
+
+Ordinary users install through npm global only:
 
 ```
-git clone → codex plugin marketplace add → /plugins 安装 → claude_setup → claude_task → ...
+npm install -g codex-claude-delegate-mcp
+codex-claude setup --write
+codex-claude doctor
 ```
 
-无需 `npm install` 或 `npm run build`，插件自带 bundle runtime。
+Codex plugin marketplace is no longer an ordinary-user install path. The plugin directory remains as repository/internal packaging unless separately removed in a future cleanup.
+
+CLI architecture:
+
+```
+src/
+├── cli.ts           # [NEW] CLI entrypoint: parse args, dispatch mcp/--version/print-config/setup/doctor
+├── package-info.ts  # [NEW] Shared helper: read package name/version from package.json
+├── server.ts        # MCP stdio server (exported main() callable by cli.ts)
+├── claude-cli.ts    # Claude CLI spawn, background job management, result observation
+├── jobs.ts          # JobStore: filesystem job persistence, dedup, heartbeat
+├── job-runner.ts    # Detached worker process entry
+├── session.ts       # Session persistence and resume strategy
+├── guard.ts         # Security: cwd validation, env sanitization, recursion guard
+├── schema.ts        # Types, Zod validation, JSON Schema, prompt builders
+└── codex-config.ts  # Codex config read/write, setup helpers, doctor support
+```
+
+- `codex-claude` (no args): starts MCP stdio server
+- `codex-claude mcp`: explicit MCP server start
+- `codex-claude --version`: print package name and version
+- `codex-claude print-config`: print MCP server TOML config
+- `codex-claude setup --write`: write config to Codex
+- `codex-claude doctor`: diagnose installation
 
 ### 6.2 维护者/开发路径
 
@@ -175,7 +202,7 @@ git clone → codex plugin marketplace add → /plugins 安装 → claude_setup 
 npm install → npm run build:plugin → npm run check:plugin → npm test → npm run typecheck
 ```
 
-常规开发仍可使用 `npm run dev`（tsx 实时运行）或 `npm run build`（tsc 编译到 dist/）。
+Conventional development still uses `npm run dev` (tsx live) or `npm run build` (tsc to dist/). The CLI entry (`src/cli.ts`) can be run with `node dist/cli.js` after build.
 
 ---
 

@@ -1,5 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { realpath } from "node:fs/promises";
+import { mkdir, readFile, writeFile, cp, realpath } from "node:fs/promises";
 import path from "node:path";
 
 import { dangerousRoot, getAllowRoots } from "./guard.js";
@@ -85,6 +84,22 @@ function readTableValue(config: string, tableName: string, key: string): string 
   } catch {
     return keyMatch[1].replace(/\\"/g, "\"");
   }
+}
+
+/** Read the string values from a TOML array (e.g. `enabled_tools = ["a", "b"]`). */
+function readTableArrayValues(config: string, tableName: string, key: string): string[] | null {
+  const escapedTable = tableName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const tableMatch = config.match(new RegExp(`\\[${escapedTable}\\]\\n([\\s\\S]*?)(?=\\n\\[|$)`));
+  if (!tableMatch) return null;
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const arrayMatch = tableMatch[1]?.match(new RegExp(`^\\s*${escapedKey}\\s*=\\s*\\[([\\s\\S]*?)\\]\\s*$`, "m"));
+  if (!arrayMatch) return null;
+  const values: string[] = [];
+  const stringMatches = arrayMatch[1].matchAll(/"((?:\\"|[^"])*)"/g);
+  for (const m of stringMatches) {
+    values.push(m[1]);
+  }
+  return values;
 }
 
 function removeEnvOnlyTable(config: string): string {
@@ -221,6 +236,8 @@ export interface ClaudeDelegateConfigScan {
   mcpClassification: McpServerClassification | null;
   mcpServerKeys: string[];
   envKeys: string[];
+  mcpCommand: string | null;
+  mcpEnabledTools: string[] | null;
 }
 
 /**
@@ -235,7 +252,7 @@ export async function scanClaudeDelegateConfig(): Promise<ClaudeDelegateConfigSc
     config = await readFile(configPath, "utf8");
     exists = true;
   } catch {
-    return { configPath, exists: false, hasAllowRoots: false, allowRootsValue: null, mcpClassification: null, mcpServerKeys: [], envKeys: [] };
+    return { configPath, exists: false, hasAllowRoots: false, allowRootsValue: null, mcpClassification: null, mcpServerKeys: [], envKeys: [], mcpCommand: null, mcpEnabledTools: null };
   }
 
   const classification = classifyMcpServerSection(config);
@@ -245,7 +262,9 @@ export async function scanClaudeDelegateConfig(): Promise<ClaudeDelegateConfigSc
   const envAllowRoot = readTableValue(config, `mcp_servers.${SERVER_NAME}.env`, ALLOW_ROOTS_KEY);
   const shellAllowRoot = readTableValue(config, SHELL_ENV_TABLE, ALLOW_ROOTS_KEY);
   const allowRootsValue = envAllowRoot ?? shellAllowRoot ?? null;
-  return { configPath, exists, hasAllowRoots: allowRootsValue !== null, allowRootsValue, mcpClassification: classification, mcpServerKeys, envKeys };
+  const mcpCommand = classification ? readTableValue(config, `mcp_servers.${SERVER_NAME}`, "command") : null;
+  const mcpEnabledTools = classification ? readTableArrayValues(config, `mcp_servers.${SERVER_NAME}`, "enabled_tools") : null;
+  return { configPath, exists, hasAllowRoots: allowRootsValue !== null, allowRootsValue, mcpClassification: classification, mcpServerKeys, envKeys, mcpCommand, mcpEnabledTools };
 }
 
 export interface RemoveAllowRootResult {
@@ -438,4 +457,101 @@ export async function configureCodexAllowRoot(rawCwd: string): Promise<CodexAllo
       ? `Added ${resolved} to ${ALLOW_ROOTS_KEY} for ${SERVER_NAME}.`
       : `${resolved} is already present in ${ALLOW_ROOTS_KEY} for ${SERVER_NAME}.`,
   };
+}
+
+// =============== NPM global setup config helpers ===============
+
+export const DEFAULT_ENABLED_TOOLS = [
+  "claude_setup",
+  "claude_task",
+  "claude_job_wait",
+  "claude_result",
+  "claude_apply",
+  "claude_cleanup",
+] as const;
+
+export interface SetupConfigOptions {
+  force?: boolean;
+}
+
+export interface SetupConfigResult {
+  changed: boolean;
+  existed: boolean;
+  content: string;
+  message: string;
+}
+
+export function renderClaudeDelegateMcpConfig(): string {
+  const tools = DEFAULT_ENABLED_TOOLS.map((tool) => `  "${tool}"`).join(",\n");
+  return `[mcp_servers.claude_delegate]\ncommand = "codex-claude"\nstartup_timeout_sec = 20\ntool_timeout_sec = 600\nenabled_tools = [\n${tools}\n]\n`;
+}
+
+export function upsertClaudeDelegateMcpServer(config: string, options: SetupConfigOptions = {}): SetupConfigResult {
+  const hasServer = /^\s*\[mcp_servers\.claude_delegate\]\s*$/m.test(config);
+  if (hasServer && !options.force) {
+    return { changed: false, existed: true, content: config, message: "Existing MCP server found: claude_delegate" };
+  }
+  const nextSection = renderClaudeDelegateMcpConfig();
+  if (!hasServer) {
+    const separator = config.length > 0 && !config.endsWith("\n") ? "\n\n" : config.length > 0 ? "\n" : "";
+    return { changed: true, existed: false, content: `${config}${separator}${nextSection}`, message: "Added MCP server: claude_delegate" };
+  }
+  const tablePattern = /^\s*\[mcp_servers\.claude_delegate\]\s*\n[\s\S]*?(?=^\s*\[|$(?![\s\S]))/m;
+  return { changed: true, existed: true, content: config.replace(tablePattern, nextSection), message: "Replaced MCP server config: claude_delegate" };
+}
+
+export interface SetupWriteOptions {
+  isProject?: boolean;
+  force?: boolean;
+  allowRoot?: string;
+}
+
+export interface SetupWriteResult {
+  exitCode: number;
+  message: string;
+}
+
+export async function setupWrite(options: SetupWriteOptions = {}): Promise<SetupWriteResult> {
+  const configDir = options.isProject
+    ? path.join(process.cwd(), ".codex")
+    : process.env.CODEX_HOME
+      ? path.join(process.env.CODEX_HOME)
+      : path.join(process.env.HOME ?? "/tmp", ".codex");
+  const configPath = path.join(configDir, "config.toml");
+
+  await mkdir(configDir, { recursive: true });
+
+  let config = "";
+  let configExisted = false;
+  try {
+    config = await readFile(configPath, "utf8");
+    configExisted = true;
+  } catch {
+    config = "";
+  }
+
+  if (options.force && configExisted) {
+    const now = new Date();
+    const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}-${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}${String(now.getSeconds()).padStart(2, "0")}`;
+    const backupPath = `${configPath}.bak-${ts}`;
+    await cp(configPath, backupPath);
+  }
+
+  const upsertResult = upsertClaudeDelegateMcpServer(config, { force: options.force });
+  let message = upsertResult.message;
+
+  if (upsertResult.changed) {
+    await writeFile(configPath, upsertResult.content, "utf8");
+  }
+
+  if (options.allowRoot) {
+    try {
+      const allowResult = await configureCodexAllowRoot(options.allowRoot);
+      message += `\n${allowResult.message}`;
+    } catch (err) {
+      return { exitCode: 1, message: `${message}\nError: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+
+  return { exitCode: 0, message };
 }

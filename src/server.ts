@@ -9,6 +9,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { validateCwd, validateFilesWithinCwd, checkRecursion, MAX_BRIDGE_DEPTH } from "./guard.js";
+import { getPackageInfo } from "./package-info.js";
 import { configureCodexAllowRoot, type CodexAllowRootConfiguration } from "./codex-config.js";
 import {
   cancelBackgroundJob,
@@ -57,6 +58,8 @@ import {
   localExecution,
   StructuredToolError,
   validationErrorMessage,
+  withInteraction,
+  type InteractionBlock,
 } from "./schema.js";
 
 export const TOOL_DEFINITIONS = [
@@ -403,7 +406,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
           check = await validateCwd(parsed.data.cwd);
         }
         if (!check.ok) {
-          return errorResult({
+          return jsonResult(withInteraction({
             error: check.error!,
             next_actions: [
               {
@@ -418,10 +421,20 @@ export async function handleToolCall(name: string, args: unknown, runId = random
               separator: process.platform === "win32" ? ";" : ":",
               example: `/path/to/repo${process.platform === "win32" ? ";" : ":"}/path/to/another-repo`,
             },
-          });
+          }, {
+            headline: "Claude delegation needs setup.",
+            state: "needs_attention",
+            next_step: "Add this repo to allow roots, restart Codex, then run claude_setup again.",
+          }));
         }
         const result = await runClaudeSetup({ cwd: check.resolved });
-        return jsonResult(allowRootConfiguration ? { ...result, allow_root_configuration: allowRootConfiguration } : result);
+        const needsAttention = result.errors.length > 0 || !result.claude_available;
+        const payload = allowRootConfiguration ? { ...result, allow_root_configuration: allowRootConfiguration } : result;
+        return jsonResult(withInteraction(payload, {
+          headline: needsAttention ? "Claude delegation needs setup." : "Claude delegation is ready.",
+          state: needsAttention ? "needs_attention" : "ready",
+          next_step: needsAttention ? "Fix the reported errors, then run claude_setup again." : "Use claude_task to delegate a read, review, or write task.",
+        }));
       }
 
       case "claude_runs": {
@@ -448,7 +461,15 @@ export async function handleToolCall(name: string, args: unknown, runId = random
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
         const check = await validateCwd(parsed.data.cwd);
         if (!check.ok) return errorResult(check.error!);
-        return jsonResult(await getClaudeResult({ ...parsed.data, cwd: check.resolved }));
+        const resultData = await getClaudeResult({ ...parsed.data, cwd: check.resolved });
+        const hasJobResult = resultData.job?.result_status === "success" || resultData.job?.result_status === "partial";
+        const hasRunResult = resultData.source_type === "run" && (resultData.run?.status === "success" || resultData.run?.status === "partial");
+        const hasResult = hasJobResult || hasRunResult;
+        return jsonResult(withInteraction(resultData, {
+          headline: hasResult ? "Claude result is ready." : "Claude result is not available.",
+          state: hasResult ? "result_ready" : "needs_attention",
+          next_step: hasResult ? "Preview the worktree changes with claude_apply preview=true." : "Check the job status with claude_job_wait.",
+        }));
       }
 
       case "claude_workspace_status": {
@@ -479,7 +500,15 @@ export async function handleToolCall(name: string, args: unknown, runId = random
           }
         }
 
-        return jsonResult(await runClaudeTask({ ...parsed.data, cwd: check.resolved }, runId));
+        const taskResult = await runClaudeTask({ ...parsed.data, cwd: check.resolved }, runId);
+        const hasJob = !!taskResult.job;
+        const needsUser = !hasJob && taskResult.next_actions.length === 0 && taskResult.result !== undefined;
+        const taskInteraction: InteractionBlock = needsUser
+          ? { headline: "Write task needs a workspace decision before delegation.", state: "needs_user", next_step: "Commit or stash changes, or use dirty_policy=committed or dirty_policy=snapshot." }
+          : hasJob
+            ? { headline: "Task delegated to Claude Code.", state: "delegated_execution", next_step: "Poll claude_job_wait with this job_id." }
+            : { headline: "Task completed.", state: "delegated_execution", next_step: "Review the result and proceed." };
+        return jsonResult(withInteraction(taskResult, taskInteraction));
       }
 
       case "claude_review_gate": {
@@ -600,7 +629,18 @@ export async function handleToolCall(name: string, args: unknown, runId = random
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
         const check = await validateCwd(parsed.data.cwd);
         if (!check.ok) return errorResult(check.error!);
-        return jsonResult(await waitForBackgroundJob({ ...parsed.data, cwd: check.resolved }));
+        const waitResult = await waitForBackgroundJob({ ...parsed.data, cwd: check.resolved });
+        let interaction: InteractionBlock;
+        if (waitResult.poll_too_soon) {
+          interaction = { headline: "Polling too soon.", state: "poll_too_soon", next_step: "Do not call claude_job_wait again before next_allowed_poll_at." };
+        } else if (waitResult.stale_state === "stale") {
+          interaction = { headline: "Claude job appears stale.", state: "needs_attention", next_step: "Inspect this job result before starting a replacement." };
+        } else if (waitResult.waiting) {
+          interaction = { headline: "Claude job is still running.", state: "waiting", next_step: "Wait until next_allowed_poll_at, then poll this same job_id." };
+        } else {
+          interaction = { headline: "Claude job completed.", state: "completed", next_step: "Use claude_result to inspect the result." };
+        }
+        return jsonResult(withInteraction(waitResult, interaction));
       }
 
       case "claude_job_cleanup": {
@@ -630,11 +670,22 @@ export async function handleToolCall(name: string, args: unknown, runId = random
           { cwd: check.resolved, worktree_path, cleanup, preview, confirmed_by_user },
           runId
         );
-        return jsonResult({
+        const payload = {
           ...result,
           execution: localExecution(startTime),
           warnings: [...result.conflicts, ...(result.error ? [result.error] : [])],
-        });
+        };
+        let applyInteraction: InteractionBlock;
+        if (result.preview) {
+          applyInteraction = { headline: "Delegated changes are ready for review.", state: "apply_preview", next_step: "Review planned_changes. If safe, ask the user whether to apply these changes." };
+        } else if (result.applied_files.length > 0) {
+          applyInteraction = { headline: "Delegated changes applied.", state: "applied", next_step: "Run project tests and review the final diff." };
+        } else if (result.error) {
+          applyInteraction = { headline: "Apply refused.", state: "needs_user", next_step: "Show the preview to the user and ask for explicit approval before applying." };
+        } else {
+          applyInteraction = { headline: "Delegated changes are ready for review.", state: "apply_preview", next_step: "Review planned_changes. If safe, ask the user whether to apply these changes." };
+        }
+        return jsonResult(withInteraction(payload, applyInteraction));
       }
 
       case "claude_cleanup": {
@@ -655,11 +706,16 @@ export async function handleToolCall(name: string, args: unknown, runId = random
           { cwd: check.resolved, older_than_hours, dry_run },
           runId
         );
-        return jsonResult({
+        const cleanupPayload = {
           ...result,
           execution: localExecution(startTime),
           warnings: result.entries.flatMap((entry) => entry.error ? [`${entry.worktree_name}: ${entry.error}`] : []),
-        });
+        };
+        return jsonResult(withInteraction(cleanupPayload, {
+          headline: dry_run ? "Delegated worktrees found." : "Delegated worktrees cleaned.",
+          state: dry_run ? "cleanup_preview" : "cleaned",
+          next_step: dry_run ? "Review entries. If these worktrees are no longer needed, call claude_cleanup with dry_run=false." : "Run claude_cleanup dry_run=true again only if you want to confirm no stale delegated worktrees remain.",
+        }));
       }
 
       default:
@@ -682,9 +738,10 @@ export function registerToolHandlers(server: Server): void {
   ));
 }
 
-export function createServer(): Server {
+export async function createServer(): Promise<Server> {
+  const info = await getPackageInfo();
   const server = new Server(
-    { name: "codex-claude-delegate-mcp", version: "0.1.0" },
+    { name: info.name, version: info.version },
     { capabilities: { tools: {} } }
   );
   registerToolDefinitions(server);
@@ -702,13 +759,15 @@ function assertCanStartServer(): void {
   }
 }
 
-export async function startServer(): Promise<void> {
+export async function main(): Promise<void> {
   assertCanStartServer();
-  const server = createServer();
+  const server = await createServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   process.stderr.write("[claude-delegate] MCP server started (stdio)\n");
 }
+
+export { main as startServer };
 
 function isMainModule(): boolean {
   if (!process.argv[1]) return false;
@@ -716,5 +775,5 @@ function isMainModule(): boolean {
 }
 
 if (isMainModule()) {
-  await startServer();
+  await main();
 }

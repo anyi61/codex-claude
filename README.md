@@ -1,211 +1,188 @@
 # codex-claude-delegate-mcp
 
-让 Codex 通过插件把代码任务委托给 Claude Code 执行。插件内置自包含 MCP runtime，安装后无需在用户机器本地构建 `dist/`。
+Let Codex delegate read/review/write tasks to Claude Code through a local MCP server.
 
-## 功能
-
-- **委托读取/审查/写入任务** — 从 Codex 将读取、审查或写入任务发给 Claude Code
-- **隔离 git worktree 执行** — 写入任务在独立 worktree 中运行，不影响主工作区
-- **后台作业轮询** — 所有委托均排队为后台作业，支持进度查询和恢复
-- **预览与落地变更** — 审查 worktree 差异后决定是否落地到主工作区
-- **审查门** — 可选启用 stop-hook，在终态前提醒运行审查
-
-## 快速开始
-
-```text
-# 1) 安装插件 → 退出并重新进入 Codex
-# 2) 首次自检（若报不在允许根目录内，见下方配置说明）
-claude_setup(cwd="/path/to/your/repo")
-
-# 3) 发送第一次委托（推荐 read 模式）
-claude_task(mode="read", cwd="/path/to/your/repo", task="Summarize this repo")
-```
-
-> 如果 `claude_setup` 报错工作区不在允许根目录内且仓库可信，重新运行：
-> `claude_setup(cwd="/path/to/your/repo", configure_allow_root=true)`
-> 这会自动将仓库添加到 CODEX_CLAUDE_ALLOW_ROOTS 并继续 setup。
-> **注意：** 仅对受信任的仓库执行此操作，不宜添加宽泛或不受信任的目录。
-
-首跑链路：`claude_setup` → `claude_task` → `claude_job_wait` → `claude_result`。
-
-## 安装
-
-### 前置条件
-
-- Codex 需要支持插件。
-- `PATH` 中需要有可执行的 `node`，插件 MCP server 会通过 `node` 启动。
-- `PATH` 中需要有可执行的 Claude Code CLI `claude`，也可以通过 `CLAUDE_BIN` 指定路径。
-
-### 作为 Codex 插件安装
-
-> **注意：** 以下命令基于代码观察编写，未在干净 Codex 配置上逐一验证。如果实际安装名称与文档不符，运行 `codex plugin marketplace list` 确认后再执行卸载。
-
-1. 克隆本仓库并进入目录：
-
-   ```bash
-   git clone https://github.com/anyi61/codex-claude.git
-   cd codex-claude
-   ```
-
-2. 将当前仓库注册为 Codex 本地插件源：
-
-   ```bash
-   codex plugin marketplace add "$(pwd)"
-   ```
-
-3. 在 Codex 中输入 `/plugins`，找到 `codex-claude-delegate` 并安装或启用。
-4. 退出并重新进入 Codex，让插件 MCP 工具完成加载。
-5. 运行 `claude_setup(cwd="/path/to/your/repo")` 做首次自检。
-
-插件已包含 `plugins/codex-claude-delegate/server/server.js` 和 `plugins/codex-claude-delegate/server/job-runner.js`，普通用户不需要运行 `npm install` 或 `npm run build`。如果 `claude_setup` 提示缺少 `server/server.js` 或 `job-runner.js`，在仓库根目录运行 `npm run build:plugin` 重新生成。
-
-### 更新
+## Quick Start
 
 ```bash
-git pull
+npm install -g codex-claude-delegate-mcp
+codex-claude setup --write
+codex-claude doctor
 ```
 
-然后重启 Codex，或刷新插件。如果你修改了 `src/` 下的源码，还需要运行：
-
-```bash
-npm install
-npm run build:plugin
-npm run check:plugin
-```
-
-### 卸载
-
-```bash
-npm run uninstall:dry-run                    # 只预览，不修改配置或文件
-npm run uninstall                            # 交互式卸载
-npm run uninstall -- --yes                   # 非交互卸载，默认保留全部状态
-npm run uninstall -- --yes --keep-state=none # 非交互卸载，并删除 workspace 状态
-```
-
-卸载脚本会按两个主体扫描和处理资源：
-
-- **全局配置**：Codex 插件市场条目、`claude_delegate` MCP server、`~/.codex/config.toml` 中的 MCP 配置和 `CODEX_CLAUDE_ALLOW_ROOTS`。
-- **Workspace 本地状态**：当前仓库、`CODEX_CLAUDE_ALLOW_ROOTS` 中配置的仓库、其直接子目录中带 `.codex-claude-delegate/` 的仓库，以及状态记录中引用过的仓库。
-
-命令行为：
-
-| 命令 | 行为 |
-|------|------|
-| `npm run uninstall:dry-run` | 只报告将处理的全局配置、workspace 状态和 delegated worktree；不修改 TOML、不删除文件、不执行 remove 命令。 |
-| `npm run uninstall` | 交互式卸载；清理全局配置，并询问如何处理每个 workspace 的 `.codex-claude-delegate/`。 |
-| `npm run uninstall -- --yes` | 非交互卸载；清理全局配置，默认保留所有 workspace 状态，相当于 `--keep-state=all`。 |
-| `npm run uninstall -- --yes --keep-state=none` | 非交互卸载；清理全局配置，并删除所有已知 workspace 的 `.codex-claude-delegate/`。 |
-| `npm run uninstall -- --yes --keep-state=jobs,runs` | 非交互卸载；只保留指定状态项。可用项：`jobs`、`runs`、`sessions`、`review-gate`。 |
-
-`--keep-state` 只影响 `.codex-claude-delegate/` 状态目录，不影响仓库代码。交互模式下不需要传 `--keep-state`，脚本会逐项询问。
-
-Delegated worktree 不会被卸载脚本自动删除，只会以绝对路径报告。清理前先确认对应 worktree 没有需要保留的改动；如果 MCP 仍可用，可先运行 `claude_cleanup(cwd="...", dry_run=true)` 预览，再用 `dry_run=false` 删除。若 MCP 已移除，请在对应仓库中手动使用 `git worktree remove` / `git worktree prune` 清理。
-
-卸载后建议重启 Codex。
-
-> **已实现自动化：** 卸载过程已通过 `scripts/uninstall-plugin.mjs` 实现自动化。但以下项仍需人工验证：
-> - `codex plugin marketplace list` 返回的实际注册名称
-> - `codex mcp remove claude_delegate` 对 `~/.codex/config.toml` 的实际影响
-> - `.codex-claude-delegate/` 三种交互选项的正确行为
-> - `--yes --keep-state=none` 删除全部状态，`--yes` 默认保留全部状态
-> - dry-run 不修改 TOML、不删除文件、不执行 remove 命令
-> - dry-run 跨配置和状态记录中的 workspace 报告 delegated worktree 残留
-> - 卸载后重启 Codex 无 MCP 启动错误
-
-## 兼容性
-
-- **Codex**：需要支持插件市场（≥ 2025 年底版本）。MCP 配置使用 `.mcp.json` 相对路径。
-- **Claude Code CLI**：需要 `claude` 命令行可用，支持 `--permission-mode dontAsk`、`--allowedTools`、`--disallowedTools`、`--json-schema` 等标志。
-- **Git**：写入模式需要 worktree 支持（`git worktree add --detach`）。
-- **Node.js**：≥ 20（ESM 模块）。
-
-> **注意：** 上述兼容性声明基于代码中已使用的 API 表面和 CLI 标志，未在 Codex 或 Claude Code CLI 的每个版本上逐一验证。外部工具的向后不兼容变更可能影响本插件。发布前建议运行 `npm run check:plugin` 确认基本 MCP 加载和 hook 路径可用。
-
-## 使用流程
-
-### 只读提问
+Restart Codex, then ask:
 
 ```text
-claude_task(mode="read", cwd="/path/to/your/repo", task="Explain how auth works")
-  → 返回 job_id
-
-claude_job_wait(cwd="/path/to/your/repo", job_id="job-xxx")
-  → 轮询直到 waiting=false
-
-claude_result(cwd="/path/to/your/repo", prefer="latest-job")
-  → 返回标准化摘要和下一步建议
+Use claude_setup to check this repository.
 ```
 
-### 审查 / 审计
+### 60-Second Demo
 
 ```text
-claude_task(mode="review", cwd="/path/to/your/repo", task="Check for security issues")
+1. claude_setup                          → checks workspace readiness
+2. claude_task(mode="read", ...)         → delegate a read analysis
+3. claude_task(mode="write", ...)        → delegate a write task with instruction_files
+4. claude_job_wait(...)                  → poll until the job completes
+5. claude_result(...)                    → inspect results and changed files
+6. claude_apply(preview=true, ...)       → preview the diff
+7. user approval                         → user confirms
+8. claude_apply(cleanup=true, ...)       → apply changes and clean up worktree
+9. claude_cleanup(dry_run=true, ...)     → confirm no stale worktrees remain
+```
+
+## Features
+
+- **Delegate read/review/write tasks** — from Codex to Claude Code
+- **Isolated git worktree execution** — write tasks run in a separate worktree, leaving your main workspace untouched
+- **Background job polling** — all delegations are queued as background jobs with progress tracking
+- **Preview before apply** — review worktree diffs before landing changes in your main workspace
+- **Review gate** — optional stop-hook that prompts review before terminal state transitions
+
+## Install
+
+### Prerequisites
+
+- Codex CLI installed and authenticated
+- `node` >= 20 available in PATH
+- Claude Code CLI `claude` available in PATH (or set `CLAUDE_BIN`)
+- Git (write mode requires worktree support)
+
+### Global install (recommended)
+
+```bash
+npm install -g codex-claude-delegate-mcp
+```
+
+Verify installation:
+
+```bash
+codex-claude --version
+```
+
+### Setup
+
+Write the MCP server configuration to Codex config:
+
+```bash
+codex-claude setup --write
+```
+
+This adds `command = "codex-claude"` with the default 6 tools to `~/.codex/config.toml`.
+
+Options:
+
+| Flag | Description |
+|------|-------------|
+| `--force` | Overwrite existing claude_delegate config (creates timestamped backup) |
+| `--allow-root <path>` | Add a repository to `CODEX_CLAUDE_ALLOW_ROOTS` |
+| `--project` | Write to `./.codex/config.toml` instead of global config |
+| `--print` | Preview the config that would be written |
+
+### Doctor
+
+Verify your installation:
+
+```bash
+codex-claude doctor
+```
+
+Checks Node.js ≥ 20, package version, Claude CLI path/version, Git, worktree support, Codex config, default tools, and allow roots.
+
+```bash
+codex-claude doctor --json
+```
+
+### Print config
+
+See the MCP server TOML config without writing:
+
+```bash
+codex-claude print-config
+codex-claude print-config --source /path/to/repo
+codex-claude print-config --project
+```
+
+## Default tool set
+
+`setup --write` and `print-config` enable exactly 6 tools:
+
+| Tool | Usage |
+|------|-------|
+| `claude_setup` | First-use / check workspace readiness |
+| `claude_task` | **Recommended entry point**, auto-routes to read/review/write |
+| `claude_job_wait` | Poll background job until terminal state |
+| `claude_result` | Get the most relevant completed result + next_actions |
+| `claude_apply` | Preview or land worktree changes into main workspace |
+| `claude_cleanup` | Remove stale delegated worktrees (defaults to dry-run) |
+
+## Usage flow
+
+### Read-only analysis
+
+```text
+claude_task(mode="read", cwd="/path/to/repo", task="Explain how auth works")
+  → claude_job_wait(cwd="...", job_id="job-xxx")
+  → claude_result(cwd="...", prefer="latest-job")
+```
+
+### Review / audit
+
+```text
+claude_task(mode="review", cwd="/path/to/repo", task="Check for security issues")
   → claude_job_wait → claude_result
 ```
 
-### 写入 / 落地 / 清理
+### Write / apply / cleanup
 
 ```text
-claude_task(mode="write", cwd="/path/to/your/repo", task="Implement feature X")
+claude_task(mode="write", cwd="/path/to/repo", task="Implement feature X")
   → claude_job_wait(cwd="...", job_id="...")
   → claude_result(cwd="...")
-   → claude_apply(cwd="...", worktree_path=".claude/worktrees/codex-delegated-xxx", preview=true)  # 预览
-   → 用户确认后：claude_apply(cwd="...", worktree_path=".claude/worktrees/codex-delegated-xxx", cleanup=true, confirmed_by_user=true) # 落地+清理
-  → claude_cleanup(cwd="...", dry_run=true)  # 确认无残留
+  → claude_apply(cwd="...", worktree_path=".claude/worktrees/...", preview=true)
+  → user confirms → claude_apply(cwd="...", worktree_path="...", cleanup=true, confirmed_by_user=true)
+  → claude_cleanup(cwd="...", dry_run=true)
 ```
 
-## 工具
+## Advanced / Debug tools
 
-### 默认工具（日常使用）
-
-| 工具 | 使用场景 |
-|------|------|
-| `claude_setup` | 首次使用 / 怀疑环境问题 |
-| `claude_task` | **推荐入口**，自动按 mode 路由到 read/review/write |
-| `claude_job_wait` | 轮询后台任务状态 → 拿到终态结果 |
-| `claude_result` | 取当前最相关的已完成结果 + next_actions |
-| `claude_apply` | 预览或落地 worktree 变更到主工作区 |
-| `claude_cleanup` | 清理残留 worktree，默认 dry-run |
-
-### 高级 / 调试工具
-
-普通任务用 `claude_task`，不要直接调用底层工具。如确实需要，在 `~/.codex/config.toml` 的 `[mcp_servers.claude_delegate]` 中设置：
+These tools are NOT in the default config. Enable them explicitly in `~/.codex/config.toml`:
 
 ```toml
+[mcp_servers.claude_delegate]
 enabled_tools = ["claude_status", "claude_runs", "claude_run_inspect", "claude_workspace_status", "claude_review_gate", "claude_query", "claude_review", "claude_implement", "claude_jobs", "claude_job_result", "claude_job_cancel", "claude_job_cleanup"]
 ```
 
-| 工具 | 使用场景 |
-|------|------|
-| `claude_status` | 检查 Claude/Git/worktree/认证状态 |
-| `claude_runs` | 列出历史 run log |
-| `claude_run_inspect` | 按 run_id 查看单次运行详情 |
-| `claude_workspace_status` | 聚合视图：jobs / runs / sessions / worktrees |
-| `claude_review_gate` | 启用/关闭 review gate |
-| `claude_query` | 只读问答（底层入口） |
-| `claude_review` | 只读审查（底层入口） |
-| `claude_implement` | 隔离 worktree 实现（底层入口，支持 `files` 严格范围控制） |
-| `claude_jobs` | 列出后台作业 |
-| `claude_job_result` | 按 job_id 读取作业 |
-| `claude_job_cancel` | 取消任务 |
-| `claude_job_cleanup` | 清理旧终态作业记录 |
+| Tool | Purpose |
+|------|---------|
+| `claude_status` | Check Claude/Git/worktree/auth status |
+| `claude_runs` | List historical run logs |
+| `claude_run_inspect` | View single run details by run_id |
+| `claude_workspace_status` | Aggregated view: jobs / runs / sessions / worktrees |
+| `claude_review_gate` | Enable/disable/status review gate |
+| `claude_query` | Read-only Q&A (low-level entry) |
+| `claude_review` | Read-only review (low-level entry) |
+| `claude_implement` | Isolated worktree implementation (low-level entry) |
+| `claude_jobs` | List background jobs |
+| `claude_job_result` | Read job by job_id |
+| `claude_job_cancel` | Cancel a running job |
+| `claude_job_cleanup` | Clean old terminal job records |
 
-## 重要说明
+## Important notes
 
-- **`claude_task.files` 已废弃。** 传 `instruction_files` 替代。`claude_task` 的 `files` 只作上下文，不影响 apply 范围。
-- **`claude_implement.files`** 是严格范围控制能力，用于需要精确限制修改范围的场景。
-- **工作区有未提交改动时：** 默认返回 `needs_user`。传 `dirty_policy=committed` 忽略本地改动，或 `dirty_policy=snapshot` 将当前未提交文件复制进 worktree。
-- **轮询行为：** `claude_job_wait` 不做长阻塞。返回 `poll_too_soon=true` 时等 `next_allowed_poll_at` 后重试。`waiting=true` 时不要本地重复执行或另起 job。
-- **回合上限：** `claude_task` 不接受 `max_turns`。只有用户明确要求限制 Claude 回合数时，才改用高级工具 `claude_query` / `claude_review` / `claude_implement` 并设置 `max_turns`。
-- **落地确认：** `preview=true` 只预览，不修改主工作区；非 preview 的 `claude_apply` 必须在用户确认后传 `confirmed_by_user=true`。
-- **非法组合：** `preview=true` 与 `cleanup=true` 同时使用会被拒绝——预览不应删除 worktree。
-- **下一步建议：** `claude_result` 和 `claude_job_wait` 返回的 `next_actions` 只会建议预览操作（`preview=true`），不会建议直接落地。非 preview 的 apply 只能由用户确认后发起，不应从自动化建议中调用。
+- **`claude_task.files` is deprecated.** Use `instruction_files` instead. `claude_task.files` is treated as context only, not apply scope.
+- **`claude_implement.files`** is a strict scope control for cases where precise file constraints are needed.
+- **Uncommitted workspace changes:** Default returns `needs_user`. Pass `dirty_policy=committed` to ignore local changes, or `dirty_policy=snapshot` to copy dirty files into the worktree.
+- **Polling behavior:** `claude_job_wait` does not long-block. When `poll_too_soon=true`, wait until `next_allowed_poll_at`. When `waiting=true`, do not start a duplicate job.
+- **Turn caps:** `claude_task` does not accept `max_turns`. Use Advanced tools (`claude_query` / `claude_review` / `claude_implement`) when explicit turn limits are needed.
+- **Apply safety:** `preview=true` does not modify the main workspace. Non-preview `claude_apply` requires `confirmed_by_user=true` after user approval.
+- **Invalid combination:** `preview=true` + `cleanup=true` is rejected — preview should not delete the worktree.
+- **Next actions:** `claude_result` and `claude_job_wait` only suggest preview operations (`preview=true`), never direct non-preview apply.
 
-## 配置
+## Configuration
 
-### 允许的工作区根目录
+### Allow roots
 
-默认只允许 `~/projects`、`~/work`、`~/codex-claude`。扩展：
+Default allowed roots are `~/projects`, `~/work`, `~/codex-claude`. Extend via:
 
 ```toml
 # ~/.codex/config.toml
@@ -213,69 +190,73 @@ enabled_tools = ["claude_status", "claude_runs", "claude_run_inspect", "claude_w
 CODEX_CLAUDE_ALLOW_ROOTS = "/Users/you/projects:/Users/you/work:/Users/you/my-repo"
 ```
 
-### 手动安装 / 开发
-
-如果你是维护者，从源码构建插件 runtime：
+Or use the CLI:
 
 ```bash
+codex-claude setup --write --allow-root "$(pwd)"
+```
+
+### Development / maintenance
+
+If you are a maintainer building from source:
+
+```bash
+git clone https://github.com/anyi61/codex-claude.git
+cd codex-claude
 npm install
 npm run build:plugin
 npm run check:plugin
 ```
 
-插件 MCP 入口固定为 `plugins/codex-claude-delegate/.mcp.json` 中相对插件根目录的 `./server/server.js`，后台 job runner 固定为同目录的 `./server/job-runner.js`。常规开发调试仍可使用 `npm run dev` 或 `npm run build`（根目录 `dist/`）。
+The plugin directory (`plugins/`) remains as internal packaging. For development, use `npm run dev` or `npm run build`.
 
-## 故障排查
+## Troubleshooting
 
-| 问题 | 处理方式 |
+| Problem | Fix |
 |---------|-----|
-| 插件安装后工具不可用 | 重启 Codex/刷新插件，然后先运行 `claude_setup(cwd="...")` 查看环境检查结果 |
-| 找不到 `server/server.js` 或 `server/job-runner.js` | 在仓库根目录执行 `npm run build:plugin`，再执行 `npm run check:plugin` |
-| 旧版插件入口仍使用 `${CLAUDE_PLUGIN_ROOT}` | 拉取最新代码，重新安装插件，并确认 `plugins/codex-claude-delegate/.mcp.json` 使用 `./server/server.js` |
-| 启动 Codex 报 `invalid transport in mcp_servers.claude_delegate` | 删除孤立的 `[mcp_servers.claude_delegate.env]` 配置块，改用 `[shell_environment_policy.set]` 设置 `CODEX_CLAUDE_ALLOW_ROOTS` |
-| 找不到 `claude` 命令 | 安装 Claude Code CLI，或设置 `CLAUDE_BIN` |
-| `cwd` 不在允许根目录内 | 运行 `claude_setup(cwd="...", configure_allow_root=true)`。或手动设置 `CODEX_CLAUDE_ALLOW_ROOTS` 并重启 Codex |
-| `apply` 被拒绝 | 主工作区有未提交改动。先 commit/stash，或重试时传 `dirty_policy=committed` |
-| 残留 worktree | `claude_cleanup(dry_run=true, cwd="...")` 确认后 `dry_run=false` |
-| 任务卡住/超时 | `claude_job_cancel(cwd="...", job_id="...")` 后重新提交 |
-| 作业活跃 | `claude_job_wait(cwd="...", job_id="...")` 轮询到终态 |
-| `claude_setup` 报 `cwd` 无效 | 确保目录存在且是 git 仓库 |
+| `claude` command not found | Install Claude Code CLI or set `CLAUDE_BIN` |
+| cwd outside allowed roots | `codex-claude setup --write --allow-root "$(pwd)"` |
+| Dangerous allow root | Use a specific repo path, not `/`, `/tmp`, `/etc`, or `$HOME` |
+| `poll_too_soon=true` | Wait until `next_allowed_poll_at`, do not start a new task |
+| `waiting=true` | Continue polling the same `job_id`, do not re-delegate |
+| Stale job | Use claude_result to inspect; with Advanced tools, claude_job_cancel may help |
+| Apply refused: dirty workspace | Commit/stash changes, or use `dirty_policy=committed` |
+| Missing `confirmed_by_user` | Show the preview and get explicit user approval before applying |
+| `preview=true` + `cleanup=true` | Split into preview and confirmed apply+cleanup |
+| Leftover worktrees | `claude_cleanup(cwd="...", dry_run=true)` then `dry_run=false` |
 
-## 安全边界与限制
-
-- `spawn("claude", args[])` — 无 shell 注入
-- `--tools` / `--allowedTools` / `--disallowedTools` — 工具三层控制
-- `--permission-mode dontAsk` — 非交互安全模式
-- `sanitizeEnv()` — **环境最小化**（剥离 API key、token、SSH agent 等敏感变量，保留进程基本环境）
-- `BRIDGE_DEPTH` — 防递归委托（≥2 拒绝）
-- `validateCwd()` — realpath + allow roots 白名单
-
-> 注意：Claude 在 git worktree 中运行并受工具限制，但并非完整的操作系统沙箱。允许的命令包含 `npx`、`python`、`node` 等，用于运行测试和构建。系统不提供网络隔离或文件系统沙箱。
-
-## 已知限制
-
-- 无实时双向通信（Codex → Claude 一次性委托）
-- 每次 Claude 调用冷启动 ~2-5s
-- 不自动清理 worktree（需 `claude_cleanup`）
-- 旧 job 记录无 fingerprint/heartbeat，stale 分类回退到 updated_at
-- Stale 检测仅为建议，不自动杀进程
-
-## 维护者发布检查清单
-
-发布前运行以下验证：
+## Uninstall
 
 ```bash
-npm run typecheck          # TypeScript 编译检查
-npm test                   # 单元测试 + 集成测试（158+）
-npm run build:plugin       # 构建 MCP runtime bundle
-npm run check:plugin       # 插件 runtime 完整性检查
+npm uninstall -g codex-claude-delegate-mcp
 ```
 
-### 需手工验证的项
+To also remove the MCP server configuration from Codex, delete the `[mcp_servers.claude_delegate]` section from `~/.codex/config.toml` manually.
 
-- 从干净 Codex 配置安装/卸载插件（目前未在 CI 中自动化）
-- Codex 插件市场实际注册的名称（`codex plugin marketplace list`）
-- Claude Code CLI 最新版本对 `--permission-mode`、`--allowedTools` 等标志的兼容性
-- Windows 平台路径分隔符和环境变量行为
-- 升级 Codex 或 Claude Code CLI 后插件工具是否全部可见
-- 不同目标仓库路径（`~/projects`、`~/work`、自定义路径）下 `claude_setup` + `claude_apply` 端到端流程
+## Security
+
+- `spawn("claude", args[])` — no shell injection
+- `--tools` / `--allowedTools` / `--disallowedTools` — three-layer tool control
+- `--permission-mode dontAsk` — non-interactive safe mode
+- `sanitizeEnv()` — minimal environment (strips API keys, tokens, SSH agent)
+- `BRIDGE_DEPTH` — recursion protection (≥2 refused)
+- `validateCwd()` — realpath + allow roots whitelist
+- `dangerousRoot()` — rejects `/`, `/tmp`, `/etc`, `$HOME`
+
+## Known limitations
+
+- No real-time bidirectional communication (Codex → Claude one-shot delegation)
+- ~2-5s cold start per Claude invocation
+- No automatic worktree cleanup (use `claude_cleanup`)
+- Old job records lack fingerprint/heartbeat; stale classification falls back to updated_at
+- Stale detection is advisory only, does not auto-kill processes
+
+## Maintainer release checklist
+
+```bash
+npm run typecheck
+npm test
+npm run build:plugin
+npm run check:plugin
+npm pack --dry-run
+```

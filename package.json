@@ -2,17 +2,35 @@
   "name": "codex-claude-delegate-mcp",
   "version": "0.1.0",
   "description": "MCP server that lets Codex CLI delegate tasks to Claude Code",
+  "license": "MIT",
   "type": "module",
   "main": "dist/server.js",
+  "bin": {
+    "codex-claude": "./dist/cli.js"
+  },
+  "files": [
+    "dist/",
+    "plugins/codex-claude-delegate/server/",
+    "plugins/codex-claude-delegate/skills/",
+    "plugins/codex-claude-delegate/hooks/",
+    "plugins/codex-claude-delegate/.codex-plugin/",
+    "plugins/codex-claude-delegate/.mcp.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc",
     "build:plugin": "esbuild src/server.ts src/job-runner.ts --bundle --platform=node --target=node22 --format=esm --packages=bundle --outdir=plugins/codex-claude-delegate/server --outbase=src",
     "check:plugin": "node scripts/check-plugin.mjs",
-    "start": "node dist/server.js",
-    "dev": "tsx src/server.ts",
+    "start": "node dist/cli.js",
+    "dev": "tsx src/cli.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build && npm run typecheck && npm test && npm run build:plugin && npm run check:plugin",
     "uninstall": "npm run build && node scripts/uninstall-plugin.mjs",
     "uninstall:dry-run": "node scripts/uninstall-plugin.mjs --dry-run",
     "audit:docs": "node --import tsx debug/doc-audit.ts"

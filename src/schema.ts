@@ -892,4 +892,19 @@ export function formatDuration(ms: number): string {
   return `${minutes}m ${seconds}s`;
 }
 
+// ---- Interaction blocks ----
+
+export interface InteractionBlock {
+  headline: string;
+  state: string;
+  next_step: string;
+}
+
+export function withInteraction<T extends object>(
+  result: T,
+  interaction: InteractionBlock,
+): T & { interaction: InteractionBlock } {
+  return { ...result, interaction };
+}
+
 // end of file
