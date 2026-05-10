@@ -59,6 +59,7 @@ import {
   StructuredToolError,
   validationErrorMessage,
   withInteraction,
+  type ClaudeTaskResult,
   type InteractionBlock,
 } from "./schema.js";
 
@@ -153,21 +154,23 @@ export const TOOL_DEFINITIONS = [
   {
     name: "claude_task",
     description:
-      "Default tool. High-level rescue/task entrypoint that routes to query, review, or implement and returns a background job for polling. Does not accept max_turns \u2014 use Advanced/Debug tools (claude_query, claude_review, claude_implement) for explicit turn caps.",
+      "Default tool. High-level task entrypoint that delegates to Claude Code and waits inline for the result (up to wait_timeout_sec). Returns finalized results when the job completes within the wait window. Use claude_task(job_id=...) to continue waiting for a long-running job. Does not accept max_turns \u2014 use Advanced/Debug tools for explicit turn caps.",
     inputSchema: {
       type: "object",
-      required: ["cwd", "task"],
+      required: ["cwd"],
       properties: {
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
-        task: { type: "string", description: "High-level task to delegate" },
+        task: { type: "string", description: "High-level task to delegate. Optional when job_id is provided." },
         mode: { type: "string", enum: ["auto", "read", "review", "write"], description: "Routing mode. auto infers from diff/task wording." },
-        background: { type: "boolean", description: "Queue the delegated task as a persistent background job" },
+        background: { type: "boolean", description: "Legacy alias for wait_strategy='background'. Queue and return immediately." },
+        wait_strategy: { type: "string", enum: ["block", "background"], description: "block (default) waits inline for the result. background returns immediately with a running job." },
+        wait_timeout_sec: { type: "number", description: "Maximum seconds to wait inline for the job to finish (default 540, max 540)." },
+        job_id: { type: "string", description: "Continue waiting for an existing job by id. When provided, task is ignored and no new job is created." },
         resume_latest: { type: "boolean", description: "For write mode, resume the latest implement session for this repository." },
         instruction_files: { type: "array", items: { type: "string" }, description: "Task instruction/context files. These are not apply scope limits." },
         files: { type: "array", items: { type: "string" }, description: "Deprecated for claude_task: treated as instruction_files, not apply scope." },
         constraints: { type: "array", items: { type: "string" }, description: "Implementation constraints for write mode" },
         diff: { type: "string", description: "Diff to review. Presence strongly biases auto mode toward review." },
-        timeout_sec: { type: "number", description: "Timeout in seconds for the delegated task" },
         dirty_policy: { type: "string", enum: ["ask", "committed", "snapshot"], description: "Write-mode handling for uncommitted main-workspace changes: ask (default), committed (ignore dirty changes and use HEAD), or snapshot (copy dirty files into the delegated worktree)." },
       },
     },
@@ -295,14 +298,13 @@ export const TOOL_DEFINITIONS = [
   {
     name: "claude_job_wait",
     description:
-      "Default tool. Wait for a background job process to reach a terminal state or timeout; inspect job.result_status for the Claude task outcome.",
+      "Advanced / Recovery. Wait for a background job process to reach a terminal state. Uses the same inline wait mechanism as claude_task(job_id=...). Replaces legacy short-polling behavior.",
     inputSchema: {
       type: "object",
       required: ["cwd", "job_id"],
       properties: {
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
         job_id: { type: "string", description: "Background job id" },
-        not_before: { type: "string", description: "ISO timestamp; skip polling until this time to enforce recommended delays" },
       },
     },
   },
@@ -357,6 +359,85 @@ export const TOOL_DEFINITIONS = [
       },
     },
 ];
+
+export function buildTaskInteraction(result: ClaudeTaskResult): InteractionBlock {
+  if (result.completed_inline && result.status === "success") {
+    const hasWorktree = result.server_observed && typeof result.server_observed === "object" &&
+      "worktree_path" in (result.server_observed as Record<string, unknown>);
+    return {
+      headline: "Claude result is ready.",
+      state: "result_ready",
+      next_step: hasWorktree
+        ? "Preview the worktree changes with claude_apply preview=true."
+        : "Review the result above. No apply step is needed for read-only tasks.",
+    };
+  }
+  if (result.completed_inline && result.status === "failed") {
+    return {
+      headline: "Claude task failed.",
+      state: "failed",
+      next_step: "Inspect the error and retry with adjusted instructions.",
+    };
+  }
+  if (result.completed_inline && result.status === "partial") {
+    const hasWorktree = result.server_observed && typeof result.server_observed === "object" &&
+      "worktree_path" in (result.server_observed as Record<string, unknown>);
+    return {
+      headline: "Claude result is partially ready.",
+      state: "result_ready",
+      next_step: hasWorktree
+        ? "Preview the worktree changes with claude_apply preview=true. Note that the task did not complete fully."
+        : "Review the partial result above.",
+    };
+  }
+  if (result.completed_inline && result.status === "cancelled") {
+    return {
+      headline: "Claude task was cancelled.",
+      state: "failed",
+      next_step: "The job was cancelled. Start a new task if needed.",
+    };
+  }
+  if (result.completed_inline && result.status === "needs_user") {
+    return {
+      headline: "Claude needs input.",
+      state: "needs_user",
+      next_step: "Provide the required input or inspect the job result for details.",
+    };
+  }
+  if (result.waiting) {
+    return {
+      headline: "Claude is still working.",
+      state: "waiting",
+      next_step: "Continue this same job with claude_task(job_id=...). Do not start a duplicate task.",
+    };
+  }
+  if (result.status === "needs_attention" || result.status === "stale") {
+    return {
+      headline: "Claude job appears stale.",
+      state: "needs_attention",
+      next_step: "Inspect or cancel this job before starting a replacement.",
+    };
+  }
+  if (!result.job && result.result) {
+    return {
+      headline: "Write task needs a workspace decision before delegation.",
+      state: "needs_user",
+      next_step: "Commit or stash changes, or use dirty_policy=committed or dirty_policy=snapshot.",
+    };
+  }
+  if (result.job && !result.completed_inline) {
+    return {
+      headline: "Claude task started in background.",
+      state: "delegated_execution",
+      next_step: "Continue this job later with claude_task(job_id=...).",
+    };
+  }
+  return {
+    headline: "Task completed.",
+    state: "result_ready",
+    next_step: "Review the result and proceed.",
+  };
+}
 
 export function registerToolDefinitions(server: Server): void {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -468,7 +549,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
         return jsonResult(withInteraction(resultData, {
           headline: hasResult ? "Claude result is ready." : "Claude result is not available.",
           state: hasResult ? "result_ready" : "needs_attention",
-          next_step: hasResult ? "Preview the worktree changes with claude_apply preview=true." : "Check the job status with claude_job_wait.",
+          next_step: hasResult ? "Preview the worktree changes with claude_apply preview=true." : "Check active jobs with claude_workspace_status or claude_task(job_id=...).",
         }));
       }
 
@@ -483,31 +564,28 @@ export async function handleToolCall(name: string, args: unknown, runId = random
       case "claude_task": {
         const parsed = claudeTaskInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { cwd, mode, files, instruction_files } = parsed.data;
-        const check = await validateCwd(cwd);
+        const { cwd: inputCwd, mode, files, instruction_files, job_id } = parsed.data;
+        const check = await validateCwd(inputCwd);
         if (!check.ok) return errorResult(check.error!);
-        const fileCheck = await validateFilesWithinCwd(check.resolved, [
-          ...(instruction_files ?? []),
-          ...(files ?? []),
-        ]);
-        if (!fileCheck.ok) return errorResult(fileCheck.error!);
 
-        if (mode === "write" || (mode === "auto" && (parsed.data.resume_latest || (parsed.data.constraints?.length ?? 0) > 0))) {
-          const { supportsWorktree } = await import("./guard.js");
-          const wtCapable = await supportsWorktree(check.resolved);
-          if (!wtCapable) {
-            return errorResult("claude_task write mode requires a git repository with worktree support");
+        if (!job_id) {
+          const fileCheck = await validateFilesWithinCwd(check.resolved, [
+            ...(instruction_files ?? []),
+            ...(files ?? []),
+          ]);
+          if (!fileCheck.ok) return errorResult(fileCheck.error!);
+
+          if (mode === "write" || (mode === "auto" && (parsed.data.resume_latest || (parsed.data.constraints?.length ?? 0) > 0))) {
+            const { supportsWorktree } = await import("./guard.js");
+            const wtCapable = await supportsWorktree(check.resolved);
+            if (!wtCapable) {
+              return errorResult("claude_task write mode requires a git repository with worktree support");
+            }
           }
         }
 
         const taskResult = await runClaudeTask({ ...parsed.data, cwd: check.resolved }, runId);
-        const hasJob = !!taskResult.job;
-        const needsUser = !hasJob && taskResult.next_actions.length === 0 && taskResult.result !== undefined;
-        const taskInteraction: InteractionBlock = needsUser
-          ? { headline: "Write task needs a workspace decision before delegation.", state: "needs_user", next_step: "Commit or stash changes, or use dirty_policy=committed or dirty_policy=snapshot." }
-          : hasJob
-            ? { headline: "Task delegated to Claude Code.", state: "delegated_execution", next_step: "Poll claude_job_wait with this job_id." }
-            : { headline: "Task completed.", state: "delegated_execution", next_step: "Review the result and proceed." };
+        const taskInteraction = buildTaskInteraction(taskResult);
         return jsonResult(withInteraction(taskResult, taskInteraction));
       }
 
@@ -570,7 +648,6 @@ export async function handleToolCall(name: string, args: unknown, runId = random
         const fileCheck = await validateFilesWithinCwd(check.resolved, files);
         if (!fileCheck.ok) return errorResult(fileCheck.error!);
 
-        // implement requires a git repo (for worktree)
         const { supportsWorktree } = await import("./guard.js");
         const wtCapable = await supportsWorktree(check.resolved);
         if (!wtCapable) {
@@ -631,12 +708,10 @@ export async function handleToolCall(name: string, args: unknown, runId = random
         if (!check.ok) return errorResult(check.error!);
         const waitResult = await waitForBackgroundJob({ ...parsed.data, cwd: check.resolved });
         let interaction: InteractionBlock;
-        if (waitResult.poll_too_soon) {
-          interaction = { headline: "Polling too soon.", state: "poll_too_soon", next_step: "Do not call claude_job_wait again before next_allowed_poll_at." };
-        } else if (waitResult.stale_state === "stale") {
+        if (waitResult.stale_state === "stale") {
           interaction = { headline: "Claude job appears stale.", state: "needs_attention", next_step: "Inspect this job result before starting a replacement." };
         } else if (waitResult.waiting) {
-          interaction = { headline: "Claude job is still running.", state: "waiting", next_step: "Wait until next_allowed_poll_at, then poll this same job_id." };
+          interaction = { headline: "Claude job is still running.", state: "waiting", next_step: "Use claude_task(job_id=...) to continue waiting for this job." };
         } else {
           interaction = { headline: "Claude job completed.", state: "completed", next_step: "Use claude_result to inspect the result." };
         }

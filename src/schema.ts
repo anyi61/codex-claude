@@ -52,16 +52,18 @@ export type ClaudeTaskMode = "auto" | "read" | "review" | "write";
 
 export interface ClaudeTaskInput {
   cwd: string;
-  task: string;
+  task?: string;
   mode?: ClaudeTaskMode;
   background?: boolean;
+  wait_strategy?: "block" | "background";
+  wait_timeout_sec?: number;
+  job_id?: string;
   resume_latest?: boolean;
   instruction_files?: string[];
   /** @deprecated claude_task treats files as instruction_files, not apply scope. */
   files?: string[];
   constraints?: string[];
   diff?: string;
-  timeout_sec?: number;
   dirty_policy?: "ask" | "committed" | "snapshot";
 }
 
@@ -124,7 +126,6 @@ export interface ClaudeResultInput {
 export interface ClaudeJobWaitInput {
   cwd: string;
   job_id: string;
-  not_before?: string;
 }
 
 export interface ClaudeJobWaitResult {
@@ -303,11 +304,17 @@ export interface ClaudeSetupResult {
 
 export interface ClaudeTaskResult {
   delegated_mode: Exclude<ClaudeTaskMode, "auto">;
+  status?: string;
   summary: string;
   job?: BackgroundJobSummary;
   result?: Record<string, unknown>;
+  result_status?: string;
   session?: WorkflowSessionSummary;
+  server_observed?: unknown;
+  related_runs?: unknown;
   deduped?: boolean;
+  completed_inline?: boolean;
+  waiting?: boolean;
   do_not_start_duplicate_job?: boolean;
   warnings?: string[];
   next_actions: WorkflowNextAction[];
@@ -597,15 +604,17 @@ export const claudeImplementInputSchema = z.object({
 
 export const claudeTaskInputSchema = z.object({
   cwd: cwdSchema,
-  task: taskSchema,
+  task: z.string().trim().min(1).optional(),
   mode: z.enum(["auto", "read", "review", "write"]).optional().default("auto"),
   background: z.boolean().optional(),
+  wait_strategy: z.enum(["block", "background"]).optional(),
+  wait_timeout_sec: z.number().int().positive().max(540).optional().default(540),
+  job_id: z.string().trim().min(1).optional(),
   resume_latest: z.boolean().optional(),
   instruction_files: filesSchema,
   files: filesSchema,
   constraints: constraintsSchema,
   diff: z.string().optional(),
-  timeout_sec: timeoutSchema.optional(),
   dirty_policy: dirtyPolicySchema,
 }).refine((value) => value.mode !== "read" || !value.resume_latest, {
   message: "resume_latest is only supported for write mode",
@@ -613,6 +622,9 @@ export const claudeTaskInputSchema = z.object({
 }).refine((value) => value.mode !== "review" || !value.resume_latest, {
   message: "resume_latest is only supported for write mode",
   path: ["resume_latest"],
+}).refine((value) => !!(value.task || value.job_id), {
+  message: "Either task or job_id is required",
+  path: ["task"],
 });
 
 export const claudeApplyInputSchema = z.object({
@@ -672,7 +684,6 @@ export const claudeResultInputSchema = z.object({
 export const claudeJobWaitInputSchema = z.object({
   cwd: cwdSchema,
   job_id: z.string().trim().min(1, "job_id is required"),
-  not_before: z.string().trim().min(1).optional(),
 }).strict();
 
 export const claudeJobCancelInputSchema = z.object({

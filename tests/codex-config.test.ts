@@ -465,7 +465,7 @@ describe("removeOrFlagMcpServerSection", () => {
 });
 
 describe("npm global setup config", () => {
-  it("renders only codex-claude command and default 6 tools", () => {
+  it("renders only codex-claude command and default 5 tools", () => {
     const toml = renderClaudeDelegateMcpConfig();
     expect(toml).toContain("[mcp_servers.claude_delegate]");
     expect(toml).toContain('command = "codex-claude"');
@@ -525,7 +525,7 @@ describe("scanClaudeDelegateConfig fields", () => {
 
     const scan = await scanClaudeDelegateConfig();
     expect(scan.mcpCommand).toBe("codex-claude");
-    expect(scan.mcpEnabledTools).toEqual(["claude_setup", "claude_task", "claude_job_wait", "claude_result", "claude_apply", "claude_cleanup"]);
+    expect(scan.mcpEnabledTools).toEqual(["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"]);
   });
 
   it("returns null mcpCommand for non-standard command", async () => {

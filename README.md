@@ -16,25 +16,28 @@ codex-claude doctor
 Use claude_setup to check this repository.
 ```
 
-### 60 秒演示
+### 60 秒演示（节省 Token 的等待模式）
+
+`claude_task` 默认在 MCP 服务器内部等待 Claude 完成最长 540 秒。完成时直接返回标准化结果，无需额外的轮询：
 
 ```text
 1. claude_setup                          → 检查工作区就绪状态
-2. claude_task(mode="read", ...)         → 委托一个读取分析任务
-3. claude_task(mode="write", ...)        → 委托一个写入任务（带 instruction_files）
-4. claude_job_wait(...)                  → 轮询直到任务完成
-5. claude_result(...)                    → 检查结果和修改的文件
-6. claude_apply(preview=true, ...)       → 预览 diff
-7. user approval                         → 用户确认
-8. claude_apply(cleanup=true, ...)       → 应用变更并清理 worktree
-9. claude_cleanup(dry_run=true, ...)     → 确认没有残留 worktree
+2. claude_task(mode="read", ...)         → 委托读取任务，等待并返回结果
+3. claude_task(mode="write", ...)        → 委托写入任务，等待并返回结果
+4. Result includes worktree path
+5. claude_apply(preview=true, ...)       → 预览 diff
+6. user approval                         → 用户确认
+7. claude_apply(cleanup=true, ...)       → 应用变更并清理 worktree
+8. claude_cleanup(dry_run=true, ...)     → 确认没有残留 worktree
 ```
+
+如果任务在等待窗口内未完成（如大型重构），`claude_task` 返回 `status="running"` 和 `job_id`。使用 `claude_task(job_id=...)` 继续等待同一任务。
 
 ## 功能特性
 
 - **委托读取/审查/写入任务** — 从 Codex 到 Claude Code
 - **隔离的 git worktree 执行** — 写入任务在独立的 worktree 中运行，不影响主工作区
-- **后台任务轮询** — 所有委托排队为后台任务，支持进度追踪
+- **节省 Token 的内联等待** — `claude_task` 默认阻塞等待结果，减少模型往返
 - **应用前预览** — 在变更落地到主工作区前预览 worktree diff
 - **审查门禁** — 可选的 stop-hook，在终端状态转换前提示审查
 
@@ -104,43 +107,48 @@ codex-claude print-config --project
 
 ## 默认工具集
 
-`setup --write` 和 `print-config` 启用恰好 6 个工具：
+`setup --write` 和 `print-config` 启用恰好 5 个工具：
 
 | 工具 | 用途 |
 |------|------|
 | `claude_setup` | 首次使用 / 检查工作区就绪状态 |
-| `claude_task` | **推荐入口**，自动路由到读取/审查/写入 |
-| `claude_job_wait` | 轮询后台任务直到终态 |
+| `claude_task` | **推荐入口**，自动路由到读取/审查/写入，默认内联等待结果 |
 | `claude_result` | 获取最近完成的执行结果 + 下一步建议 |
 | `claude_apply` | 预览或落地 worktree 变更到主工作区 |
 | `claude_cleanup` | 清理过期的委托 worktree（默认 dry-run） |
 
-## 使用流程
+## 使用流程（节省 Token 的内联等待）
 
-### 只读分析
+`claude_task` 默认等待 Claude 在 MCP 服务器内部完成（最长 540 秒），直接在响应中返回标准化结果。这意味着 Codex 不需要额外的模型轮询调用。
+
+### 只读分析（快速路径）
 
 ```text
 claude_task(mode="read", cwd="/path/to/repo", task="解释认证的工作原理")
-  → claude_job_wait(cwd="...", job_id="job-xxx")
-  → claude_result(cwd="...", prefer="latest-job")
+  → 内联等待完成 → 返回 { status: "success", completed_inline: true, summary: "..." }
+  → 检查结果（无 worktree，无需 apply）
 ```
 
-### 审查 / 审计
-
-```text
-claude_task(mode="review", cwd="/path/to/repo", task="检查安全漏洞")
-  → claude_job_wait → claude_result
-```
-
-### 写入 / 应用 / 清理
+### 写入 / 应用 / 清理（内联完成路径）
 
 ```text
 claude_task(mode="write", cwd="/path/to/repo", task="实现特性 X")
-  → claude_job_wait(cwd="...", job_id="...")
-  → claude_result(cwd="...")
-  → claude_apply(cwd="...", worktree_path=".claude/worktrees/...", preview=true)
+  → 内联等待完成 → 返回 { status: "success", completed_inline: true, ... }
+  → claude_apply(cwd="...", worktree_path="...", preview=true)
   → user confirms → claude_apply(cwd="...", worktree_path="...", cleanup=true, confirmed_by_user=true)
   → claude_cleanup(cwd="...", dry_run=true)
+```
+
+### 长任务恢复路径
+
+如果 Claude 在 540 秒内未完成，`claude_task` 返回 `status="running"` 和 `job_id`：
+
+```text
+claude_task(mode="write", ...)
+  → 返回 { status: "running", completed_inline: false, job_id: "job-xxx", waiting: true }
+  → claude_task(job_id="job-xxx")
+  → 继续内联等待，完成后返回标准化结果
+  → claude_apply(preview=true, ...)
 ```
 
 ## 高级 / 调试工具
@@ -149,7 +157,7 @@ claude_task(mode="write", cwd="/path/to/repo", task="实现特性 X")
 
 ```toml
 [mcp_servers.claude_delegate]
-enabled_tools = ["claude_status", "claude_runs", "claude_run_inspect", "claude_workspace_status", "claude_review_gate", "claude_query", "claude_review", "claude_implement", "claude_jobs", "claude_job_result", "claude_job_cancel", "claude_job_cleanup"]
+enabled_tools = ["claude_status", "claude_runs", "claude_run_inspect", "claude_workspace_status", "claude_review_gate", "claude_job_wait", "claude_query", "claude_review", "claude_implement", "claude_jobs", "claude_job_result", "claude_job_cancel", "claude_job_cleanup"]
 ```
 
 | 工具 | 用途 |
@@ -166,16 +174,20 @@ enabled_tools = ["claude_status", "claude_runs", "claude_run_inspect", "claude_w
 | `claude_job_result` | 按 job_id 读取任务结果 |
 | `claude_job_cancel` | 取消正在运行的任务 |
 | `claude_job_cleanup` | 清理过期的终端任务记录 |
+| `claude_job_wait` | **高级/恢复兼容** — 使用与 `claude_task(job_id=...)` 相同的内联等待机制 |
 
 ## 重要说明
 
 - **`claude_implement.files`** 是严格的范围控制，用于需要精确文件约束的场景。
 - **未提交的工作区变更：** 默认返回 `needs_user`。传入 `dirty_policy=committed` 忽略本地变更，或 `dirty_policy=snapshot` 将脏文件复制到 worktree。
-- **轮询行为：** `claude_job_wait` 不会长时间阻塞。当 `poll_too_soon=true` 时，等待到 `next_allowed_poll_at`。当 `waiting=true` 时，不要启动重复任务。
+- **内联等待：** `claude_task` 默认在 MCP 服务器内部等待任务结果长达 `wait_timeout_sec` 秒（默认 540，最大 540）。如果任务在该窗口中完成，直接返回标准化结果（`completed_inline=true`）。
+- **长任务恢复：** 如果任务超过 `wait_timeout_sec` 仍未完成，使用 `claude_task(job_id=...)` 继续等待。不要重新委托同一任务。
+- **后台模式：** 使用 `wait_strategy="background"` 或 `background=true` 让 `claude_task` 立即返回，稍后用 `claude_task(job_id=...)` 获取结果。
+- **内部执行超时：** Claude CLI 的内部执行超时固定为 3600 秒（1 小时），独立于 `wait_timeout_sec`。这确保长任务可以在多个等待周期后完成。
 - **回合上限：** `claude_task` 不接受 `max_turns`。需要显式回合限制时，使用高级工具（`claude_query` / `claude_review` / `claude_implement`）。
 - **应用安全：** `preview=true` 不会修改主工作区。非预览模式的 `claude_apply` 需要用户确认后设置 `confirmed_by_user=true`。
 - **无效组合：** `preview=true` + `cleanup=true` 会被拒绝——预览不应删除 worktree。
-- **下一步操作：** `claude_result` 和 `claude_job_wait` 仅建议预览操作（`preview=true`），绝不直接建议非预览应用。
+- **下一步操作：** `claude_result` 和已完成的内联等待仅建议预览操作（`preview=true`），绝不直接建议非预览应用。
 
 ## 配置
 
@@ -216,8 +228,8 @@ npm run check:plugin
 | `claude` 命令未找到 | 安装 Claude Code CLI 或设置 `CLAUDE_BIN` 环境变量 |
 | cwd 不在 allow roots 中 | `codex-claude setup --write --allow-root "$(pwd)"` |
 | 危险的 allow root | 使用具体的仓库路径，不要用 `/`、`/tmp`、`/etc` 或 `$HOME` |
-| `poll_too_soon=true` | 等待到 `next_allowed_poll_at`，不要启动新任务 |
-| `waiting=true` | 继续轮询同一个 `job_id`，不要重新委托 |
+| `waiting=true` / `completed_inline=false` | 使用 `claude_task(job_id=...)` 继续等待同一任务 |
+| `claude_job_wait` 不在默认工具中 | `claude_job_wait` 已改为高级/恢复兼容工具。默认路径使用 `claude_task(job_id=...)` 继续等待 |
 | 任务过期 | 使用 claude_result 检查；高级工具中可使用 claude_job_cancel |
 | 应用被拒：工作区有未提交变更 | 提交或 stash 变更，或使用 `dirty_policy=committed` |
 | 缺少 `confirmed_by_user` | 展示预览并获得用户明确批准后再应用 |

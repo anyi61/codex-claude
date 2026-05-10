@@ -1383,11 +1383,12 @@ describe("claude cli argument construction", () => {
       created_at: now,
       updated_at: now,
       heartbeat_at: now,
-      pid: 99999,
       payload: { cwd: repo, task: "ship it" },
     });
 
     const reloaded = await import("../src/claude-cli.js");
+    reloaded.__test.inlineWaitPollIntervalMs = 5;
+    reloaded.__test.inlineWaitTimeoutMs = 50;
     const waitForBackgroundJob = (reloaded as {
       waitForBackgroundJob?: (input: {
         cwd: string;
@@ -1410,7 +1411,7 @@ describe("claude cli argument construction", () => {
       },
     });
     expect((result as { next_actions?: Array<{ tool: string }> }).next_actions?.map((action) => action.tool)).toEqual([
-      "claude_job_wait",
+      "claude_task",
     ]);
   });
 
@@ -1426,11 +1427,12 @@ describe("claude cli argument construction", () => {
       created_at: now,
       updated_at: now,
       heartbeat_at: now,
-      pid: 99998,
       payload: { cwd: repo, task: "review it" },
     });
 
     const reloaded = await import("../src/claude-cli.js");
+    reloaded.__test.inlineWaitPollIntervalMs = 5;
+    reloaded.__test.inlineWaitTimeoutMs = 50;
     const waitForBackgroundJob = (reloaded as {
       waitForBackgroundJob?: (input: {
         cwd: string;
@@ -1759,7 +1761,7 @@ describe("claude cli argument construction", () => {
     expect(Array.isArray(result.next_actions)).toBe(true);
   });
 
-  it("routes claude_task write mode to a background implement job by default", async () => {
+  it("routes claude_task write mode to a background implement job with explicit background", async () => {
     const { repo, jobStore } = await createWorkflowFixture();
     const spawned = createDetachedSpawnResult(6004);
 
@@ -1776,6 +1778,7 @@ describe("claude cli argument construction", () => {
       files: ["README.md"],
       constraints: ["Only change README.md"],
       dirty_policy: "committed",
+      wait_strategy: "background",
     }, "run-task-write-default");
 
     expect(result.delegated_mode).toBe("write");
@@ -1791,7 +1794,7 @@ describe("claude cli argument construction", () => {
     expect(stored?.payload.files).toBeUndefined();
     expect(stored?.payload.max_turns).toBeUndefined();
     expect(result.next_actions.map((action) => action.tool)).toEqual([
-      "claude_job_wait",
+      "claude_task",
     ]);
   });
 
@@ -1826,7 +1829,7 @@ describe("claude cli argument construction", () => {
       cwd: repo,
       task: "Take a look at this patch.",
       mode: "auto",
-      background: true,
+      wait_strategy: "background",
       diff: "diff --git a/README.md b/README.md",
       files: ["README.md"],
     }, "run-task-auto-review");
@@ -1836,8 +1839,229 @@ describe("claude cli argument construction", () => {
     const stored = await jobStore.get(result.job!.job_id);
     expect(stored?.payload.files).toBeUndefined();
     expect(stored?.payload.instruction_files).toEqual(["README.md"]);
-    expect(result.next_actions.map((action) => action.tool)).toEqual(["claude_job_wait"]);
+    expect(result.next_actions.map((action) => action.tool)).toEqual(["claude_task"]);
   });
+
+  it("wait_strategy takes precedence over legacy background alias when both provided", async () => {
+    const { repo } = await createWorkflowFixture();
+    const spawned = createDetachedSpawnResult(process.pid);
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => spawned) };
+    });
+
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const jobs = await import("../src/jobs.js");
+    reloaded.__test.inlineWaitPollIntervalMs = 5;
+    reloaded.__test.inlineWaitTimeoutMs = 500;
+
+    // Both wait_strategy="block" and background=true — wait_strategy must win
+    const resultPromise = reloaded.runClaudeTask({
+      cwd: repo,
+      task: "Explain the system.",
+      mode: "read",
+      wait_strategy: "block",
+      background: true,
+    }, "run-conflict");
+
+    // Wait for job creation
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // Find and complete the job
+    const store = new jobs.JobStore(path.join(repo, "..", ".codex-claude-delegate"));
+    await store.init();
+    const jobList = await store.list({ cwd: repo, limit: 5 });
+    expect(jobList.length).toBeGreaterThanOrEqual(1);
+    const jobId = jobList[0]!.job_id;
+    await store.update(jobId, {
+      status: "succeeded",
+      result: { status: "success", data: { answer: "ok" } },
+      summary: "Query completed",
+    });
+
+    const result = await resultPromise;
+
+    // Must NOT be background immediate-return despite background=true
+    expect(result.completed_inline).toBe(true);
+    expect(result.status).toBe("success");
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  }, 15000);
+
+  it("default block mode claude_task returns completed_inline=true for terminal job via job_id continuation", async () => {
+    const { repo, logDir, jobStore, sessionStore, repoKey } = await createWorkflowFixture();
+    await writeFile(path.join(logDir, "run-impl.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "success", summary: "Fixed bug" },
+      observed: { worktree_path: ".claude/worktrees/codex-delegated-abc", worktree_name: "codex-delegated-abc" },
+      session: { requested_session_id: null, returned_session_id: "sess-impl-1" },
+    }));
+    await jobStore.create({
+      job_id: "job-impl-done",
+      type: "implement",
+      status: "succeeded",
+      cwd: repo,
+      created_at: "2026-05-05T00:00:00.000Z",
+      updated_at: "2026-05-05T00:01:00.000Z",
+      payload: { cwd: repo, task: "fix bug" },
+      run_id: "run-impl",
+      summary: "Fixed bug",
+      result: { status: "success", summary: "Fixed bug", server_observed: { worktree_path: ".claude/worktrees/codex-delegated-abc", worktree_name: "codex-delegated-abc" } },
+      worktree_name: "codex-delegated-abc",
+    });
+    sessionStore.upsert("sess-impl-1", "implement", repoKey, repo, "Fixed bug");
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      job_id: "job-impl-done",
+    }, "run-default-block");
+
+    expect(result.completed_inline).toBe(true);
+    expect(result.status).toBe("success");
+    expect(result.job?.job_id).toBe("job-impl-done");
+    expect(result.summary).toBe("Fixed bug");
+    expect(result.next_actions.some((a) => a.tool === "claude_apply")).toBe(true);
+
+    // Verify equivalence with getClaudeResult
+    const claudeResult = await reloaded.getClaudeResult({ cwd: repo, job_id: "job-impl-done" });
+    expect(result.summary).toBe(claudeResult.summary);
+    expect(result.job?.job_id).toBe(claudeResult.job?.job_id);
+  });
+
+  it("default block mode claude_task returns completed_inline=true with failed result_status", async () => {
+    const { repo, logDir, jobStore } = await createWorkflowFixture();
+    await writeFile(path.join(logDir, "run-fail.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "failed", summary: "Failed to implement" },
+    }));
+    await jobStore.create({
+      job_id: "job-fail",
+      type: "implement",
+      status: "succeeded",
+      cwd: repo,
+      created_at: "2026-05-05T00:00:00.000Z",
+      updated_at: "2026-05-05T00:01:00.000Z",
+      payload: { cwd: repo, task: "broken" },
+      run_id: "run-fail",
+      summary: "Implement failed: Failed to implement",
+      result: { status: "failed", claude_report: { status: "failed", summary: "Failed to implement" } },
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      job_id: "job-fail",
+    }, "run-fail-block");
+
+    expect(result.completed_inline).toBe(true);
+    expect(result.status).toBe("failed");
+    expect(result.do_not_start_duplicate_job).toBe(false);
+  });
+
+  it("default block mode claude_task returns completed_inline=true for cancelled job", async () => {
+    const { repo, jobStore } = await createWorkflowFixture();
+    await jobStore.create({
+      job_id: "job-cancelled",
+      type: "review",
+      status: "cancelled",
+      cwd: repo,
+      created_at: "2026-05-05T00:00:00.000Z",
+      updated_at: "2026-05-05T00:01:00.000Z",
+      payload: { cwd: repo, task: "review" },
+      summary: "Cancelled by user",
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      job_id: "job-cancelled",
+    }, "run-cancelled");
+
+    expect(result.completed_inline).toBe(true);
+    expect(result.status).toBe("cancelled");
+    expect(result.do_not_start_duplicate_job).toBe(false);
+  });
+
+  it("default new-task claude_task(mode=read) creates job and returns completed_inline=true when job finishes during inline wait", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-task-inline-read-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const logDir = path.join(stateDir, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+
+    // Use process.pid so isPidAlive returns true and job doesn't appear stale
+    const spawned = createDetachedSpawnResult(process.pid);
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => spawned) };
+    });
+
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const jobs = await import("../src/jobs.js");
+    // Very fast poll so test completes quickly
+    reloaded.__test.inlineWaitPollIntervalMs = 5;
+    reloaded.__test.inlineWaitTimeoutMs = 500;
+
+    // Start the task (default block mode — will create job then wait)
+    const resultPromise = reloaded.runClaudeTask({
+      cwd: repo,
+      task: "Explain this project.",
+      mode: "read",
+      wait_timeout_sec: 10,
+    }, "run-task-inline-read");
+
+    // Wait for the job to be created
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // Find the job and make it terminal while inline wait is polling
+    const store = new jobs.JobStore(stateDir);
+    await store.init();
+    const jobList = await store.list({ cwd: repo, limit: 5 });
+    expect(jobList.length).toBeGreaterThanOrEqual(1);
+    const jobId = jobList[0]!.job_id;
+
+    await store.update(jobId, {
+      status: "succeeded",
+      result: { status: "success", data: { answer: "This project is an MCP server." } },
+      summary: "Query completed",
+    });
+
+    const result = await resultPromise;
+
+    expect(result.completed_inline).toBe(true);
+    expect(result.status).toBe("success");
+    expect(result.job?.job_id).toBe(jobId);
+    // Not a background immediate-return — must have waited
+    expect(result.completed_inline).toBe(true);
+    // Next actions should come from getClaudeResult aggregation (not empty)
+    expect(Array.isArray(result.next_actions)).toBe(true);
+
+    // Verify through getClaudeResult that output is equivalent
+    const claudeResult = await reloaded.getClaudeResult({ cwd: repo, job_id: jobId });
+    expect(result.summary).toBe(claudeResult.summary);
+
+    vi.doUnmock("node:child_process");
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    delete process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR;
+    vi.resetModules();
+  }, 15000);
 
   it("fails apply closed when implement metadata is missing (no run log, no job record)", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-no-meta-"));

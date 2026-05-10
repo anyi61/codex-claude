@@ -234,7 +234,7 @@ describe("codex-claude CLI", () => {
         mcpServerKeys: ["command", "enabled_tools"],
         envKeys: [],
         mcpCommand: "codex-claude",
-        mcpEnabledTools: ["claude_setup", "claude_task", "claude_job_wait", "claude_result", "claude_apply", "claude_cleanup"],
+        mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"],
       },
     });
 
@@ -271,7 +271,7 @@ describe("codex-claude CLI", () => {
         mcpServerKeys: ["command", "enabled_tools"],
         envKeys: [],
         mcpCommand: "codex-claude",
-        mcpEnabledTools: ["claude_setup", "claude_task", "claude_job_wait", "claude_result", "claude_apply", "claude_cleanup"],
+        mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"],
       },
     });
 
@@ -327,7 +327,7 @@ describe("codex-claude CLI", () => {
         mcpServerKeys: ["command", "enabled_tools"],
         envKeys: [],
         mcpCommand: "codex-claude",
-        mcpEnabledTools: ["claude_setup", "claude_task", "claude_job_wait", "claude_result", "claude_apply"],
+        mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply"],
       },
     });
 
@@ -387,7 +387,7 @@ describe("codex-claude CLI", () => {
         mcpServerKeys: ["command", "enabled_tools"],
         envKeys: [],
         mcpCommand: "codex-claude",
-        mcpEnabledTools: ["claude_setup", "claude_task", "claude_job_wait", "claude_result", "claude_apply", "claude_cleanup"],
+        mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"],
       },
     });
 

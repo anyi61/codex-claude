@@ -129,11 +129,12 @@ describe("schema definitions", () => {
     expect(claudeJobCancelInputSchema.safeParse({ cwd: "/repo", job_id: "job-123" }).success).toBe(true);
     expect(claudeJobCleanupInputSchema.safeParse({ cwd: "/repo", dry_run: true, older_than_hours: 12, limit: 5 }).success).toBe(true);
     expect(claudeJobWaitInputSchema.safeParse({ cwd: "/repo", job_id: "job-1" }).success).toBe(true);
-    expect(claudeJobWaitInputSchema.safeParse({ cwd: "/repo", job_id: "job-1", not_before: "2026-05-06T00:00:30.000Z" }).success).toBe(true);
+    expect(claudeJobWaitInputSchema.safeParse({ cwd: "/repo", job_id: "job-1" }).success).toBe(true);
     expect(claudeJobResultInputSchema.safeParse({ cwd: "/repo", job_id: "" }).success).toBe(false);
     expect(claudeJobCleanupInputSchema.safeParse({ cwd: "/repo", limit: 0 }).success).toBe(false);
     expect(claudeJobCleanupInputSchema.safeParse({ cwd: "/repo", older_than_hours: -1 }).success).toBe(false);
     expect(claudeJobWaitInputSchema.safeParse({ cwd: "/repo", job_id: "" }).success).toBe(false);
+    expect(claudeJobWaitInputSchema.safeParse({ cwd: "/repo", job_id: "job-1", not_before: "2026-05-06T00:00:30.000Z" }).success).toBe(false);
     expect(claudeJobWaitInputSchema.safeParse({ cwd: "/repo", job_id: "job-1", timeout_ms: 5000 }).success).toBe(false);
   });
 
@@ -186,6 +187,54 @@ describe("schema definitions", () => {
     expect(parsed.success).toBe(true);
     if (!parsed.success) throw new Error("unexpected parse failure");
     expect(parsed.data).not.toHaveProperty("max_turns");
+  });
+
+  it("silently drops timeout_sec from claude_task input", () => {
+    const parsed = claudeTaskInputSchema.safeParse({
+      cwd: "/repo",
+      task: "write docs",
+      timeout_sec: 10,
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.data).not.toHaveProperty("timeout_sec");
+  });
+
+  it("accepts wait_strategy, wait_timeout_sec, and job_id on claude_task", () => {
+    const parsed = claudeTaskInputSchema.safeParse({
+      cwd: "/repo",
+      task: "do work",
+      wait_strategy: "block",
+      wait_timeout_sec: 300,
+    });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) throw new Error("unexpected parse failure");
+    expect(parsed.data.wait_strategy).toBe("block");
+    expect(parsed.data.wait_timeout_sec).toBe(300);
+
+    const bg = claudeTaskInputSchema.safeParse({
+      cwd: "/repo",
+      task: "do work",
+      wait_strategy: "background",
+    });
+    expect(bg.success).toBe(true);
+    expect(bg.data!.wait_strategy).toBe("background");
+
+    const jobOnly = claudeTaskInputSchema.safeParse({
+      cwd: "/repo",
+      job_id: "job-123",
+    });
+    expect(jobOnly.success).toBe(true);
+    expect(jobOnly.data!.job_id).toBe("job-123");
+  });
+
+  it("rejects claude_task with neither task nor job_id", () => {
+    expect(claudeTaskInputSchema.safeParse({ cwd: "/repo" }).success).toBe(false);
+    expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", mode: "read" }).success).toBe(false);
+  });
+
+  it("rejects wait_timeout_sec above 540", () => {
+    expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "x", wait_timeout_sec: 541 }).success).toBe(false);
+    expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "x", wait_timeout_sec: 540 }).success).toBe(true);
   });
 
   it("validates high-level task routing inputs", () => {

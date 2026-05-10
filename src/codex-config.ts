@@ -465,7 +465,6 @@ export async function configureCodexAllowRoot(rawCwd: string): Promise<CodexAllo
 export const DEFAULT_ENABLED_TOOLS = [
   "claude_setup",
   "claude_task",
-  "claude_job_wait",
   "claude_result",
   "claude_apply",
   "claude_cleanup",

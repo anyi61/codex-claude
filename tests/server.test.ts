@@ -312,7 +312,9 @@ describe("server background job handlers", () => {
     runClaudeTaskMock.mockResolvedValue({
       delegated_mode: "read",
       summary: "Delegated read task as a background job.",
+      status: "running",
       job: { job_id: "job-read", type: "query", status: "queued" },
+      completed_inline: false,
       next_actions: [],
     });
 
@@ -326,12 +328,12 @@ describe("server background job handlers", () => {
 
     expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
     expect(validateFilesWithinCwdMock).toHaveBeenCalledWith("/repo/resolved", []);
-    expect(runClaudeTaskMock).toHaveBeenCalledWith({
+    expect(runClaudeTaskMock).toHaveBeenCalledWith(expect.objectContaining({
       cwd: "/repo/resolved",
       task: "Explain auth flow",
       mode: "read",
       background: true,
-    }, expect.any(String));
+    }), expect.any(String));
     expect(payload.delegated_mode).toBe("read");
     expect(result.isError).toBeUndefined();
   });
@@ -361,14 +363,14 @@ describe("server background job handlers", () => {
       "PROJECT_EXPANSION_PLAN.md",
       "LEGACY_PLAN.md",
     ]);
-    expect(runClaudeTaskMock).toHaveBeenCalledWith({
+    expect(runClaudeTaskMock).toHaveBeenCalledWith(expect.objectContaining({
       cwd: "/repo/resolved",
       task: "Execute PROJECT_EXPANSION_PLAN.md",
       mode: "write",
       instruction_files: ["PROJECT_EXPANSION_PLAN.md"],
       files: ["LEGACY_PLAN.md"],
       dirty_policy: "committed",
-    }, expect.any(String));
+    }), expect.any(String));
     expect(payload.warnings).toEqual([
       "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use advanced claude_implement allowed_files/scope options for strict file modification limits.",
     ]);
@@ -600,10 +602,6 @@ describe("server background job handlers", () => {
       waiting: false,
       timed_out: false,
       do_not_start_duplicate_job: false,
-      poll_too_soon: undefined,
-      recommended_delay_ms: undefined,
-      remaining_delay_ms: undefined,
-      next_allowed_poll_at: undefined,
       age_ms: 1000,
       stale_state: "fresh",
       result: { ok: true },
@@ -741,12 +739,57 @@ describe("server background job handlers", () => {
     expect(taskTool?.inputSchema.properties).not.toHaveProperty("max_turns");
   });
 
+  it("does not expose timeout_sec on claude_task input schema", () => {
+    const taskTool = TOOL_DEFINITIONS.find((tool) => tool.name === "claude_task");
+    expect(taskTool?.inputSchema.properties).not.toHaveProperty("timeout_sec");
+  });
+
+  it("documents job_id and wait_strategy in claude_task metadata", () => {
+    const taskTool = TOOL_DEFINITIONS.find((tool) => tool.name === "claude_task");
+    expect(taskTool?.inputSchema.properties).toHaveProperty("job_id");
+    expect(taskTool?.inputSchema.properties).toHaveProperty("wait_strategy");
+    expect(taskTool?.inputSchema.properties).toHaveProperty("wait_timeout_sec");
+    expect(taskTool?.inputSchema.required).not.toContain("task");
+    expect(taskTool?.inputSchema.required).toEqual(["cwd"]);
+  });
+
+  it("routes claude_task job_id continuation without requiring task", async () => {
+    runClaudeTaskMock.mockResolvedValue({
+      delegated_mode: "read",
+      summary: "Continuing job job-existing.",
+      status: "running",
+      job: { job_id: "job-existing", type: "query", status: "running" },
+      completed_inline: false,
+      waiting: true,
+      do_not_start_duplicate_job: true,
+      next_actions: [{ tool: "claude_task", reason: "continue", args: { cwd: "/repo/resolved", job_id: "job-existing" } }],
+    });
+
+    const result = await handleToolCall("claude_task", {
+      cwd: "/repo/input",
+      job_id: "job-existing",
+    });
+    const payload = parsePayload(result);
+
+    expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
+    expect(runClaudeTaskMock).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: "/repo/resolved",
+      job_id: "job-existing",
+    }), expect.any(String));
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("claude_job_wait description marks it as Advanced/Recovery", () => {
+    const waitTool = TOOL_DEFINITIONS.find((tool) => tool.name === "claude_job_wait");
+    expect(waitTool?.description).toMatch(/^Advanced \/ Recovery/);
+  });
+
   it("exposes confirmed_by_user on claude_apply input schema", () => {
     const applyTool = TOOL_DEFINITIONS.find((tool) => tool.name === "claude_apply");
     expect(applyTool?.inputSchema.properties).toHaveProperty("confirmed_by_user");
   });
 
-  it("documents the six default tools and marks the rest as advanced", async () => {
+  it("documents the five default tools and marks the rest as advanced", async () => {
     let listToolsHandler: (() => Promise<{ tools: Array<{ name: string; description?: string }> }>) | undefined;
     const fakeServer = {
       setRequestHandler: vi.fn((_schema: unknown, handler: () => Promise<{ tools: Array<{ name: string; description?: string }> }>) => {
@@ -761,7 +804,6 @@ describe("server background job handlers", () => {
     const defaultTools = [
       "claude_setup",
       "claude_task",
-      "claude_job_wait",
       "claude_result",
       "claude_apply",
       "claude_cleanup",
@@ -772,7 +814,7 @@ describe("server background job handlers", () => {
 
     expect(defaultTools.every((name) => byName.has(name))).toBe(true);
     for (const name of advancedTools) {
-      expect(byName.get(name)?.description).toMatch(/^Advanced \/ Debug\./);
+      expect(byName.get(name)?.description).toMatch(/^Advanced \/ (Debug|Recovery)\./);
     }
   });
 
@@ -785,9 +827,9 @@ describe("server background job handlers", () => {
       do_not_start_duplicate_job: true,
       next_actions: [
         {
-          tool: "claude_job_wait",
-          reason: "poll",
-          args: { cwd: "/repo/resolved", job_id: "job-existing" },
+          tool: "claude_task",
+          reason: "continue waiting",
+          args: { cwd: "/repo/resolved", job_id: "job-existing", wait_strategy: "block", wait_timeout_sec: 540 },
         },
       ],
     });
@@ -803,7 +845,7 @@ describe("server background job handlers", () => {
     expect(payload.deduped).toBe(true);
     expect(payload.do_not_start_duplicate_job).toBe(true);
     expect((payload.next_actions as Array<Record<string, unknown>>)[0]).toMatchObject({
-      tool: "claude_job_wait",
+      tool: "claude_task",
     });
   });
 });
