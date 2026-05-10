@@ -368,7 +368,32 @@ describe("uninstall-plugin.mjs", () => {
       expect(after).not.toContain(repoB);
     });
 
-    it("removes all discovered workspace roots from shell env CODEX_CLAUDE_ALLOW_ROOTS", async () => {
+    it("removes npm global codex-claude MCP config under --yes", async () => {
+      const configPath = path.join(codexHome, "config.toml");
+      await mkdir(path.dirname(configPath), { recursive: true });
+      await writeFile(configPath, [
+        "[mcp_servers.claude_delegate]",
+        'command = "codex-claude"',
+        'startup_timeout_sec = 20',
+        'tool_timeout_sec = 600',
+        "",
+        "[mcp_servers.claude_delegate.env]",
+        `CODEX_CLAUDE_ALLOW_ROOTS = "${repoRoot}"`,
+        "",
+      ].join("\n"), "utf8");
+
+      const { exitCode } = runScript(["--yes"], {
+        CODEX_HOME: codexHome,
+        CODEX_UNINSTALL_REPO_ROOT: repoRoot,
+      });
+
+      expect(exitCode).toBe(0);
+      const after = await readFile(configPath, "utf8");
+      expect(after).not.toContain("[mcp_servers.claude_delegate]");
+    expect(after).not.toContain("codex-claude");
+  });
+
+  it("removes all discovered workspace roots from shell env CODEX_CLAUDE_ALLOW_ROOTS", async () => {
       const repoA = repoRoot;
       const repoB = path.join(tmpDir, "repo-b");
       await mkdir(repoB, { recursive: true });

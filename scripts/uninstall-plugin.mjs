@@ -109,7 +109,7 @@ function inlineClassifySection(config) {
     const bodyMatch = config.match(new RegExp(`\\[mcp_servers\\.${SERVER_NAME}\\]\\n([\\s\\S]*?)(?=\\n\\[|$)`));
     const body = bodyMatch ? bodyMatch[1] : "";
     const pointsToPlugin = /(?:^|["'\s\[])(?:\.\/server\/server\.js|[^"'\s,\]]*codex-claude-delegate\/server\/server\.js)(?=["'\s,\]]|$)/.test(body);
-    if (cmd === "node" && pointsToPlugin) return "auto";
+    if (cmd === "codex-claude" || (cmd === "node" && pointsToPlugin)) return "auto";
     const hasCmd = /^\s*command\s*=/m.test(body);
     const hasArgs = /^\s*args\s*=/m.test(body);
     if (hasCmd || hasArgs) return "manual";
@@ -662,8 +662,8 @@ async function phaseReportWorktrees(scan) {
     console.log(`    ${wt.path}`);
   }
   console.log("  These are not automatically deleted.");
-  console.log("  To clean up through this MCP before uninstall finishes, run claude_cleanup(cwd=<workspace>, dry_run=true) then claude_cleanup(cwd=<workspace>, dry_run=false).");
-  console.log("  If the MCP has already been removed, inspect the owning repository and remove stale worktrees manually with git worktree remove.");
+  console.log("  To clean up through this MCP, run claude_cleanup(cwd=<workspace>, dry_run=true) then claude_cleanup(cwd=<workspace>, dry_run=false) before uninstall.");
+  console.log("  After MCP config is removed, inspect the owning repository and remove stale worktrees manually with git worktree remove.");
   recordManual("worktrees", `${scan.delegatedWorktrees.length} worktree(s) found; manual cleanup required`);
 
   if (!dryRun) {

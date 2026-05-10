@@ -187,7 +187,7 @@ export function readTableKeys(config: string, tableName: string): string[] {
 
 /**
  * Classify the `[mcp_servers.claude_delegate]` section in a TOML config:
- * - "auto": command="node" and args point to this plugin's server script.
+ * - "auto": command="codex-claude", or command="node" and args point to this plugin's server script.
  * - "env_only": only an `.env` subsection exists, no command/args.
  * - "manual": anything else (custom command, different args, etc.).
  * Returns null when no claude_delegate MCP section exists.
@@ -211,11 +211,12 @@ export function classifyMcpServerSection(config: string): McpServerClassificatio
 
   const command = hasMain ? readTableValue(config, `mcp_servers.${SERVER_NAME}`, "command") : null;
   const isNodeCommand = command === "node";
+  const isNpmGlobalCommand = command === "codex-claude";
   const mainContent = hasMain ? getTableContent(config, `mcp_servers.${SERVER_NAME}`) : "";
   const pointsToPlugin = /(?:^|["'\s\[])(?:\.\/server\/server\.js|[^"'\s,\]]*codex-claude-delegate\/server\/server\.js)(?=["'\s,\]]|$)/.test(mainContent ?? "");
 
   let origin: "auto" | "env_only" | "manual";
-  if (isNodeCommand && pointsToPlugin) {
+  if (isNpmGlobalCommand || (isNodeCommand && pointsToPlugin)) {
     origin = "auto";
   } else if (!hasCommand && !hasArgs && hasEnv) {
     origin = "env_only";

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { realpathSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 
 import { getPackageInfo } from "./package-info.js";
 import { main as startMcpServer } from "./server.js";
@@ -11,6 +12,7 @@ export interface CliDependencies {
   writeOut?: (text: string) => void;
   writeErr?: (text: string) => void;
   startMcp?: () => Promise<void>;
+  runUninstall?: (args: string[]) => number;
 }
 
 export type DoctorStatus = "ready" | "not_ready" | "needs_setup" | "needs_attention";
@@ -80,6 +82,19 @@ export interface DoctorResult {
 async function packageVersion(): Promise<string> {
   const info = await getPackageInfo();
   return `${info.name} v${info.version}`;
+}
+
+function runUninstallScript(args: string[]): number {
+  const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const scriptPath = resolve(packageRoot, "scripts", "uninstall-plugin.mjs");
+  execFileSync(process.execPath, [scriptPath, ...args], {
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      CODEX_UNINSTALL_REPO_ROOT: process.cwd(),
+    },
+  });
+  return 0;
 }
 
 async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "writeErr">>, json?: boolean): Promise<number> {
@@ -309,6 +324,7 @@ export async function runCli(argv = process.argv, deps: CliDependencies = {}): P
   const writeOut = deps.writeOut ?? ((text: string) => process.stdout.write(text));
   const writeErr = deps.writeErr ?? ((text: string) => process.stderr.write(text));
   const startMcp = deps.startMcp ?? startMcpServer;
+  const runUninstall = deps.runUninstall ?? runUninstallScript;
   const args = argv.slice(2);
   const command = args[0];
 
@@ -400,8 +416,12 @@ export async function runCli(argv = process.argv, deps: CliDependencies = {}): P
       return doctorCommand(io, isJson);
     }
 
+    if (command === "uninstall") {
+      return runUninstall(args.slice(1));
+    }
+
     writeErr(`Unknown command: ${command}\n`);
-    writeErr("Usage: codex-claude [mcp|--version|print-config|setup|doctor]\n");
+    writeErr("Usage: codex-claude [mcp|--version|print-config|setup|doctor|uninstall]\n");
     return 2;
   } catch (err) {
     writeErr(`${err instanceof Error ? err.message : String(err)}\n`);

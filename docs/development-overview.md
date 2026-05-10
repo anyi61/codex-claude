@@ -257,7 +257,7 @@ Conventional development still uses `npm run dev` (tsx live) or `npm run build` 
 | Plugin MCP entry | `plugins/codex-claude-delegate/server/server.js` | **[NEW]** 仓库追踪 |
 | Plugin runner | `plugins/codex-claude-delegate/server/job-runner.js` | **[NEW]** 仓库追踪 |
 
-卸载模型分为 global resources 和 workspace resources。Global resources 只处理一次；workspace resources 会按已知 workspace 分组扫描。已知 workspace 来源包括当前卸载仓库、`CODEX_CLAUDE_ALLOW_ROOTS`、配置根目录直接子目录中的 `.codex-claude-delegate/`、以及 state JSON 中记录的 `cwd` / `input.cwd` / `workspace_root` / `repo_root`。扫描是有界的：只检查明确配置的路径及其直接子目录，不递归扫整个磁盘，并跳过 `/`、`/tmp`、`/etc` 和用户 home 这类过宽根目录。
+卸载入口是 `codex-claude uninstall`，必须在 `npm uninstall -g @anyi61/codex-claude-delegate-mcp` 之前运行，否则全局 CLI 会被移除，只能手动编辑 Codex config。卸载模型分为 global resources 和 workspace resources。Global resources 只处理一次；workspace resources 会按已知 workspace 分组扫描。已知 workspace 来源包括当前卸载仓库、`CODEX_CLAUDE_ALLOW_ROOTS`、配置根目录直接子目录中的 `.codex-claude-delegate/`、以及 state JSON 中记录的 `cwd` / `input.cwd` / `workspace_root` / `repo_root`。扫描是有界的：只检查明确配置的路径及其直接子目录，不递归扫整个磁盘，并跳过 `/`、`/tmp`、`/etc` 和用户 home 这类过宽根目录。
 
 ---
 

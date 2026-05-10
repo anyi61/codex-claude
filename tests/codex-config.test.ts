@@ -379,6 +379,28 @@ describe("removeOrFlagMcpServerSection", () => {
     expect(updated).not.toMatch(/\[mcp_servers\.claude_delegate\]/);
   });
 
+  it("deletes npm global codex-claude section as auto config", async () => {
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, [
+      "[mcp_servers.claude_delegate]",
+      'command = "codex-claude"',
+      'startup_timeout_sec = 20',
+      'tool_timeout_sec = 600',
+      "",
+      "[mcp_servers.claude_delegate.env]",
+      'CODEX_CLAUDE_ALLOW_ROOTS = "/a:/b"',
+      "",
+    ].join("\n"), "utf8");
+
+    const result = await removeOrFlagMcpServerSection();
+    expect(result.changed).toBe(true);
+    expect(result.action).toBe("deleted");
+
+    const updated = await readFile(configPath, "utf8");
+    expect(updated).not.toMatch(/\[mcp_servers\.claude_delegate\]/);
+  });
+
   it("deletes env_only section but not other config", async () => {
     const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
     await mkdir(path.dirname(configPath), { recursive: true });

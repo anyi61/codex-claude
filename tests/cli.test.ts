@@ -90,6 +90,20 @@ describe("codex-claude CLI", () => {
     expect(io.stderr).toContain("Unknown command");
   });
 
+  it("dispatches uninstall command to packaged uninstall flow", async () => {
+    const io = makeIo();
+    const runUninstall = vi.fn(() => 0);
+    const exitCode = await runCli(["node", "codex-claude", "uninstall", "--yes"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+      runUninstall,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(runUninstall).toHaveBeenCalledWith(["--yes"]);
+  });
+
   it("prints npm global config", async () => {
     const io = makeIo();
     const exitCode = await runCli(["node", "codex-claude", "print-config"], {

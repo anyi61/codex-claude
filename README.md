@@ -227,10 +227,13 @@ npm run check:plugin
 ## 卸载
 
 ```bash
+codex-claude uninstall --yes
 npm uninstall -g @anyi61/codex-claude-delegate-mcp
 ```
 
-要同时移除 Codex 中的 MCP 服务器配置，手动删除 `~/.codex/config.toml` 中的 `[mcp_servers.claude_delegate]` 部分。
+`codex-claude uninstall` 会先清理 Codex 中的 `claude_delegate` MCP server 配置和本工具维护的 allow-root 配置，并报告 workspace state 与 delegated worktree 残留。它不会自动删除 delegated worktree；如需删除，先在卸载前用 `claude_cleanup(cwd="...", dry_run=true)` 预览，再用 `dry_run=false` 清理。
+
+必须先运行 `codex-claude uninstall`，再运行 `npm uninstall -g`。如果先卸载 npm 包，`codex-claude` 命令会消失，只能手动编辑 `~/.codex/config.toml` 删除 `[mcp_servers.claude_delegate]`。
 
 ## 安全
 

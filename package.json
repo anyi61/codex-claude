@@ -15,6 +15,7 @@
     "plugins/codex-claude-delegate/hooks/",
     "plugins/codex-claude-delegate/.codex-plugin/",
     "plugins/codex-claude-delegate/.mcp.json",
+    "scripts/uninstall-plugin.mjs",
     "README.md",
     "LICENSE"
   ],
