@@ -448,7 +448,7 @@ describe("npm global setup config", () => {
     expect(toml).toContain("[mcp_servers.claude_delegate]");
     expect(toml).toContain('command = "codex-claude"');
     expect(toml).not.toContain('command = "npx"');
-    expect(toml).not.toContain('codex-claude-delegate-mcp"]');
+    expect(toml).not.toContain('@anyi61/codex-claude-delegate-mcp"]');
     for (const tool of DEFAULT_ENABLED_TOOLS) expect(toml).toContain(`"${tool}"`);
     expect(toml).not.toContain("claude_implement");
     expect(toml).not.toContain("claude_job_cancel");
@@ -512,7 +512,7 @@ describe("scanClaudeDelegateConfig fields", () => {
     await writeFile(configPath, [
       '[mcp_servers.claude_delegate]',
       'command = "npx"',
-      'args = ["codex-claude-delegate-mcp"]',
+      'args = ["@anyi61/codex-claude-delegate-mcp"]',
       'enabled_tools = ["claude_setup"]',
       "",
     ].join("\n"), "utf8");

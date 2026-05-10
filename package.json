@@ -1,12 +1,12 @@
 {
-  "name": "codex-claude-delegate-mcp",
-  "version": "0.1.0",
+  "name": "@anyi61/codex-claude-delegate-mcp",
+  "version": "0.1.2",
   "description": "MCP server that lets Codex CLI delegate tasks to Claude Code",
   "license": "MIT",
   "type": "module",
   "main": "dist/server.js",
   "bin": {
-    "codex-claude": "./dist/cli.js"
+    "codex-claude": "dist/cli.js"
   },
   "files": [
     "dist/",

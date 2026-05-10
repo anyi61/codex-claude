@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import { realpathSync } from "node:fs";
 
 import { getPackageInfo } from "./package-info.js";
 import { main as startMcpServer } from "./server.js";
@@ -323,7 +324,7 @@ export async function runCli(argv = process.argv, deps: CliDependencies = {}): P
 
     if (command === "print-config") {
       if (args.includes("--npx")) {
-        writeErr("--npx is not supported. Install globally with npm install -g codex-claude-delegate-mcp.\n");
+        writeErr("--npx is not supported. Install globally with npm install -g @anyi61/codex-claude-delegate-mcp.\n");
         return 2;
       }
       if (args.includes("--source")) {
@@ -410,7 +411,7 @@ export async function runCli(argv = process.argv, deps: CliDependencies = {}): P
 
 function isDirectRun(): boolean {
   if (!process.argv[1]) return false;
-  return fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+  return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(resolve(process.argv[1]));
 }
 
 if (isDirectRun()) {

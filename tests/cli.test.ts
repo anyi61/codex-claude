@@ -40,7 +40,7 @@ describe("codex-claude CLI", () => {
     });
 
     expect(exitCode).toBe(0);
-    expect(io.stdout).toMatch(/^codex-claude-delegate-mcp v\d+\.\d+\.\d+/);
+    expect(io.stdout).toMatch(/^@anyi61\/codex-claude-delegate-mcp v\d+\.\d+\.\d+/);
   });
 
   it("starts MCP server when called with no args", async () => {
@@ -74,7 +74,7 @@ describe("codex-claude CLI", () => {
 
   it("does not expose codex-claude-delegate-mcp as a bin alias", async () => {
     const pkg = JSON.parse(await readFile("package.json", "utf8"));
-    expect(pkg.bin).toEqual({ "codex-claude": "./dist/cli.js" });
+    expect(pkg.bin).toEqual({ "codex-claude": "dist/cli.js" });
     expect(JSON.stringify(pkg)).not.toContain('"codex-claude-delegate-mcp":"./dist/cli.js"');
   });
 
@@ -151,7 +151,7 @@ describe("codex-claude CLI", () => {
 
   it("publishes only codex-claude bin", async () => {
     const pkg = JSON.parse(await readFile("package.json", "utf8"));
-    expect(pkg.bin).toEqual({ "codex-claude": "./dist/cli.js" });
+    expect(pkg.bin).toEqual({ "codex-claude": "dist/cli.js" });
     expect(JSON.stringify(pkg)).not.toContain('"codex-claude-delegate-mcp":"./dist/cli.js"');
   });
 

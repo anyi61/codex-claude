@@ -5,7 +5,7 @@ Let Codex delegate read/review/write tasks to Claude Code through a local MCP se
 ## Quick Start
 
 ```bash
-npm install -g codex-claude-delegate-mcp
+npm install -g @anyi61/codex-claude-delegate-mcp
 codex-claude setup --write
 codex-claude doctor
 ```
@@ -50,7 +50,7 @@ Use claude_setup to check this repository.
 ### Global install (recommended)
 
 ```bash
-npm install -g codex-claude-delegate-mcp
+npm install -g @anyi61/codex-claude-delegate-mcp
 ```
 
 Verify installation:
@@ -228,7 +228,7 @@ The plugin directory (`plugins/`) remains as internal packaging. For development
 ## Uninstall
 
 ```bash
-npm uninstall -g codex-claude-delegate-mcp
+npm uninstall -g @anyi61/codex-claude-delegate-mcp
 ```
 
 To also remove the MCP server configuration from Codex, delete the `[mcp_servers.claude_delegate]` section from `~/.codex/config.toml` manually.

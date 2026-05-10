@@ -2982,7 +2982,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve2.call(this, root, ref);
+      let _sch = resolve3.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a3 = root.localRefs) === null || _a3 === void 0 ? void 0 : _a3[ref];
         const { schemaId } = this.opts;
@@ -3009,7 +3009,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve2(root, ref) {
+    function resolve3(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3584,7 +3584,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve2(baseURI, relativeURI, options) {
+    function resolve3(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const resolved = resolveComponent(parse3(baseURI, schemelessOptions), parse3(relativeURI, schemelessOptions), schemelessOptions, true);
       schemelessOptions.skipEscape = true;
@@ -3811,7 +3811,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize,
-      resolve: resolve2,
+      resolve: resolve3,
       resolveComponent,
       equal,
       serialize,
@@ -6951,7 +6951,7 @@ function sanitizeEnv() {
   return safe;
 }
 function execCapture(command, args, opts) {
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve3, reject) => {
     const child = spawn(command, args, {
       cwd: opts.cwd,
       timeout: opts.timeoutMs ?? 3e4,
@@ -6968,7 +6968,7 @@ function execCapture(command, args, opts) {
     child.on("error", (err) => reject(err));
     child.on("close", (code) => {
       if (code === 0) {
-        resolve2(stdout.trim());
+        resolve3(stdout.trim());
       } else {
         reject(new Error(`Command failed (exit ${code}): ${command} ${args.join(" ")}
 ${stderr}`));
@@ -6977,7 +6977,7 @@ ${stderr}`));
   });
 }
 function execStream(command, args, opts, onStdout) {
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve3, reject) => {
     const child = spawn(command, args, {
       cwd: opts.cwd,
       timeout: opts.timeoutMs ?? 3e5,
@@ -6992,7 +6992,7 @@ function execStream(command, args, opts, onStdout) {
     });
     child.on("error", (err) => reject(err));
     child.on("close", (code) => {
-      resolve2({ code, stderr });
+      resolve3({ code, stderr });
     });
   });
 }
@@ -23653,7 +23653,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve2) => setTimeout(resolve2, pollInterval));
+        await new Promise((resolve3) => setTimeout(resolve3, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error51) {
@@ -23670,7 +23670,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve2, reject) => {
+    return new Promise((resolve3, reject) => {
       const earlyReject = (error51) => {
         reject(error51);
       };
@@ -23748,7 +23748,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve2(parseResult.data);
+            resolve3(parseResult.data);
           }
         } catch (error51) {
           reject(error51);
@@ -24009,12 +24009,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve2, reject) => {
+    return new Promise((resolve3, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve2, interval);
+      const timeoutId = setTimeout(resolve3, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -24884,12 +24884,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve2) => {
+    return new Promise((resolve3) => {
       const json2 = serializeMessage(message);
       if (this._stdout.write(json2)) {
-        resolve2();
+        resolve3();
       } else {
-        this._stdout.once("drain", resolve2);
+        this._stdout.once("drain", resolve3);
       }
     });
   }
@@ -24898,13 +24898,26 @@ var StdioServerTransport = class {
 // src/server.ts
 init_guard();
 import { randomUUID as randomUUID2 } from "node:crypto";
-import { resolve } from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { resolve as resolve2 } from "node:path";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
+
+// src/package-info.ts
+import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+var cached2;
+async function getPackageInfo() {
+  if (cached2) return cached2;
+  const here = dirname(fileURLToPath(import.meta.url));
+  const packageJsonPath = resolve(here, "..", "package.json");
+  const raw = await readFile(packageJsonPath, "utf8");
+  cached2 = JSON.parse(raw);
+  return cached2;
+}
 
 // src/codex-config.ts
 init_guard();
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { realpath as realpath2 } from "node:fs/promises";
+import { mkdir, readFile as readFile2, writeFile, cp, realpath as realpath2 } from "node:fs/promises";
 import path2 from "node:path";
 var SERVER_NAME = "claude_delegate";
 var ALLOW_ROOTS_KEY = "CODEX_CLAUDE_ALLOW_ROOTS";
@@ -25000,7 +25013,7 @@ async function configureCodexAllowRoot(rawCwd) {
   await mkdir(path2.dirname(configPath), { recursive: true });
   let config2 = "";
   try {
-    config2 = await readFile(configPath, "utf8");
+    config2 = await readFile2(configPath, "utf8");
   } catch {
   }
   const existingValue = readConfiguredAllowRoots(config2);
@@ -25025,15 +25038,15 @@ async function configureCodexAllowRoot(rawCwd) {
 // src/claude-cli.ts
 init_guard();
 import { spawn as spawn2 } from "node:child_process";
-import { cp, rm, writeFile as writeFile3, mkdir as mkdir4, readFile as readFile3, readdir as readdir2, stat as stat2 } from "node:fs/promises";
+import { cp as cp2, rm, writeFile as writeFile3, mkdir as mkdir4, readFile as readFile4, readdir as readdir2, stat as stat2 } from "node:fs/promises";
 import { existsSync as existsSync3 } from "node:fs";
 import { createHash as createHash2, randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 import path5 from "node:path";
 
 // src/jobs.ts
 import { existsSync } from "node:fs";
-import { mkdir as mkdir2, readFile as readFile2, readdir, rename, unlink, writeFile as writeFile2 } from "node:fs/promises";
+import { mkdir as mkdir2, readFile as readFile3, readdir, rename, unlink, writeFile as writeFile2 } from "node:fs/promises";
 import path3 from "node:path";
 var TERMINAL_JOB_STATUSES = /* @__PURE__ */ new Set(["succeeded", "failed", "cancelled"]);
 var ACTIVE_JOB_STATUSES = /* @__PURE__ */ new Set(["queued", "running"]);
@@ -25054,7 +25067,7 @@ var JobStore = class {
     const filePath = this.getJobPath(jobId);
     if (!existsSync(filePath)) return null;
     try {
-      return JSON.parse(await readFile2(filePath, "utf8"));
+      return JSON.parse(await readFile3(filePath, "utf8"));
     } catch {
       return null;
     }
@@ -25160,7 +25173,7 @@ var JobStore = class {
     return Promise.all(
       entries.filter((entry) => entry.endsWith(".json")).map(async (entry) => {
         try {
-          const raw = await readFile2(path3.join(this.jobsDir, entry), "utf8");
+          const raw = await readFile3(path3.join(this.jobsDir, entry), "utf8");
           return JSON.parse(raw);
         } catch {
           return null;
@@ -25457,6 +25470,9 @@ function errorResult(error51) {
     isError: true
   };
 }
+function withInteraction(result, interaction) {
+  return { ...result, interaction };
+}
 
 // src/claude-cli.ts
 var CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
@@ -25498,10 +25514,10 @@ async function getJobStore() {
   return store;
 }
 function getRepoRootFromModule() {
-  return path5.resolve(path5.dirname(fileURLToPath(import.meta.url)), "..");
+  return path5.resolve(path5.dirname(fileURLToPath2(import.meta.url)), "..");
 }
 function resolvePluginRootFromModule() {
-  const moduleDir = path5.dirname(fileURLToPath(import.meta.url));
+  const moduleDir = path5.dirname(fileURLToPath2(import.meta.url));
   const envPluginRoot = process.env.CLAUDE_PLUGIN_ROOT ? path5.resolve(process.env.CLAUDE_PLUGIN_ROOT) : null;
   const candidates = [
     envPluginRoot,
@@ -25529,7 +25545,7 @@ async function readReviewGateState(cwd) {
   const filePath = getReviewGateStatePath(cwd);
   if (!existsSync3(filePath)) return null;
   try {
-    return JSON.parse(await readFile3(filePath, "utf8"));
+    return JSON.parse(await readFile4(filePath, "utf8"));
   } catch {
     return null;
   }
@@ -25579,7 +25595,7 @@ async function markReviewGatePending(cwd, pending, activity) {
 async function ensureReviewGateHookManifest() {
   const manifestPath = getHookManifestPath();
   await mkdir4(path5.dirname(manifestPath), { recursive: true });
-  const existingRaw = existsSync3(manifestPath) ? await readFile3(manifestPath, "utf8").catch(() => "") : "";
+  const existingRaw = existsSync3(manifestPath) ? await readFile4(manifestPath, "utf8").catch(() => "") : "";
   let parsed = {};
   if (existingRaw.trim()) {
     try {
@@ -25803,7 +25819,7 @@ function buildActiveWaitActions(input) {
   ];
 }
 function getJobRunnerArgs(jobId) {
-  const currentFile = fileURLToPath(import.meta.url);
+  const currentFile = fileURLToPath2(import.meta.url);
   const currentDir = path5.dirname(currentFile);
   if (currentFile.endsWith(".ts") && process.argv[1]?.includes("tsx")) {
     return [process.argv[1], path5.join(currentDir, "job-runner.ts"), jobId];
@@ -25869,7 +25885,7 @@ async function findImplementLogForWorktree(worktreePath, cwd) {
     );
     for (const entry of candidates.filter((item) => item !== null).sort((a, b) => b.mtimeMs - a.mtimeMs)) {
       try {
-        const parsed = JSON.parse(await readFile3(entry.file, "utf8"));
+        const parsed = JSON.parse(await readFile4(entry.file, "utf8"));
         if (parsed.type === "implement" && parsed.observed?.worktree_path === worktreePath) {
           return parsed;
         }
@@ -25896,7 +25912,7 @@ async function findImplementLogRecordForWorktree(worktreePath, cwd) {
     );
     for (const entry of candidates.filter((item) => item !== null).sort((a, b) => b.mtimeMs - a.mtimeMs)) {
       try {
-        const parsed = JSON.parse(await readFile3(entry.file, "utf8"));
+        const parsed = JSON.parse(await readFile4(entry.file, "utf8"));
         if (parsed.type === "implement" && parsed.observed?.worktree_path === worktreePath) {
           return { file: entry.file, parsed };
         }
@@ -25996,7 +26012,7 @@ async function readRunLogFile(runId, cwd) {
   const logDir = getRunLogDir(cwd);
   const file2 = path5.join(logDir, `${runId}.json`);
   try {
-    return JSON.parse(await readFile3(file2, "utf8"));
+    return JSON.parse(await readFile4(file2, "utf8"));
   } catch {
     return null;
   }
@@ -26020,7 +26036,7 @@ async function listRunLogs(input) {
     const summaries = [];
     for (const candidate of candidates.filter((item) => item !== null).sort((a, b) => b.mtimeMs - a.mtimeMs)) {
       try {
-        const raw = JSON.parse(await readFile3(candidate.file, "utf8"));
+        const raw = JSON.parse(await readFile4(candidate.file, "utf8"));
         const summary = summarizeRunLog(candidate.runId, raw, candidate.updatedAt);
         if (summary.cwd && summary.cwd !== input.cwd) continue;
         if (input.type && summary.type !== input.type) continue;
@@ -26971,20 +26987,20 @@ function parseLocalProxy(raw) {
 }
 async function probeLocalPort(host, port, timeoutMs = 1e3) {
   const net = await import("node:net");
-  return await new Promise((resolve2) => {
+  return await new Promise((resolve3) => {
     const socket = net.createConnection({ host, port });
     const timer = setTimeout(() => {
       socket.destroy();
-      resolve2({ reachable: false, error: "timeout" });
+      resolve3({ reachable: false, error: "timeout" });
     }, timeoutMs);
     socket.once("connect", () => {
       clearTimeout(timer);
       socket.destroy();
-      resolve2({ reachable: true });
+      resolve3({ reachable: true });
     });
     socket.once("error", (err) => {
       clearTimeout(timer);
-      resolve2({ reachable: false, error: err.code ?? err.message });
+      resolve3({ reachable: false, error: err.code ?? err.message });
     });
   });
 }
@@ -27694,7 +27710,7 @@ async function handleToolCall(name, args, runId = randomUUID2()) {
           check2 = await validateCwd(parsed.data.cwd);
         }
         if (!check2.ok) {
-          return errorResult({
+          return jsonResult(withInteraction({
             error: check2.error,
             next_actions: [
               {
@@ -27708,10 +27724,20 @@ async function handleToolCall(name, args, runId = randomUUID2()) {
               separator: process.platform === "win32" ? ";" : ":",
               example: `/path/to/repo${process.platform === "win32" ? ";" : ":"}/path/to/another-repo`
             }
-          });
+          }, {
+            headline: "Claude delegation needs setup.",
+            state: "needs_attention",
+            next_step: "Add this repo to allow roots, restart Codex, then run claude_setup again."
+          }));
         }
         const result = await runClaudeSetup({ cwd: check2.resolved });
-        return jsonResult(allowRootConfiguration ? { ...result, allow_root_configuration: allowRootConfiguration } : result);
+        const needsAttention = result.errors.length > 0 || !result.claude_available;
+        const payload = allowRootConfiguration ? { ...result, allow_root_configuration: allowRootConfiguration } : result;
+        return jsonResult(withInteraction(payload, {
+          headline: needsAttention ? "Claude delegation needs setup." : "Claude delegation is ready.",
+          state: needsAttention ? "needs_attention" : "ready",
+          next_step: needsAttention ? "Fix the reported errors, then run claude_setup again." : "Use claude_task to delegate a read, review, or write task."
+        }));
       }
       case "claude_runs": {
         const parsed = claudeRunsInputSchema.safeParse(args);
@@ -27735,7 +27761,15 @@ async function handleToolCall(name, args, runId = randomUUID2()) {
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
         const check2 = await validateCwd(parsed.data.cwd);
         if (!check2.ok) return errorResult(check2.error);
-        return jsonResult(await getClaudeResult({ ...parsed.data, cwd: check2.resolved }));
+        const resultData = await getClaudeResult({ ...parsed.data, cwd: check2.resolved });
+        const hasJobResult = resultData.job?.result_status === "success" || resultData.job?.result_status === "partial";
+        const hasRunResult = resultData.source_type === "run" && (resultData.run?.status === "success" || resultData.run?.status === "partial");
+        const hasResult = hasJobResult || hasRunResult;
+        return jsonResult(withInteraction(resultData, {
+          headline: hasResult ? "Claude result is ready." : "Claude result is not available.",
+          state: hasResult ? "result_ready" : "needs_attention",
+          next_step: hasResult ? "Preview the worktree changes with claude_apply preview=true." : "Check the job status with claude_job_wait."
+        }));
       }
       case "claude_workspace_status": {
         const parsed = claudeWorkspaceStatusInputSchema.safeParse(args);
@@ -27762,7 +27796,11 @@ async function handleToolCall(name, args, runId = randomUUID2()) {
             return errorResult("claude_task write mode requires a git repository with worktree support");
           }
         }
-        return jsonResult(await runClaudeTask({ ...parsed.data, cwd: check2.resolved }, runId));
+        const taskResult = await runClaudeTask({ ...parsed.data, cwd: check2.resolved }, runId);
+        const hasJob = !!taskResult.job;
+        const needsUser = !hasJob && taskResult.next_actions.length === 0 && taskResult.result !== void 0;
+        const taskInteraction = needsUser ? { headline: "Write task needs a workspace decision before delegation.", state: "needs_user", next_step: "Commit or stash changes, or use dirty_policy=committed or dirty_policy=snapshot." } : hasJob ? { headline: "Task delegated to Claude Code.", state: "delegated_execution", next_step: "Poll claude_job_wait with this job_id." } : { headline: "Task completed.", state: "delegated_execution", next_step: "Review the result and proceed." };
+        return jsonResult(withInteraction(taskResult, taskInteraction));
       }
       case "claude_review_gate": {
         const parsed = claudeReviewGateInputSchema.safeParse(args);
@@ -27867,7 +27905,18 @@ async function handleToolCall(name, args, runId = randomUUID2()) {
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
         const check2 = await validateCwd(parsed.data.cwd);
         if (!check2.ok) return errorResult(check2.error);
-        return jsonResult(await waitForBackgroundJob({ ...parsed.data, cwd: check2.resolved }));
+        const waitResult = await waitForBackgroundJob({ ...parsed.data, cwd: check2.resolved });
+        let interaction;
+        if (waitResult.poll_too_soon) {
+          interaction = { headline: "Polling too soon.", state: "poll_too_soon", next_step: "Do not call claude_job_wait again before next_allowed_poll_at." };
+        } else if (waitResult.stale_state === "stale") {
+          interaction = { headline: "Claude job appears stale.", state: "needs_attention", next_step: "Inspect this job result before starting a replacement." };
+        } else if (waitResult.waiting) {
+          interaction = { headline: "Claude job is still running.", state: "waiting", next_step: "Wait until next_allowed_poll_at, then poll this same job_id." };
+        } else {
+          interaction = { headline: "Claude job completed.", state: "completed", next_step: "Use claude_result to inspect the result." };
+        }
+        return jsonResult(withInteraction(waitResult, interaction));
       }
       case "claude_job_cleanup": {
         const parsed = claudeJobCleanupInputSchema.safeParse(args);
@@ -27892,11 +27941,22 @@ async function handleToolCall(name, args, runId = randomUUID2()) {
           { cwd: check2.resolved, worktree_path, cleanup, preview, confirmed_by_user },
           runId
         );
-        return jsonResult({
+        const payload = {
           ...result,
           execution: localExecution(startTime),
           warnings: [...result.conflicts, ...result.error ? [result.error] : []]
-        });
+        };
+        let applyInteraction;
+        if (result.preview) {
+          applyInteraction = { headline: "Delegated changes are ready for review.", state: "apply_preview", next_step: "Review planned_changes. If safe, ask the user whether to apply these changes." };
+        } else if (result.applied_files.length > 0) {
+          applyInteraction = { headline: "Delegated changes applied.", state: "applied", next_step: "Run project tests and review the final diff." };
+        } else if (result.error) {
+          applyInteraction = { headline: "Apply refused.", state: "needs_user", next_step: "Show the preview to the user and ask for explicit approval before applying." };
+        } else {
+          applyInteraction = { headline: "Delegated changes are ready for review.", state: "apply_preview", next_step: "Review planned_changes. If safe, ask the user whether to apply these changes." };
+        }
+        return jsonResult(withInteraction(payload, applyInteraction));
       }
       case "claude_cleanup": {
         const startTime = Date.now();
@@ -27914,11 +27974,16 @@ async function handleToolCall(name, args, runId = randomUUID2()) {
           { cwd: check2.resolved, older_than_hours, dry_run },
           runId
         );
-        return jsonResult({
+        const cleanupPayload = {
           ...result,
           execution: localExecution(startTime),
           warnings: result.entries.flatMap((entry) => entry.error ? [`${entry.worktree_name}: ${entry.error}`] : [])
-        });
+        };
+        return jsonResult(withInteraction(cleanupPayload, {
+          headline: dry_run ? "Delegated worktrees found." : "Delegated worktrees cleaned.",
+          state: dry_run ? "cleanup_preview" : "cleaned",
+          next_step: dry_run ? "Review entries. If these worktrees are no longer needed, call claude_cleanup with dry_run=false." : "Run claude_cleanup dry_run=true again only if you want to confirm no stale delegated worktrees remain."
+        }));
       }
       default:
         return errorResult(`Unknown tool: ${name}`);
@@ -27938,9 +28003,10 @@ async function handleToolCall(name, args, runId = randomUUID2()) {
 function registerToolHandlers(server) {
   server.setRequestHandler(CallToolRequestSchema, async (request) => handleToolCall(request.params.name, request.params.arguments));
 }
-function createServer() {
+async function createServer() {
+  const info = await getPackageInfo();
   const server = new Server(
-    { name: "codex-claude-delegate-mcp", version: "0.1.0" },
+    { name: info.name, version: info.version },
     { capabilities: { tools: {} } }
   );
   registerToolDefinitions(server);
@@ -27957,25 +28023,26 @@ function assertCanStartServer() {
     process.exit(1);
   }
 }
-async function startServer() {
+async function main() {
   assertCanStartServer();
-  const server = createServer();
+  const server = await createServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   process.stderr.write("[claude-delegate] MCP server started (stdio)\n");
 }
 function isMainModule() {
   if (!process.argv[1]) return false;
-  return fileURLToPath2(import.meta.url) === resolve(process.argv[1]);
+  return fileURLToPath3(import.meta.url) === resolve2(process.argv[1]);
 }
 if (isMainModule()) {
-  await startServer();
+  await main();
 }
 export {
   TOOL_DEFINITIONS,
   createServer,
   handleToolCall,
+  main,
   registerToolDefinitions,
   registerToolHandlers,
-  startServer
+  main as startServer
 };
