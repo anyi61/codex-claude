@@ -254,9 +254,16 @@ To also remove the MCP server configuration from Codex, delete the `[mcp_servers
 ## Maintainer release checklist
 
 ```bash
-npm run typecheck
-npm test
-npm run build:plugin
-npm run check:plugin
-npm pack --dry-run
+# 确保 git 已提交所有更改
+git status
+
+# 一行发布: 自动 bump patch 版本 → build → test → publish
+npm run release
+```
+
+发布后创建 GitHub Release 并推送 tag（如需）:
+
+```bash
+git tag v$(node -p "require('./package.json').version")
+git push origin v$(node -p "require('./package.json').version")
 ```
