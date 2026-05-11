@@ -27936,13 +27936,15 @@ var TOOL_DEFINITIONS = [
     }
   }
 ];
+function hasWorktreeObservation(result) {
+  return result.server_observed != null && typeof result.server_observed === "object" && "worktree_path" in result.server_observed;
+}
 function buildTaskInteraction(result) {
   if (result.completed_inline && result.status === "success") {
-    const hasWorktree = result.server_observed && typeof result.server_observed === "object" && "worktree_path" in result.server_observed;
     return {
       headline: "Claude result is ready.",
       state: "result_ready",
-      next_step: hasWorktree ? "Preview the worktree changes with claude_apply preview=true." : "Review the result above. No apply step is needed for read-only tasks."
+      next_step: hasWorktreeObservation(result) ? "Preview the worktree changes with claude_apply preview=true." : "Review the result above. No apply step is needed for read-only tasks."
     };
   }
   if (result.completed_inline && result.status === "failed") {
@@ -27953,11 +27955,10 @@ function buildTaskInteraction(result) {
     };
   }
   if (result.completed_inline && result.status === "partial") {
-    const hasWorktree = result.server_observed && typeof result.server_observed === "object" && "worktree_path" in result.server_observed;
     return {
       headline: "Claude result is partially ready.",
       state: "result_ready",
-      next_step: hasWorktree ? "Preview the worktree changes with claude_apply preview=true. Note that the task did not complete fully." : "Review the partial result above."
+      next_step: hasWorktreeObservation(result) ? "Preview the worktree changes with claude_apply preview=true. Note that the task did not complete fully." : "Review the partial result above."
     };
   }
   if (result.completed_inline && result.status === "cancelled") {
