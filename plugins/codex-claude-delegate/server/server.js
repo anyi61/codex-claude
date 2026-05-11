@@ -25155,13 +25155,13 @@ var JobStore = class {
       updated_at: heartbeatAt
     });
   }
-  async touchWait(jobId, waitAt = (/* @__PURE__ */ new Date()).toISOString(), recommendedDelayMs2) {
+  async touchWait(jobId, waitAt = (/* @__PURE__ */ new Date()).toISOString(), recommendedDelayMs) {
     const current = await this.get(jobId);
     if (!current) return null;
     if (TERMINAL_JOB_STATUSES.has(current.status)) return current;
     return this.update(jobId, {
       last_wait_at: waitAt,
-      last_wait_recommended_delay_ms: recommendedDelayMs2
+      last_wait_recommended_delay_ms: recommendedDelayMs
     });
   }
   getJobPath(jobId) {
@@ -25353,15 +25353,17 @@ var claudeImplementInputSchema = external_exports.object({
 });
 var claudeTaskInputSchema = external_exports.object({
   cwd: cwdSchema,
-  task: taskSchema,
+  task: external_exports.string().trim().min(1).optional(),
   mode: external_exports.enum(["auto", "read", "review", "write"]).optional().default("auto"),
   background: external_exports.boolean().optional(),
+  wait_strategy: external_exports.enum(["block", "background"]).optional(),
+  wait_timeout_sec: external_exports.number().int().positive().max(540).optional().default(540),
+  job_id: external_exports.string().trim().min(1).optional(),
   resume_latest: external_exports.boolean().optional(),
   instruction_files: filesSchema,
   files: filesSchema,
   constraints: constraintsSchema,
   diff: external_exports.string().optional(),
-  timeout_sec: timeoutSchema.optional(),
   dirty_policy: dirtyPolicySchema
 }).refine((value) => value.mode !== "read" || !value.resume_latest, {
   message: "resume_latest is only supported for write mode",
@@ -25369,6 +25371,9 @@ var claudeTaskInputSchema = external_exports.object({
 }).refine((value) => value.mode !== "review" || !value.resume_latest, {
   message: "resume_latest is only supported for write mode",
   path: ["resume_latest"]
+}).refine((value) => !!(value.task || value.job_id), {
+  message: "Either task or job_id is required",
+  path: ["task"]
 });
 var claudeApplyInputSchema = external_exports.object({
   cwd: cwdSchema,
@@ -25419,8 +25424,7 @@ var claudeResultInputSchema = external_exports.object({
 });
 var claudeJobWaitInputSchema = external_exports.object({
   cwd: cwdSchema,
-  job_id: external_exports.string().trim().min(1, "job_id is required"),
-  not_before: external_exports.string().trim().min(1).optional()
+  job_id: external_exports.string().trim().min(1, "job_id is required")
 }).strict();
 var claudeJobCancelInputSchema = external_exports.object({
   cwd: cwdSchema,
@@ -25488,6 +25492,10 @@ var REVIEW_GATE_RELATIVE_PATH = path5.join(".codex-claude-delegate", "review-gat
 var REVIEW_GATE_HOOK_COMMAND = "node '${CLAUDE_PLUGIN_ROOT}/hooks/review-gate-stop.mjs'";
 var STALE_CANDIDATE_HEARTBEAT_MS = 9e4;
 var STALE_HEARTBEAT_MS = 3e5;
+var __test = {
+  inlineWaitPollIntervalMs: 2e3,
+  inlineWaitTimeoutMs: 54e4
+};
 var stores = /* @__PURE__ */ new Map();
 async function getStore(cwd) {
   let sessionStore = stores.get(cwd);
@@ -25740,7 +25748,31 @@ function createTaskFingerprint(input) {
   return createHash2("sha256").update(stableJson(normalized)).digest("hex");
 }
 function buildDuplicateJobMessage(job) {
-  return `An equivalent ${job.type} job is already ${job.status}: ${job.job_id}. Continue polling claude_job_wait for this job_id; do not restart or duplicate the task.`;
+  return `An equivalent ${job.type} job is already ${job.status}: ${job.job_id}. Use claude_task(job_id="${job.job_id}") to continue waiting; do not restart or duplicate the task.`;
+}
+async function waitForJobCompletionInline(jobStore, jobId, cwd, waitTimeoutMs, pollIntervalMs) {
+  const interval = pollIntervalMs ?? __test.inlineWaitPollIntervalMs;
+  const deadline = Date.now() + waitTimeoutMs;
+  while (Date.now() < deadline) {
+    const record3 = await jobStore.get(jobId);
+    if (!record3 || record3.cwd !== cwd) {
+      return { status: "not_found" };
+    }
+    const job = toJobSummary(record3);
+    if (job.status === "succeeded" || job.status === "failed" || job.status === "cancelled") {
+      return { status: "completed", job, jobRecord: record3 };
+    }
+    const heartbeatAgeMs = ageMsSince(job.heartbeat_at ?? job.updated_at, Date.now()) ?? 0;
+    const pidAlive = isPidAlive(job.pid);
+    const staleState = classifyJobStaleState({ job, heartbeatAgeMs, pidAlive });
+    if (staleState === "stale") {
+      return { status: "stale", job, staleState };
+    }
+    await new Promise((resolve3) => setTimeout(resolve3, interval));
+  }
+  const record2 = await jobStore.get(jobId);
+  if (!record2 || record2.cwd !== cwd) return { status: "not_found" };
+  return { status: "running", job: toJobSummary(record2) };
 }
 function ageMsSince(timestamp, nowMs = Date.now()) {
   if (!timestamp) return void 0;
@@ -25777,15 +25809,6 @@ function classifyJobStaleState(input) {
   }
   return "fresh";
 }
-function recommendedDelayMs(input) {
-  if (input.staleState === "stale") return void 0;
-  if (input.staleState === "stale_candidate") return 3e4;
-  if (input.ageMs < 3e4) return 1e4;
-  if (input.ageMs < 12e4) return 2e4;
-  if (input.ageMs < 6e5) return 45e3;
-  if (input.ageMs < 18e5) return 6e4;
-  return 9e4;
-}
 function buildActiveWaitActions(input) {
   if (input.staleState === "stale") {
     return [
@@ -25808,12 +25831,13 @@ function buildActiveWaitActions(input) {
   }
   return [
     {
-      tool: "claude_job_wait",
-      reason: input.nextAllowedPollAt ? "Poll again only after next_allowed_poll_at. Do not start a duplicate task." : input.staleState === "stale_candidate" ? "Job heartbeat is delayed but not stale yet. Wait once more before inspecting or cancelling; do not start a duplicate job." : "Job is active. Poll this same job_id again after the recommended delay; do not start a duplicate job.",
+      tool: "claude_task",
+      reason: "Claude is still working. Continue waiting for the same job_id instead of starting a duplicate task.",
       args: {
         cwd: input.cwd,
         job_id: input.job.job_id,
-        ...input.nextAllowedPollAt ? { not_before: input.nextAllowedPollAt } : {}
+        wait_strategy: "block",
+        wait_timeout_sec: 540
       }
     }
   ];
@@ -26131,9 +26155,9 @@ function buildNextActions(input) {
   if (job && (job.status === "queued" || job.status === "running")) {
     return [
       {
-        tool: "claude_job_wait",
-        reason: "This job is still active. Continue polling this job_id and do not start another job for the same task.",
-        args: { cwd: input.cwd, job_id: job.job_id }
+        tool: "claude_task",
+        reason: "This job is still active. Continue waiting for this job_id instead of starting a duplicate task.",
+        args: { cwd: input.cwd, job_id: job.job_id, wait_strategy: "block", wait_timeout_sec: 540 }
       }
     ];
   }
@@ -26377,9 +26401,9 @@ async function getWorkspaceStatus(input) {
   }
   const activeJobs = [...runningJobs.entries, ...queuedJobs.entries].sort((a, b) => compareRecency(b.updated_at, a.updated_at));
   const workspaceNextActions = activeJobs.slice(0, limit).map((job) => ({
-    tool: "claude_job_wait",
-    reason: "Workspace has an active delegated job. Poll this job_id instead of starting a duplicate task.",
-    args: { cwd: input.cwd, job_id: job.job_id }
+    tool: "claude_task",
+    reason: "Workspace has an active delegated job. Continue waiting for this job_id instead of starting a duplicate task.",
+    args: { cwd: input.cwd, job_id: job.job_id, wait_strategy: "block", wait_timeout_sec: 540 }
   }));
   return {
     workspace_root: input.cwd,
@@ -26466,6 +26490,7 @@ function inferClaudeTaskMode(input) {
   if (input.mode && input.mode !== "auto") {
     return input.mode;
   }
+  if (!input.task) return "read";
   const text = input.task.toLowerCase();
   if (typeof input.diff === "string" && input.diff.trim().length > 0) {
     return "review";
@@ -26490,11 +26515,11 @@ function inferClaudeTaskMode(input) {
   }
   return "read";
 }
-function summarizeTaskDispatch(mode, background) {
-  if (background) {
+function summarizeTaskDispatch(mode, isBackground) {
+  if (isBackground) {
     return `Delegated ${mode} task as a background job.`;
   }
-  return `Delegated ${mode} task and returned the current result.`;
+  return `Delegated ${mode} task with inline wait for result.`;
 }
 var CLAUDE_TASK_FILES_DEPRECATED_WARNING = "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use advanced claude_implement allowed_files/scope options for strict file modification limits.";
 function resolveTaskInstructionFiles(input) {
@@ -26505,71 +26530,292 @@ function resolveTaskInstructionFiles(input) {
     warnings: input.files?.length ? [CLAUDE_TASK_FILES_DEPRECATED_WARNING] : []
   };
 }
-async function runClaudeTask(input, _runId) {
-  const delegatedMode = inferClaudeTaskMode(input);
-  const { instructionFiles, warnings } = resolveTaskInstructionFiles(input);
-  if (delegatedMode === "read") {
-    const queued2 = await startBackgroundQuery({
-      cwd: input.cwd,
-      task: input.task,
-      instruction_files: instructionFiles,
-      timeout_sec: input.timeout_sec
-    });
-    return {
-      delegated_mode: delegatedMode,
-      summary: queued2.message ?? summarizeTaskDispatch(delegatedMode, true),
-      job: queued2.job,
-      deduped: queued2.deduped,
-      do_not_start_duplicate_job: queued2.do_not_start_duplicate_job,
-      warnings,
-      next_actions: queued2.next_actions ?? buildNextActions({ cwd: input.cwd, job: queued2.job })
-    };
+function deriveClaudeTaskTopStatus(job, result) {
+  if (job.status === "cancelled") return "cancelled";
+  if (job.result_status === "failed") return "failed";
+  if (job.result_status === "partial") return "partial";
+  if (job.result_status === "needs_user") return "needs_user";
+  if (result) {
+    const extracted = extractBackgroundResultStatus(result);
+    if (extracted === "failed") return "failed";
+    if (extracted === "partial") return "partial";
+    if (extracted === "needs_user") return "needs_user";
   }
-  if (delegatedMode === "review") {
-    const queued2 = await startBackgroundReview({
-      cwd: input.cwd,
-      task: input.task,
-      diff: input.diff,
-      instruction_files: instructionFiles,
-      timeout_sec: input.timeout_sec
-    });
-    return {
-      delegated_mode: delegatedMode,
-      summary: queued2.message ?? summarizeTaskDispatch(delegatedMode, true),
-      job: queued2.job,
-      deduped: queued2.deduped,
-      do_not_start_duplicate_job: queued2.do_not_start_duplicate_job,
-      warnings,
-      next_actions: queued2.next_actions ?? buildNextActions({ cwd: input.cwd, job: queued2.job })
-    };
+  if (job.status === "failed") return "failed";
+  return "success";
+}
+async function buildClaudeTaskInlineResult(input) {
+  const { cwd, job, jobRecord, delegatedMode, completedInline, waiting, staled } = input;
+  if (completedInline && !staled) {
+    const claudeResult = await getClaudeResult({ cwd, job_id: job.job_id }).catch(() => null);
+    if (claudeResult) {
+      return {
+        delegated_mode: delegatedMode,
+        status: deriveClaudeTaskTopStatus(job, jobRecord.result),
+        summary: claudeResult.summary,
+        job: claudeResult.job,
+        result: claudeResult.result,
+        result_status: claudeResult.job?.result_status,
+        session: claudeResult.session,
+        server_observed: claudeResult.result?.server_observed ?? void 0,
+        related_runs: claudeResult.related_runs,
+        completed_inline: true,
+        do_not_start_duplicate_job: false,
+        warnings: [],
+        next_actions: claudeResult.next_actions
+      };
+    }
   }
-  const queued = await startBackgroundImplement({
-    cwd: input.cwd,
-    task: input.task,
-    instruction_files: instructionFiles,
-    constraints: input.constraints,
-    timeout_sec: input.timeout_sec,
-    resume_latest: input.resume_latest,
-    dirty_policy: input.dirty_policy
-  });
-  if (!("job" in queued)) {
-    return {
-      delegated_mode: delegatedMode,
-      summary: "Write task needs a dirty-workspace decision before it can be delegated.",
-      result: queued,
-      warnings,
-      next_actions: []
-    };
+  const result = jobRecord.result;
+  const resultStatus = extractBackgroundResultStatus(result);
+  let topStatus;
+  if (staled) {
+    topStatus = "needs_attention";
+  } else {
+    topStatus = deriveClaudeTaskTopStatus(job, result);
   }
+  const runEntry = job.run_id ? (await getRunLogById({ cwd, run_id: job.run_id }).catch(() => null))?.entry : void 0;
+  const session = runEntry ? await resolveWorkflowSessionSummary({ cwd, run: runEntry }).catch(() => void 0) : void 0;
+  const relatedRuns = result?.related_runs;
   return {
     delegated_mode: delegatedMode,
-    summary: queued.message ?? summarizeTaskDispatch(delegatedMode, true),
-    job: queued.job,
-    deduped: queued.deduped,
-    do_not_start_duplicate_job: queued.do_not_start_duplicate_job,
-    warnings,
-    next_actions: queued.next_actions ?? buildNextActions({ cwd: input.cwd, job: queued.job })
+    status: topStatus,
+    summary: job.summary ?? `${delegatedMode} job ${job.status}`,
+    job,
+    result: result ?? void 0,
+    result_status: resultStatus,
+    session,
+    server_observed: result?.server_observed ?? void 0,
+    related_runs: relatedRuns,
+    completed_inline: completedInline || void 0,
+    waiting: waiting || void 0,
+    do_not_start_duplicate_job: staled || waiting ? true : false,
+    warnings: [],
+    next_actions: buildNextActions({ cwd, job })
   };
+}
+async function runClaudeTask(input, _runId) {
+  if (input.job_id) {
+    const jobStore = await getJobStore();
+    const record2 = await jobStore.get(input.job_id);
+    if (!record2 || record2.cwd !== input.cwd) {
+      return {
+        delegated_mode: "read",
+        status: "failed",
+        summary: `Job not found: ${input.job_id}`,
+        do_not_start_duplicate_job: true,
+        warnings: [],
+        next_actions: []
+      };
+    }
+    const job = toJobSummary(record2);
+    if (job.status === "succeeded" || job.status === "failed" || job.status === "cancelled") {
+      return buildClaudeTaskInlineResult({
+        cwd: input.cwd,
+        job,
+        jobRecord: record2,
+        delegatedMode: delegatedModeForJobType(job.type),
+        completedInline: true
+      });
+    }
+    const waitTimeoutMs = (input.wait_timeout_sec ?? 540) * 1e3;
+    const inlineResult = await waitForJobCompletionInline(jobStore, input.job_id, input.cwd, waitTimeoutMs);
+    if (inlineResult.status === "not_found") {
+      return {
+        delegated_mode: delegatedModeForJobType(job.type),
+        status: "failed",
+        summary: `Job not found during wait: ${input.job_id}`,
+        warnings: [],
+        next_actions: []
+      };
+    }
+    if (inlineResult.status === "completed" && inlineResult.jobRecord) {
+      return buildClaudeTaskInlineResult({
+        cwd: input.cwd,
+        job: inlineResult.job,
+        jobRecord: inlineResult.jobRecord,
+        delegatedMode: delegatedModeForJobType(inlineResult.job.type),
+        completedInline: true
+      });
+    }
+    if (inlineResult.status === "stale") {
+      const staleRecord = await jobStore.get(input.job_id);
+      return buildClaudeTaskInlineResult({
+        cwd: input.cwd,
+        job: inlineResult.job,
+        jobRecord: staleRecord ?? record2,
+        delegatedMode: delegatedModeForJobType(inlineResult.job.type),
+        completedInline: false,
+        staled: true
+      });
+    }
+    const stillRunning = await jobStore.get(input.job_id);
+    return {
+      delegated_mode: delegatedModeForJobType((stillRunning ?? record2).type),
+      status: "running",
+      summary: `Job ${input.job_id} is still running.`,
+      job: toJobSummary(stillRunning ?? record2),
+      completed_inline: false,
+      waiting: true,
+      do_not_start_duplicate_job: true,
+      warnings: [],
+      next_actions: [
+        {
+          tool: "claude_task",
+          reason: "Claude is still working. Continue waiting for the same job_id instead of starting a duplicate task.",
+          args: { cwd: input.cwd, job_id: input.job_id, wait_strategy: "block", wait_timeout_sec: 540 }
+        }
+      ]
+    };
+  }
+  const delegatedMode = inferClaudeTaskMode(input);
+  const { instructionFiles, warnings } = resolveTaskInstructionFiles(input);
+  const effectiveWaitStrategy = input.wait_strategy ?? (input.background === true ? "background" : "block");
+  const isBackground = effectiveWaitStrategy === "background";
+  const INTERNAL_CLAUDE_TIMEOUT_SEC = 3600;
+  async function enqueueAndWait() {
+    let queued;
+    if (delegatedMode === "read") {
+      queued = await startBackgroundQuery({
+        cwd: input.cwd,
+        task: input.task,
+        instruction_files: instructionFiles,
+        timeout_sec: INTERNAL_CLAUDE_TIMEOUT_SEC
+      });
+    } else if (delegatedMode === "review") {
+      queued = await startBackgroundReview({
+        cwd: input.cwd,
+        task: input.task,
+        diff: input.diff,
+        instruction_files: instructionFiles,
+        timeout_sec: INTERNAL_CLAUDE_TIMEOUT_SEC
+      });
+    } else {
+      const implementResult = await startBackgroundImplement({
+        cwd: input.cwd,
+        task: input.task,
+        instruction_files: instructionFiles,
+        constraints: input.constraints,
+        timeout_sec: INTERNAL_CLAUDE_TIMEOUT_SEC,
+        resume_latest: input.resume_latest,
+        dirty_policy: input.dirty_policy
+      });
+      if (!("job" in implementResult)) {
+        return {
+          delegated_mode: delegatedMode,
+          status: "needs_user",
+          summary: "Write task needs a dirty-workspace decision before it can be delegated.",
+          result: implementResult,
+          warnings,
+          next_actions: []
+        };
+      }
+      queued = implementResult;
+    }
+    if (!("job" in queued)) {
+      return {
+        delegated_mode: delegatedMode,
+        status: "failed",
+        summary: "Failed to create background job.",
+        warnings,
+        next_actions: []
+      };
+    }
+    if (isBackground) {
+      return {
+        delegated_mode: delegatedMode,
+        status: "running",
+        summary: queued.message ?? summarizeTaskDispatch(delegatedMode, true),
+        job: queued.job,
+        deduped: queued.deduped,
+        completed_inline: false,
+        do_not_start_duplicate_job: queued.do_not_start_duplicate_job ?? (queued.deduped ? true : void 0),
+        warnings,
+        next_actions: [
+          {
+            tool: "claude_task",
+            reason: "Continue waiting for this existing job when you want the result.",
+            args: { cwd: input.cwd, job_id: queued.job.job_id, wait_strategy: "block", wait_timeout_sec: 540 }
+          }
+        ]
+      };
+    }
+    const jobStore = await getJobStore();
+    const waitTimeoutMs = (input.wait_timeout_sec ?? 540) * 1e3;
+    const inlineResult = await waitForJobCompletionInline(jobStore, queued.job.job_id, input.cwd, waitTimeoutMs);
+    if (inlineResult.status === "not_found") {
+      return {
+        delegated_mode: delegatedMode,
+        status: "failed",
+        summary: `Job ${queued.job.job_id} not found during inline wait.`,
+        job: queued.job,
+        deduped: queued.deduped,
+        warnings,
+        next_actions: []
+      };
+    }
+    if (inlineResult.status === "completed" && inlineResult.jobRecord) {
+      return buildClaudeTaskInlineResult({
+        cwd: input.cwd,
+        job: inlineResult.job,
+        jobRecord: inlineResult.jobRecord,
+        delegatedMode,
+        completedInline: true
+      });
+    }
+    if (inlineResult.status === "stale") {
+      const staleRecord = await jobStore.get(queued.job.job_id);
+      if (!staleRecord) {
+        return {
+          delegated_mode: delegatedMode,
+          status: "failed",
+          summary: `Job ${queued.job.job_id} disappeared during inline wait.`,
+          warnings,
+          next_actions: []
+        };
+      }
+      return buildClaudeTaskInlineResult({
+        cwd: input.cwd,
+        job: inlineResult.job,
+        jobRecord: staleRecord,
+        delegatedMode,
+        completedInline: false,
+        staled: true
+      });
+    }
+    const stillRunning = await jobStore.get(queued.job.job_id);
+    return {
+      delegated_mode: delegatedMode,
+      status: "running",
+      summary: `Job ${queued.job.job_id} is still running.`,
+      job: stillRunning ? toJobSummary(stillRunning) : queued.job,
+      deduped: queued.deduped,
+      completed_inline: false,
+      waiting: true,
+      do_not_start_duplicate_job: true,
+      warnings,
+      next_actions: [
+        {
+          tool: "claude_task",
+          reason: "Claude is still working. Continue waiting for the same job_id instead of starting a duplicate task.",
+          args: { cwd: input.cwd, job_id: queued.job.job_id, wait_strategy: "block", wait_timeout_sec: 540 }
+        }
+      ]
+    };
+  }
+  return enqueueAndWait();
+}
+function delegatedModeForJobType(type) {
+  switch (type) {
+    case "query":
+      return "read";
+    case "review":
+      return "review";
+    case "implement":
+      return "write";
+    default:
+      return "read";
+  }
 }
 function buildBackgroundJobResponse(input) {
   const deduped = input.deduped === true;
@@ -26710,48 +26956,73 @@ async function waitForBackgroundJob(input) {
   if (!record2 || record2.cwd !== input.cwd) {
     throw new Error(`Job not found: ${input.job_id}`);
   }
-  const result = {
-    job: toJobSummary(record2),
-    result: record2.result
-  };
-  const terminal = result.job.status === "succeeded" || result.job.status === "failed" || result.job.status === "cancelled";
-  const nowMs = Date.now();
-  const ageMs = ageMsSince(result.job.created_at, nowMs) ?? 0;
-  const heartbeatAgeMs = terminal ? void 0 : ageMsSince(result.job.heartbeat_at ?? result.job.updated_at, nowMs);
-  const staleState = classifyJobStaleState({
-    job: result.job,
-    heartbeatAgeMs,
-    pidAlive: terminal ? void 0 : isPidAlive(result.job.pid)
-  });
-  const delayMs = terminal ? void 0 : recommendedDelayMs({ ageMs, staleState });
-  const previousDelayMs = typeof result.job.last_wait_recommended_delay_ms === "number" ? result.job.last_wait_recommended_delay_ms : delayMs;
-  const lastWaitAgeMs = terminal ? void 0 : ageMsSince(result.job.last_wait_at, nowMs);
-  const pollTooSoon = !terminal && staleState !== "stale" && previousDelayMs !== void 0 && lastWaitAgeMs !== void 0 && lastWaitAgeMs < previousDelayMs;
-  const remainingDelayMs = pollTooSoon && previousDelayMs !== void 0 && lastWaitAgeMs !== void 0 ? Math.max(0, previousDelayMs - lastWaitAgeMs) : void 0;
-  const nextAllowedPollAt = !terminal && staleState !== "stale" && delayMs !== void 0 ? new Date((result.job.last_wait_at ? Date.parse(result.job.last_wait_at) : nowMs) + (pollTooSoon ? previousDelayMs ?? delayMs : delayMs)).toISOString() : void 0;
-  let job = result.job;
-  if (!terminal && !pollTooSoon) {
-    const updated = await jobStore.touchWait(input.job_id, new Date(nowMs).toISOString(), delayMs);
-    if (updated) {
-      job = toJobSummary(updated);
-    }
+  if (record2.status === "succeeded" || record2.status === "failed" || record2.status === "cancelled") {
+    const job2 = toJobSummary(record2);
+    return {
+      job: job2,
+      result: record2.result,
+      status: job2.status,
+      summary: `Job ${input.job_id} is ${job2.status}; use the returned result or claude_result for follow-up.`,
+      waiting: false,
+      timed_out: false,
+      do_not_start_duplicate_job: false,
+      age_ms: ageMsSince(record2.created_at, Date.now()) ?? 0,
+      stale_state: "fresh",
+      next_actions: buildNextActions({ cwd: input.cwd, job: job2 })
+    };
   }
+  const inlineResult = await waitForJobCompletionInline(jobStore, input.job_id, input.cwd, Math.min(__test.inlineWaitTimeoutMs, 54e4));
+  if (inlineResult.status === "not_found") {
+    throw new Error(`Job not found: ${input.job_id}`);
+  }
+  if (inlineResult.status === "completed") {
+    const job2 = inlineResult.job;
+    return {
+      job: job2,
+      result: inlineResult.jobRecord?.result,
+      status: job2.status,
+      summary: `Job ${input.job_id} is ${job2.status}; use the returned result or claude_result for follow-up.`,
+      waiting: false,
+      timed_out: false,
+      do_not_start_duplicate_job: false,
+      age_ms: ageMsSince(job2.created_at, Date.now()) ?? 0,
+      stale_state: "fresh",
+      next_actions: buildNextActions({ cwd: input.cwd, job: job2 })
+    };
+  }
+  if (inlineResult.status === "stale") {
+    const job2 = inlineResult.job;
+    return {
+      job: job2,
+      result: void 0,
+      status: job2.status,
+      summary: `Job ${input.job_id} appears stale; inspect or cancel it before starting any replacement job.`,
+      waiting: true,
+      timed_out: false,
+      do_not_start_duplicate_job: true,
+      age_ms: ageMsSince(job2.created_at, Date.now()) ?? 0,
+      heartbeat_age_ms: ageMsSince(job2.heartbeat_at ?? job2.updated_at, Date.now()),
+      stale_state: "stale",
+      next_actions: buildActiveWaitActions({ cwd: input.cwd, job: job2, staleState: "stale" })
+    };
+  }
+  const job = inlineResult.job;
   return {
     job,
-    result: result.result,
+    result: void 0,
     status: job.status,
-    summary: terminal ? `Job ${result.job.job_id} is ${result.job.status}; use the returned result or claude_result for follow-up.` : staleState === "stale" ? `Job ${result.job.job_id} appears stale; inspect or cancel it before starting any replacement job.` : pollTooSoon ? `Job ${result.job.job_id} was polled too soon. Do not call claude_job_wait again before ${nextAllowedPollAt}; wait ${remainingDelayMs}ms and poll the same job_id.` : `Job ${result.job.job_id} is still ${result.job.status}; do not duplicate this task locally. Poll claude_job_wait again after the recommended delay.`,
-    waiting: !terminal,
+    summary: `Job ${input.job_id} is still ${job.status}; do not duplicate this task locally. Use claude_task(job_id=...) to continue waiting.`,
+    waiting: true,
     timed_out: false,
-    do_not_start_duplicate_job: !terminal && staleState !== "stale",
-    poll_too_soon: pollTooSoon || void 0,
-    recommended_delay_ms: delayMs,
-    remaining_delay_ms: remainingDelayMs,
-    next_allowed_poll_at: nextAllowedPollAt,
-    age_ms: ageMs,
-    heartbeat_age_ms: heartbeatAgeMs,
-    stale_state: staleState,
-    next_actions: terminal ? buildNextActions({ cwd: input.cwd, job }) : buildActiveWaitActions({ cwd: input.cwd, job, staleState, nextAllowedPollAt })
+    do_not_start_duplicate_job: true,
+    age_ms: ageMsSince(job.created_at, Date.now()) ?? 0,
+    heartbeat_age_ms: ageMsSince(job.heartbeat_at ?? job.updated_at, Date.now()),
+    stale_state: classifyJobStaleState({
+      job,
+      heartbeatAgeMs: ageMsSince(job.heartbeat_at ?? job.updated_at, Date.now()),
+      pidAlive: isPidAlive(job.pid)
+    }),
+    next_actions: buildActiveWaitActions({ cwd: input.cwd, job, staleState: "fresh" })
   };
 }
 async function cancelBackgroundJob(input) {
@@ -27471,21 +27742,23 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "claude_task",
-    description: "Default tool. High-level rescue/task entrypoint that routes to query, review, or implement and returns a background job for polling. Does not accept max_turns \u2014 use Advanced/Debug tools (claude_query, claude_review, claude_implement) for explicit turn caps.",
+    description: "Default tool. High-level task entrypoint that delegates to Claude Code and waits inline for the result (up to wait_timeout_sec). Returns finalized results when the job completes within the wait window. Use claude_task(job_id=...) to continue waiting for a long-running job. Does not accept max_turns \u2014 use Advanced/Debug tools for explicit turn caps.",
     inputSchema: {
       type: "object",
-      required: ["cwd", "task"],
+      required: ["cwd"],
       properties: {
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
-        task: { type: "string", description: "High-level task to delegate" },
+        task: { type: "string", description: "High-level task to delegate. Optional when job_id is provided." },
         mode: { type: "string", enum: ["auto", "read", "review", "write"], description: "Routing mode. auto infers from diff/task wording." },
-        background: { type: "boolean", description: "Queue the delegated task as a persistent background job" },
+        background: { type: "boolean", description: "Legacy alias for wait_strategy='background'. Queue and return immediately." },
+        wait_strategy: { type: "string", enum: ["block", "background"], description: "block (default) waits inline for the result. background returns immediately with a running job." },
+        wait_timeout_sec: { type: "number", description: "Maximum seconds to wait inline for the job to finish (default 540, max 540)." },
+        job_id: { type: "string", description: "Continue waiting for an existing job by id. When provided, task is ignored and no new job is created." },
         resume_latest: { type: "boolean", description: "For write mode, resume the latest implement session for this repository." },
         instruction_files: { type: "array", items: { type: "string" }, description: "Task instruction/context files. These are not apply scope limits." },
         files: { type: "array", items: { type: "string" }, description: "Deprecated for claude_task: treated as instruction_files, not apply scope." },
         constraints: { type: "array", items: { type: "string" }, description: "Implementation constraints for write mode" },
         diff: { type: "string", description: "Diff to review. Presence strongly biases auto mode toward review." },
-        timeout_sec: { type: "number", description: "Timeout in seconds for the delegated task" },
         dirty_policy: { type: "string", enum: ["ask", "committed", "snapshot"], description: "Write-mode handling for uncommitted main-workspace changes: ask (default), committed (ignore dirty changes and use HEAD), or snapshot (copy dirty files into the delegated worktree)." }
       }
     }
@@ -27605,14 +27878,13 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "claude_job_wait",
-    description: "Default tool. Wait for a background job process to reach a terminal state or timeout; inspect job.result_status for the Claude task outcome.",
+    description: "Advanced / Recovery. Wait for a background job process to reach a terminal state. Uses the same inline wait mechanism as claude_task(job_id=...). Replaces legacy short-polling behavior.",
     inputSchema: {
       type: "object",
       required: ["cwd", "job_id"],
       properties: {
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
-        job_id: { type: "string", description: "Background job id" },
-        not_before: { type: "string", description: "ISO timestamp; skip polling until this time to enforce recommended delays" }
+        job_id: { type: "string", description: "Background job id" }
       }
     }
   },
@@ -27664,6 +27936,78 @@ var TOOL_DEFINITIONS = [
     }
   }
 ];
+function buildTaskInteraction(result) {
+  if (result.completed_inline && result.status === "success") {
+    const hasWorktree = result.server_observed && typeof result.server_observed === "object" && "worktree_path" in result.server_observed;
+    return {
+      headline: "Claude result is ready.",
+      state: "result_ready",
+      next_step: hasWorktree ? "Preview the worktree changes with claude_apply preview=true." : "Review the result above. No apply step is needed for read-only tasks."
+    };
+  }
+  if (result.completed_inline && result.status === "failed") {
+    return {
+      headline: "Claude task failed.",
+      state: "failed",
+      next_step: "Inspect the error and retry with adjusted instructions."
+    };
+  }
+  if (result.completed_inline && result.status === "partial") {
+    const hasWorktree = result.server_observed && typeof result.server_observed === "object" && "worktree_path" in result.server_observed;
+    return {
+      headline: "Claude result is partially ready.",
+      state: "result_ready",
+      next_step: hasWorktree ? "Preview the worktree changes with claude_apply preview=true. Note that the task did not complete fully." : "Review the partial result above."
+    };
+  }
+  if (result.completed_inline && result.status === "cancelled") {
+    return {
+      headline: "Claude task was cancelled.",
+      state: "failed",
+      next_step: "The job was cancelled. Start a new task if needed."
+    };
+  }
+  if (result.completed_inline && result.status === "needs_user") {
+    return {
+      headline: "Claude needs input.",
+      state: "needs_user",
+      next_step: "Provide the required input or inspect the job result for details."
+    };
+  }
+  if (result.waiting) {
+    return {
+      headline: "Claude is still working.",
+      state: "waiting",
+      next_step: "Continue this same job with claude_task(job_id=...). Do not start a duplicate task."
+    };
+  }
+  if (result.status === "needs_attention" || result.status === "stale") {
+    return {
+      headline: "Claude job appears stale.",
+      state: "needs_attention",
+      next_step: "Inspect or cancel this job before starting a replacement."
+    };
+  }
+  if (!result.job && result.result) {
+    return {
+      headline: "Write task needs a workspace decision before delegation.",
+      state: "needs_user",
+      next_step: "Commit or stash changes, or use dirty_policy=committed or dirty_policy=snapshot."
+    };
+  }
+  if (result.job && !result.completed_inline) {
+    return {
+      headline: "Claude task started in background.",
+      state: "delegated_execution",
+      next_step: "Continue this job later with claude_task(job_id=...)."
+    };
+  }
+  return {
+    headline: "Task completed.",
+    state: "result_ready",
+    next_step: "Review the result and proceed."
+  };
+}
 function registerToolDefinitions(server) {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: TOOL_DEFINITIONS
@@ -27768,7 +28112,7 @@ async function handleToolCall(name, args, runId = randomUUID2()) {
         return jsonResult(withInteraction(resultData, {
           headline: hasResult ? "Claude result is ready." : "Claude result is not available.",
           state: hasResult ? "result_ready" : "needs_attention",
-          next_step: hasResult ? "Preview the worktree changes with claude_apply preview=true." : "Check the job status with claude_job_wait."
+          next_step: hasResult ? "Preview the worktree changes with claude_apply preview=true." : "Check active jobs with claude_workspace_status or claude_task(job_id=...)."
         }));
       }
       case "claude_workspace_status": {
@@ -27781,25 +28125,25 @@ async function handleToolCall(name, args, runId = randomUUID2()) {
       case "claude_task": {
         const parsed = claudeTaskInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { cwd, mode, files, instruction_files } = parsed.data;
-        const check2 = await validateCwd(cwd);
+        const { cwd: inputCwd, mode, files, instruction_files, job_id } = parsed.data;
+        const check2 = await validateCwd(inputCwd);
         if (!check2.ok) return errorResult(check2.error);
-        const fileCheck = await validateFilesWithinCwd(check2.resolved, [
-          ...instruction_files ?? [],
-          ...files ?? []
-        ]);
-        if (!fileCheck.ok) return errorResult(fileCheck.error);
-        if (mode === "write" || mode === "auto" && (parsed.data.resume_latest || (parsed.data.constraints?.length ?? 0) > 0)) {
-          const { supportsWorktree: supportsWorktree2 } = await Promise.resolve().then(() => (init_guard(), guard_exports));
-          const wtCapable = await supportsWorktree2(check2.resolved);
-          if (!wtCapable) {
-            return errorResult("claude_task write mode requires a git repository with worktree support");
+        if (!job_id) {
+          const fileCheck = await validateFilesWithinCwd(check2.resolved, [
+            ...instruction_files ?? [],
+            ...files ?? []
+          ]);
+          if (!fileCheck.ok) return errorResult(fileCheck.error);
+          if (mode === "write" || mode === "auto" && (parsed.data.resume_latest || (parsed.data.constraints?.length ?? 0) > 0)) {
+            const { supportsWorktree: supportsWorktree2 } = await Promise.resolve().then(() => (init_guard(), guard_exports));
+            const wtCapable = await supportsWorktree2(check2.resolved);
+            if (!wtCapable) {
+              return errorResult("claude_task write mode requires a git repository with worktree support");
+            }
           }
         }
         const taskResult = await runClaudeTask({ ...parsed.data, cwd: check2.resolved }, runId);
-        const hasJob = !!taskResult.job;
-        const needsUser = !hasJob && taskResult.next_actions.length === 0 && taskResult.result !== void 0;
-        const taskInteraction = needsUser ? { headline: "Write task needs a workspace decision before delegation.", state: "needs_user", next_step: "Commit or stash changes, or use dirty_policy=committed or dirty_policy=snapshot." } : hasJob ? { headline: "Task delegated to Claude Code.", state: "delegated_execution", next_step: "Poll claude_job_wait with this job_id." } : { headline: "Task completed.", state: "delegated_execution", next_step: "Review the result and proceed." };
+        const taskInteraction = buildTaskInteraction(taskResult);
         return jsonResult(withInteraction(taskResult, taskInteraction));
       }
       case "claude_review_gate": {
@@ -27907,12 +28251,10 @@ async function handleToolCall(name, args, runId = randomUUID2()) {
         if (!check2.ok) return errorResult(check2.error);
         const waitResult = await waitForBackgroundJob({ ...parsed.data, cwd: check2.resolved });
         let interaction;
-        if (waitResult.poll_too_soon) {
-          interaction = { headline: "Polling too soon.", state: "poll_too_soon", next_step: "Do not call claude_job_wait again before next_allowed_poll_at." };
-        } else if (waitResult.stale_state === "stale") {
+        if (waitResult.stale_state === "stale") {
           interaction = { headline: "Claude job appears stale.", state: "needs_attention", next_step: "Inspect this job result before starting a replacement." };
         } else if (waitResult.waiting) {
-          interaction = { headline: "Claude job is still running.", state: "waiting", next_step: "Wait until next_allowed_poll_at, then poll this same job_id." };
+          interaction = { headline: "Claude job is still running.", state: "waiting", next_step: "Use claude_task(job_id=...) to continue waiting for this job." };
         } else {
           interaction = { headline: "Claude job completed.", state: "completed", next_step: "Use claude_result to inspect the result." };
         }
@@ -28039,6 +28381,7 @@ if (isMainModule()) {
 }
 export {
   TOOL_DEFINITIONS,
+  buildTaskInteraction,
   createServer,
   handleToolCall,
   main,

@@ -210,7 +210,7 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
         }
         if (extraTools.length > 0) {
           needsAttention = true;
-          warnings.push(`Enabled tools include non-default advanced tools: ${extraTools.join(", ")}. The default config should only include the 6 standard tools.`);
+          warnings.push(`Enabled tools include non-default advanced tools: ${extraTools.join(", ")}. The default config should only include the 5 standard tools.`);
         }
       }
       result.checks.default_tools.enabled_count = scan.mcpEnabledTools.length;
@@ -220,7 +220,7 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
       result.checks.default_tools.enabled = [];
       if (scan.mcpCommand === "codex-claude" && scan.mcpEnabledTools === null) {
         needsAttention = true;
-        warnings.push("enabled_tools is missing; default config should explicitly enable the 6 standard tools");
+        warnings.push("enabled_tools is missing; default config should explicitly enable the 5 standard tools");
       }
     }
   } catch {

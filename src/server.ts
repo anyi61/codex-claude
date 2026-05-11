@@ -360,14 +360,17 @@ export const TOOL_DEFINITIONS = [
     },
 ];
 
+function hasWorktreeObservation(result: ClaudeTaskResult): boolean {
+  return result.server_observed != null && typeof result.server_observed === "object" &&
+    "worktree_path" in (result.server_observed as Record<string, unknown>);
+}
+
 export function buildTaskInteraction(result: ClaudeTaskResult): InteractionBlock {
   if (result.completed_inline && result.status === "success") {
-    const hasWorktree = result.server_observed && typeof result.server_observed === "object" &&
-      "worktree_path" in (result.server_observed as Record<string, unknown>);
     return {
       headline: "Claude result is ready.",
       state: "result_ready",
-      next_step: hasWorktree
+      next_step: hasWorktreeObservation(result)
         ? "Preview the worktree changes with claude_apply preview=true."
         : "Review the result above. No apply step is needed for read-only tasks.",
     };
@@ -380,12 +383,10 @@ export function buildTaskInteraction(result: ClaudeTaskResult): InteractionBlock
     };
   }
   if (result.completed_inline && result.status === "partial") {
-    const hasWorktree = result.server_observed && typeof result.server_observed === "object" &&
-      "worktree_path" in (result.server_observed as Record<string, unknown>);
     return {
       headline: "Claude result is partially ready.",
       state: "result_ready",
-      next_step: hasWorktree
+      next_step: hasWorktreeObservation(result)
         ? "Preview the worktree changes with claude_apply preview=true. Note that the task did not complete fully."
         : "Review the partial result above.",
     };

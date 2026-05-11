@@ -70,7 +70,7 @@ codex-claude --version
 codex-claude setup --write
 ```
 
-这会在 `~/.codex/config.toml` 中添加 `command = "codex-claude"` 及默认的 6 个工具。
+这会在 `~/.codex/config.toml` 中添加 `command = "codex-claude"` 及默认的 5 个工具。
 
 选项：
 

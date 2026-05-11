@@ -2063,6 +2063,104 @@ describe("claude cli argument construction", () => {
     vi.resetModules();
   }, 15000);
 
+  it("runClaudeTask(job_id=...) returns running with do_not_start_duplicate_job for a fresh-heartbeat job", async () => {
+    const { repo, jobStore } = await createWorkflowFixture();
+    const now = new Date().toISOString();
+
+    await jobStore.create({
+      job_id: "job-fresh-hb",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      pid: process.pid,
+      created_at: now,
+      updated_at: now,
+      heartbeat_at: now,
+      payload: { cwd: repo, task: "implement feature" },
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    reloaded.__test.inlineWaitPollIntervalMs = 5;
+
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      job_id: "job-fresh-hb",
+      wait_timeout_sec: 1,
+    }, "run-fresh-hb");
+
+    expect(result.status).toBe("running");
+    expect(result.waiting).toBe(true);
+    expect(result.do_not_start_duplicate_job).toBe(true);
+    expect(result.completed_inline).toBeFalsy();
+    expect(result.next_actions.map((a) => a.tool)).toContain("claude_task");
+    expect(result.next_actions.find((a) => a.tool === "claude_task")?.args).toMatchObject({
+      cwd: repo,
+      job_id: "job-fresh-hb",
+    });
+    expect(result.summary).toContain("job-fresh-hb");
+  });
+
+  it("runClaudeTask(job_id=...) returns needs_attention for a stale heartbeat job", async () => {
+    const { repo, jobStore } = await createWorkflowFixture();
+    const oldDate = new Date(Date.now() - 400_000).toISOString();
+
+    await jobStore.create({
+      job_id: "job-stale-hb",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      pid: Number.MAX_SAFE_INTEGER, // guaranteed nonexistent PID triggers pidAlive===false → stale
+      created_at: oldDate,
+      updated_at: oldDate,
+      heartbeat_at: oldDate,
+      payload: { cwd: repo, task: "stale task" },
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    reloaded.__test.inlineWaitPollIntervalMs = 5;
+
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      job_id: "job-stale-hb",
+      wait_timeout_sec: 1,
+    }, "run-stale-hb");
+
+    expect(result.status).toBe("needs_attention");
+    expect(result.completed_inline).toBeFalsy();
+    expect(result.do_not_start_duplicate_job).toBe(true);
+    expect(result.job?.job_id).toBe("job-stale-hb");
+  });
+
+  it("runClaudeTask(job_id=...) returns failed for cwd mismatch without leaking cross-repo data", async () => {
+    const { repo: repoA, jobStore } = await createWorkflowFixture();
+
+    await jobStore.create({
+      job_id: "job-cwd-mismatch",
+      type: "implement",
+      status: "succeeded",
+      cwd: "/tmp/other-repo",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      payload: { cwd: "/tmp/other-repo", task: "secret task" },
+      summary: "secret result from repo B",
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+
+    const result = await reloaded.runClaudeTask({
+      cwd: repoA,
+      job_id: "job-cwd-mismatch",
+    }, "run-cwd-mismatch");
+
+    expect(result.status).toBe("failed");
+    expect(result.summary).toContain("not found");
+    expect(result.do_not_start_duplicate_job).toBe(true);
+    // Must not leak repo B data
+    expect(result.summary).not.toContain("secret");
+    expect(result.job).toBeUndefined();
+    expect(result.result).toBeUndefined();
+  });
+
   it("fails apply closed when implement metadata is missing (no run log, no job record)", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-no-meta-"));
     cleanupPaths.push(root);

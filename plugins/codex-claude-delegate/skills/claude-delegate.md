@@ -1,7 +1,7 @@
 # Claude Code Delegate
 
-Use `claude_task` for normal read/review/write delegation. After it returns a `job_id`, call `claude_job_wait` for that same job. Respect `recommended_delay_ms` and `next_allowed_poll_at`. If `poll_too_soon=true`, wait until `next_allowed_poll_at` before polling again. Do not start another job or implement locally while `waiting=true`.
-First run sequence: `claude_setup` -> `claude_task` -> `claude_job_wait` -> `claude_result`.
+Use `claude_task` for normal read/review/write delegation. `claude_task` defaults to inline-wait mode (blocking the MCP call until the result is ready). If the task isn't finished when the inline wait times out, `claude_task` returns `status="running"` with a `job_id` — call `claude_task(job_id=...)` to continue waiting for that same job. Do not start another job or implement locally while `waiting=true`.
+First run sequence: `claude_setup` -> `claude_task` -> (if status=running) `claude_task(job_id=...)`.
 
 `claude_task` does not accept `max_turns`. If the user explicitly asks for a turn cap, use the appropriate Advanced / Debug tool (`claude_query`, `claude_review`, or `claude_implement`) instead of the default high-level entrypoint.
 
@@ -21,9 +21,9 @@ For normal `claude_task` calls, do not pass `files`. If Claude should read a pla
 ## Default workflow
 
 1. Start with `claude_task mode=write` and pass `task`, `cwd`, optional `instruction_files`, `constraints`, `max_cost_usd`, `max_changed_files`.
-2. Capture the returned `job_id`.
-3. Poll with `claude_job_wait`, respecting `recommended_delay_ms`.
-4. When the job finishes terminal, call `claude_result`.
+2. `claude_task` defaults to inline wait — it blocks until the job completes or the wait timeout is reached.
+3. If the returned `status="running"`, call `claude_task(job_id=...)` to continue waiting for the same job.
+4. When the job completes inline, the result is returned directly — no separate `claude_result` call is needed.
 5. Preview with `claude_apply preview=true` (no user approval needed for preview).
 6. Show or summarize the planned diff to the user and ask whether to apply it.
 7. Only after explicit user approval, apply with `claude_apply cleanup=true confirmed_by_user=true`.

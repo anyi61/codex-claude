@@ -14915,15 +14915,17 @@ var claudeImplementInputSchema = external_exports.object({
 });
 var claudeTaskInputSchema = external_exports.object({
   cwd: cwdSchema,
-  task: taskSchema,
+  task: external_exports.string().trim().min(1).optional(),
   mode: external_exports.enum(["auto", "read", "review", "write"]).optional().default("auto"),
   background: external_exports.boolean().optional(),
+  wait_strategy: external_exports.enum(["block", "background"]).optional(),
+  wait_timeout_sec: external_exports.number().int().positive().max(540).optional().default(540),
+  job_id: external_exports.string().trim().min(1).optional(),
   resume_latest: external_exports.boolean().optional(),
   instruction_files: filesSchema,
   files: filesSchema,
   constraints: constraintsSchema,
   diff: external_exports.string().optional(),
-  timeout_sec: timeoutSchema.optional(),
   dirty_policy: dirtyPolicySchema
 }).refine((value) => value.mode !== "read" || !value.resume_latest, {
   message: "resume_latest is only supported for write mode",
@@ -14931,6 +14933,9 @@ var claudeTaskInputSchema = external_exports.object({
 }).refine((value) => value.mode !== "review" || !value.resume_latest, {
   message: "resume_latest is only supported for write mode",
   path: ["resume_latest"]
+}).refine((value) => !!(value.task || value.job_id), {
+  message: "Either task or job_id is required",
+  path: ["task"]
 });
 var claudeApplyInputSchema = external_exports.object({
   cwd: cwdSchema,
@@ -14981,8 +14986,7 @@ var claudeResultInputSchema = external_exports.object({
 });
 var claudeJobWaitInputSchema = external_exports.object({
   cwd: cwdSchema,
-  job_id: external_exports.string().trim().min(1, "job_id is required"),
-  not_before: external_exports.string().trim().min(1).optional()
+  job_id: external_exports.string().trim().min(1, "job_id is required")
 }).strict();
 var claudeJobCancelInputSchema = external_exports.object({
   cwd: cwdSchema,
