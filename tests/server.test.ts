@@ -83,7 +83,7 @@ vi.mock("../src/claude-cli.js", () => ({
   waitForBackgroundJob: waitForBackgroundJobMock,
 }));
 
-const { handleToolCall, registerToolDefinitions, TOOL_DEFINITIONS } = await import("../src/server.js");
+const { handleToolCall, registerToolDefinitions, TOOL_DEFINITIONS, buildTaskInteraction } = await import("../src/server.js");
 
 function parsePayload(result: Awaited<ReturnType<typeof handleToolCall>>) {
   expect(result.content[0]?.type).toBe("text");
@@ -847,5 +847,140 @@ describe("server background job handlers", () => {
     expect((payload.next_actions as Array<Record<string, unknown>>)[0]).toMatchObject({
       tool: "claude_task",
     });
+  });
+});
+
+describe("buildTaskInteraction", () => {
+  it("routes claude_task write partial with session and worktree through buildTaskInteraction", () => {
+    const interaction = buildTaskInteraction({
+      delegated_mode: "write",
+      summary: "Implement partial: hit max turns.",
+      status: "partial",
+      completed_inline: true,
+      waiting: false,
+      job: { job_id: "job-partial", type: "implement", status: "succeeded" } as Record<string, unknown>,
+      session: { session_id: "sess-1" },
+      server_observed: { worktree_path: ".claude/worktrees/codex-delegated-1" },
+      next_actions: [],
+    });
+
+    expect(interaction.state).toBe("result_ready");
+    expect(interaction.next_step).toContain("Preview");
+    expect(interaction.next_step).toContain("resume");
+    expect(interaction.next_step).toContain("discard");
+    expect(interaction.next_step).toContain("Do not auto-resume");
+  });
+
+  it("routes claude_task write failed with session through buildTaskInteraction", () => {
+    const interaction = buildTaskInteraction({
+      delegated_mode: "write",
+      summary: "Implement failed.",
+      status: "failed",
+      completed_inline: true,
+      waiting: false,
+      job: { job_id: "job-failed", type: "implement", status: "failed" } as Record<string, unknown>,
+      session: { session_id: "sess-2" },
+      next_actions: [],
+    });
+
+    expect(interaction.state).toBe("failed");
+    expect(interaction.next_step).toContain("resume");
+    expect(interaction.next_step).toContain("discard");
+    expect(interaction.next_step).toContain("Do not auto-resume");
+  });
+
+  it("routes claude_task write needs_user with session through buildTaskInteraction", () => {
+    const interaction = buildTaskInteraction({
+      delegated_mode: "write",
+      summary: "Claude needs input.",
+      status: "needs_user",
+      completed_inline: true,
+      waiting: false,
+      job: { job_id: "job-nu", type: "implement", status: "failed" } as Record<string, unknown>,
+      session: { session_id: "sess-3" },
+      next_actions: [],
+    });
+
+    expect(interaction.state).toBe("needs_user");
+    expect(interaction.next_step).toContain("provide input");
+    expect(interaction.next_step).toContain("resume");
+    expect(interaction.next_step).toContain("start fresh");
+    expect(interaction.next_step).toContain("discard");
+    expect(interaction.next_step).toContain("Do not auto-resume");
+  });
+
+  it("routes claude_task write failed without session or worktree through generic next_step", () => {
+    const interaction = buildTaskInteraction({
+      delegated_mode: "write",
+      summary: "Implement failed.",
+      status: "failed",
+      completed_inline: true,
+      waiting: false,
+      job: { job_id: "job-failed2", type: "implement", status: "failed" } as Record<string, unknown>,
+      next_actions: [],
+    });
+
+    expect(interaction.state).toBe("failed");
+    expect(interaction.next_step).toContain("Inspect the error");
+    expect(interaction.next_step).not.toContain("Do not auto-resume");
+  });
+
+  it("routes claude_task write failed with worktree but no session through user-choice next_step", () => {
+    const interaction = buildTaskInteraction({
+      delegated_mode: "write",
+      summary: "Implement failed with worktree changes.",
+      status: "failed",
+      completed_inline: true,
+      waiting: false,
+      job: { job_id: "job-failed-worktree", type: "implement", status: "failed" } as Record<string, unknown>,
+      server_observed: { worktree_path: ".claude/worktrees/codex-delegated-failed" },
+      next_actions: [],
+    });
+
+    expect(interaction.state).toBe("failed");
+    expect(interaction.next_step).toContain("Preview");
+    expect(interaction.next_step).toContain("apply");
+    expect(interaction.next_step).toContain("start fresh");
+    expect(interaction.next_step).toContain("discard");
+    expect(interaction.next_step).not.toContain("resume");
+    expect(interaction.next_step).not.toContain("auto-resume");
+  });
+
+  it("routes claude_task write needs_user with worktree but no session through user-choice next_step", () => {
+    const interaction = buildTaskInteraction({
+      delegated_mode: "write",
+      summary: "Claude needs input with worktree changes.",
+      status: "needs_user",
+      completed_inline: true,
+      waiting: false,
+      job: { job_id: "job-nu-worktree", type: "implement", status: "failed" } as Record<string, unknown>,
+      server_observed: { worktree_path: ".claude/worktrees/codex-delegated-needs-user" },
+      next_actions: [],
+    });
+
+    expect(interaction.state).toBe("needs_user");
+    expect(interaction.next_step).toContain("preview");
+    expect(interaction.next_step).toContain("provide input");
+    expect(interaction.next_step).toContain("start fresh");
+    expect(interaction.next_step).toContain("discard");
+    expect(interaction.next_step).not.toContain("resume");
+    expect(interaction.next_step).not.toContain("auto-resume");
+  });
+
+  it("routes claude_task read partial without write-mode guard through generic next_step", () => {
+    const interaction = buildTaskInteraction({
+      delegated_mode: "read",
+      summary: "Read partial.",
+      status: "partial",
+      completed_inline: true,
+      waiting: false,
+      session: { session_id: "sess-read" },
+      next_actions: [],
+    });
+
+    expect(interaction.state).toBe("result_ready");
+    expect(interaction.next_step).not.toContain("resume");
+    expect(interaction.next_step).not.toContain("discard");
+    expect(interaction.next_step).not.toContain("Do not auto-resume");
   });
 });

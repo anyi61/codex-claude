@@ -18,6 +18,16 @@ For normal `claude_task` calls, do not pass `files`. If Claude should read a pla
 - Tasks you can complete correctly in < 3 trivial edits
 - Read-only tasks (use `claude_task mode=read` instead)
 
+## Resumable implement sessions
+
+When a write task returns `status="partial"` or `status="failed"` with a `session` field, there is a resumable Claude session. The workflow `next_actions` will include a `claude_task(mode="write", resume_latest=true, task="Continue the previous implementation task and finish incomplete work.")` suggestion.
+
+- Present the user with options: preview existing changes, resume the session, or discard.
+- Do NOT automatically resume without user confirmation.
+- Do NOT skip preview when worktree changes exist.
+- Only use `resume_latest=true` after the user explicitly chooses to continue.
+- If the user chooses to discard, start a fresh `claude_task(mode="write")` without `resume_latest`.
+
 ## Default workflow
 
 1. Start with `claude_task mode=write` and pass `task`, `cwd`, optional `instruction_files`, `constraints`, `max_cost_usd`, `max_changed_files`.

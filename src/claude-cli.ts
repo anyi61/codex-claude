@@ -293,11 +293,6 @@ function buildReviewGateState(cwd: string, state: Partial<ReviewGateState> | nul
   };
 }
 
-function normalizeSessionType(value: unknown): "query" | "review" | "implement" | undefined {
-  if (value === "query" || value === "review" || value === "implement") return value;
-  return undefined;
-}
-
 function toWorkflowSessionSummaryFromStore(session: Session): WorkflowSessionSummary {
   return {
     session_id: session.session_id,
@@ -1033,7 +1028,6 @@ async function resolveWorkflowSessionSummary(input: {
   run?: RunLogEntrySummary;
 }): Promise<WorkflowSessionSummary | undefined> {
   const store = await getStore(input.cwd);
-  const repoKey = await computeRepoKey(input.cwd);
   const run = input.run;
 
   if (run?.returned_session_id) {
@@ -1047,24 +1041,9 @@ async function resolveWorkflowSessionSummary(input: {
         source: "run",
       };
     }
-
-    const type = normalizeSessionType(run.type);
-    if (type) {
-      return {
-        session_id: run.returned_session_id,
-        type,
-        requested_session_id: run.requested_session_id,
-        returned_session_id: run.returned_session_id,
-        resumed: !!run.requested_session_id,
-        source: "run",
-      };
-    }
   }
 
-  const type = normalizeSessionType(run?.type);
-  if (!type) return undefined;
-  const recent = store.listByRepo(repoKey, 20).find((session) => session.type === type && !session.expired);
-  return recent ? toWorkflowSessionSummaryFromStore(recent) : undefined;
+  return undefined;
 }
 
 function buildNextActions(input: {
@@ -1073,12 +1052,17 @@ function buildNextActions(input: {
   run?: RunLogEntrySummary;
   related_runs?: ClaudeRunInspectResult["related_runs"];
   session?: WorkflowSessionSummary;
+  change_count?: number;
 }): WorkflowNextAction[] {
   const actions: WorkflowNextAction[] = [];
   const run = input.run;
   const job = input.job;
   const type = run?.type ?? job?.type;
   const worktreePath = run?.worktree_path;
+  const hasChanges = input.change_count !== undefined
+    ? input.change_count > 0
+    : !!worktreePath;
+  const isNonSuccess = run?.status === "partial" || run?.status === "failed" || run?.status === "needs_user";
 
   if (job && (job.status === "queued" || job.status === "running")) {
     return [
@@ -1091,18 +1075,18 @@ function buildNextActions(input: {
   }
 
   if (type === "implement") {
-    if (worktreePath) {
+    if (hasChanges && worktreePath) {
       actions.push({
         tool: "claude_apply",
         reason: "Preview the delegated worktree diff before modifying the main workspace. After preview, ask the user for explicit approval before any non-preview apply.",
         args: { cwd: input.cwd, worktree_path: worktreePath, preview: true },
       });
     }
-    if (input.session?.session_id) {
+    if (input.session?.session_id && isNonSuccess) {
       actions.push({
-        tool: "claude_implement",
-        reason: "This implementation has a resumable Claude session.",
-        args: { cwd: input.cwd, resume_latest: true },
+        tool: "claude_task",
+        reason: "This implementation has a resumable Claude session. Review the existing changes, then ask the user whether to preview, resume, or discard.",
+        args: { cwd: input.cwd, mode: "write", task: "Continue the previous implementation task and finish incomplete work.", resume_latest: true },
       });
     }
   }
@@ -1136,11 +1120,13 @@ function buildNextActions(input: {
         args: { cwd: input.cwd, dry_run: true },
       });
     }
-    actions.push({
-      tool: "claude_implement",
-      reason: "If the Claude session cannot be resumed, start a fresh implementation with the same task.",
-      args: { cwd: input.cwd },
-    });
+    if (!input.session?.session_id) {
+      actions.push({
+        tool: "claude_implement",
+        reason: "If the Claude session cannot be resumed, start a fresh implementation with the same task.",
+        args: { cwd: input.cwd },
+      });
+    }
   }
 
   if (input.related_runs?.cleanup_run_id) {
@@ -1263,6 +1249,8 @@ export async function getClaudeResult(input: ClaudeResultInput): Promise<ClaudeR
   }
 
   const runEntry = resolvedRun?.entry;
+  const rawObserved = resolvedRun?.raw?.observed as Record<string, unknown> | undefined;
+  const changeCount = Array.isArray(rawObserved?.changed_files) ? rawObserved.changed_files.length : undefined;
   const session = await resolveWorkflowSessionSummary({ cwd: input.cwd, run: runEntry });
   const summary = resolvedJob?.summary ?? (runEntry ? buildResultSummaryFromRun(runEntry) : "Background job resolved");
   const jobIsActive = resolvedJob?.status === "queued" || resolvedJob?.status === "running";
@@ -1282,6 +1270,7 @@ export async function getClaudeResult(input: ClaudeResultInput): Promise<ClaudeR
       run: runEntry,
       related_runs: resolvedRun?.related_runs,
       session,
+      change_count: changeCount,
     }),
   };
 }
@@ -1590,10 +1579,13 @@ async function buildClaudeTaskInlineResult(input: {
   const runEntry = job.run_id
     ? (await getRunLogById({ cwd, run_id: job.run_id }).catch(() => null))?.entry
     : undefined;
+  const rawRun = job.run_id ? await readRunLogFile(job.run_id, cwd).catch(() => null) : null;
   const session = runEntry
     ? await resolveWorkflowSessionSummary({ cwd, run: runEntry }).catch(() => undefined)
     : undefined;
   const relatedRuns = result?.related_runs as { apply_run_id?: string; cleanup_run_id?: string } | undefined;
+  const rawObserved = rawRun?.observed as Record<string, unknown> | undefined;
+  const changeCount = Array.isArray(rawObserved?.changed_files) ? rawObserved.changed_files.length : undefined;
 
   return {
     delegated_mode: delegatedMode,
@@ -1609,7 +1601,7 @@ async function buildClaudeTaskInlineResult(input: {
     waiting: waiting || undefined,
     do_not_start_duplicate_job: staled || waiting ? true : false,
     warnings: [],
-    next_actions: buildNextActions({ cwd, job }),
+    next_actions: buildNextActions({ cwd, job, run: runEntry, session, related_runs: relatedRuns, change_count: changeCount }),
   };
 }
 

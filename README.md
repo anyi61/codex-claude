@@ -151,6 +151,22 @@ claude_task(mode="write", ...)
   → claude_apply(preview=true, ...)
 ```
 
+### 失败/部分完成后恢复实现 Session
+
+write 任务默认不会自动复用 Claude session。如果任务返回 partial / failed 状态：
+
+1. Codex 会先建议 `claude_apply preview=true` 预览现有 worktree 改动（如有实际改动）
+2. 如果有可恢复的实现 session，Codex 会建议 `claude_task(mode="write", resume_latest=true, task="Continue the previous implementation task and finish incomplete work.")`
+3. 用户需要明确选择 preview / resume / discard 之一
+4. 系统不会自动 apply、自动 resume 或自动 cleanup
+
+```text
+claude_task(mode="write", ...)
+  → 返回 { status: "partial"/"failed", session: { session_id: "..." }, ... }
+  → next_actions: [claude_apply preview=true (如有改动), claude_task(mode="write", resume_latest=true, task="Continue the previous implementation task and finish incomplete work.")]
+  → 用户决定: preview → apply, or resume → 继续任务, or discard → 放弃
+```
+
 ## 高级 / 调试工具
 
 这些工具**不**在默认配置中。需要手动在 `~/.codex/config.toml` 中启用：

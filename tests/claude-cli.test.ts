@@ -1508,7 +1508,7 @@ describe("claude cli argument construction", () => {
       args: { cwd: repo, worktree_path: ".claude/worktrees/codex-delegated-123", preview: true },
     });
     expect(result.next_actions.map((action) => action.tool)).toEqual(
-      expect.arrayContaining(["claude_apply", "claude_implement"])
+      ["claude_apply"]
     );
   });
 
@@ -1609,8 +1609,238 @@ describe("claude cli argument construction", () => {
     expect(applyActions).toHaveLength(1);
     expect(applyActions[0]?.args?.preview).toBe(true);
     expect(result.next_actions.map((action) => action.tool)).toEqual(
-      expect.arrayContaining(["claude_apply", "claude_implement"])
+      ["claude_apply"]
     );
+  });
+
+  it("does not return session or resume_latest action when run references a session the store does not have, even if store has other sessions", async () => {
+    const { repo, logDir, sessionStore, repoKey } = await createWorkflowFixture();
+
+    // Write a run log that references sess-missing, which is NOT in the session store
+    await writeFile(path.join(logDir, "run-impl-phantom.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "partial", summary: "Partial with phantom session" },
+      observed: {
+        worktree_path: ".claude/worktrees/codex-delegated-phantom",
+        worktree_name: "codex-delegated-phantom",
+        changed_files: ["src/x.ts"],
+      },
+      session: { returned_session_id: "sess-missing" },
+    }));
+
+    // Put an unrelated session in the store to verify fallback does NOT happen
+    sessionStore.upsert("sess-other", "implement", repoKey, repo, "Some other session");
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.getClaudeResult({ cwd: repo, run_id: "run-impl-phantom" });
+
+    // Session store has no entry for sess-missing, so no session summary should be fabricated
+    expect(result.session).toBeUndefined();
+
+    // No resume_latest action should be generated
+    const resumeActions = result.next_actions.filter(
+      (a: { tool: string; args?: Record<string, unknown> }) =>
+        a.tool === "claude_task" && a.args?.resume_latest === true
+    );
+    expect(resumeActions).toHaveLength(0);
+  });
+
+  it("does not generate resume_latest action when run has no session field even if session store has a recent implement session", async () => {
+    const { repo, logDir, sessionStore, repoKey } = await createWorkflowFixture();
+
+    await writeFile(path.join(logDir, "run-no-session.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "partial", summary: "Partial, no session in run log" },
+      observed: {
+        worktree_path: ".claude/worktrees/codex-delegated-nosess",
+        worktree_name: "codex-delegated-nosess",
+        changed_files: ["src/bar.ts"],
+      },
+    }));
+
+    // Add a recent implement session to the store — must NOT be used as fallback
+    sessionStore.upsert("sess-recent", "implement", repoKey, repo, "Recent unrelated session");
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.getClaudeResult({ cwd: repo, run_id: "run-no-session" });
+
+    // The run has no session field, so session should be undefined
+    expect(result.session).toBeUndefined();
+
+    // No resume_latest action should be generated despite the store having a session
+    const resumeActions = result.next_actions.filter(
+      (a: { tool: string; args?: Record<string, unknown> }) =>
+        a.tool === "claude_task" && a.args?.resume_latest === true
+    );
+    expect(resumeActions).toHaveLength(0);
+  });
+
+  it("does not use query session as implement resume action", async () => {
+    const { repo, logDir, sessionStore, repoKey } = await createWorkflowFixture();
+
+    await writeFile(path.join(logDir, "run-implement-no-session-query-store.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "partial", summary: "Partial implement without returned session" },
+      observed: {
+        worktree_path: ".claude/worktrees/codex-delegated-query-store",
+        worktree_name: "codex-delegated-query-store",
+        changed_files: ["src/query-store.ts"],
+      },
+    }));
+    sessionStore.upsert("sess-query-only", "query", repoKey, repo, "Recent query session");
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.getClaudeResult({ cwd: repo, run_id: "run-implement-no-session-query-store" });
+
+    expect(result.session).toBeUndefined();
+    expect(result.next_actions.filter(
+      (action: { tool: string; args?: Record<string, unknown> }) =>
+        action.tool === "claude_task" && action.args?.resume_latest === true
+    )).toHaveLength(0);
+  });
+
+  it("does not resume an implement session from another repository", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-cross-repo-resume-"));
+    cleanupPaths.push(root);
+    const repoA = path.join(root, "repo-a");
+    const repoB = path.join(root, "repo-b");
+    const logDir = path.join(root, "runs");
+    await mkdir(repoA, { recursive: true });
+    await mkdir(repoB, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+
+    await writeFile(path.join(logDir, "run-repo-a.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repoA },
+      report: { status: "partial", summary: "Repo A partial" },
+      observed: {
+        worktree_path: ".claude/worktrees/codex-delegated-a",
+        worktree_name: "codex-delegated-a",
+        changed_files: ["src/a.ts"],
+      },
+      session: { returned_session_id: "sess-repo-a" },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+
+    expect(await reloaded.resolveLatestImplementSession({ cwd: repoA })).toMatchObject({
+      run_id: "run-repo-a",
+      session_id: "sess-repo-a",
+    });
+    await expect(reloaded.resolveLatestImplementSession({ cwd: repoB })).resolves.toBeNull();
+
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("runClaudeImplement resume_latest fails fast when no local implement session exists", async () => {
+    const { repo } = await createWorkflowFixture();
+    const reloaded = await import("../src/claude-cli.js");
+
+    await expect(reloaded.runClaudeImplement({
+      cwd: repo,
+      task: "Continue previous implementation.",
+      resume_latest: true,
+      dirty_policy: "committed",
+    }, "run-resume-missing-local")).rejects.toThrow(
+      "No resumable implement session found for this repository."
+    );
+  });
+
+  it("returns claude_apply preview and claude_task resume action for partial implement run with store-verified session and non-empty changed_files", async () => {
+    const { repo, logDir, sessionStore, repoKey } = await createWorkflowFixture();
+
+    await writeFile(path.join(logDir, "run-partial-resumable.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "partial", summary: "Partial implement with changes" },
+      observed: {
+        worktree_path: ".claude/worktrees/codex-delegated-partial-resume",
+        worktree_name: "codex-delegated-partial-resume",
+        changed_files: ["README.md", "src/main.ts"],
+      },
+      session: { returned_session_id: "sess-partial-resume" },
+    }));
+
+    sessionStore.upsert("sess-partial-resume", "implement", repoKey, repo, "Partial implement session");
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.getClaudeResult({ cwd: repo, run_id: "run-partial-resumable" });
+
+    expect(result.run?.status).toBe("partial");
+    expect(result.session?.session_id).toBe("sess-partial-resume");
+
+    // Should contain claude_apply preview action
+    const applyActions = result.next_actions.filter(
+      (a: { tool: string }) => a.tool === "claude_apply"
+    );
+    expect(applyActions).toHaveLength(1);
+    expect(applyActions[0]?.args).toMatchObject({
+      cwd: repo,
+      worktree_path: ".claude/worktrees/codex-delegated-partial-resume",
+      preview: true,
+    });
+
+    // Should contain claude_task resume action
+    const resumeActions = result.next_actions.filter(
+      (a: { tool: string; args?: Record<string, unknown> }) =>
+        a.tool === "claude_task" && a.args?.resume_latest === true
+    );
+    expect(resumeActions).toHaveLength(1);
+    expect(resumeActions[0]?.args).toMatchObject({
+      cwd: repo,
+      mode: "write",
+      task: "Continue the previous implementation task and finish incomplete work.",
+      resume_latest: true,
+    });
+  });
+
+  it("excludes claude_apply preview but includes claude_task resume action for failed implement run with store-verified session and empty changed_files", async () => {
+    const { repo, logDir, sessionStore, repoKey } = await createWorkflowFixture();
+
+    await writeFile(path.join(logDir, "run-failed-resumable.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "failed", summary: "Failed implement without changes" },
+      observed: {
+        worktree_path: ".claude/worktrees/codex-delegated-failed-resume",
+        worktree_name: "codex-delegated-failed-resume",
+        changed_files: [],
+      },
+      session: { returned_session_id: "sess-failed-resume" },
+    }));
+
+    sessionStore.upsert("sess-failed-resume", "implement", repoKey, repo, "Failed implement session");
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.getClaudeResult({ cwd: repo, run_id: "run-failed-resumable" });
+
+    expect(result.run?.status).toBe("failed");
+    expect(result.session?.session_id).toBe("sess-failed-resume");
+
+    // Should NOT contain claude_apply preview (no changes)
+    const applyActions = result.next_actions.filter(
+      (a: { tool: string }) => a.tool === "claude_apply"
+    );
+    expect(applyActions).toHaveLength(0);
+
+    // Should contain claude_task resume action
+    const resumeActions = result.next_actions.filter(
+      (a: { tool: string; args?: Record<string, unknown> }) =>
+        a.tool === "claude_task" && a.args?.resume_latest === true
+    );
+    expect(resumeActions).toHaveLength(1);
+    expect(resumeActions[0]?.args).toMatchObject({
+      cwd: repo,
+      mode: "write",
+      task: "Continue the previous implementation task and finish incomplete work.",
+      resume_latest: true,
+    });
   });
 
   it("returns workspace status with jobs, sessions, worktrees, and attention items", async () => {

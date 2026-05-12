@@ -366,16 +366,32 @@ function hasWorktreeObservation(result: ClaudeTaskResult): boolean {
 }
 
 export function buildTaskInteraction(result: ClaudeTaskResult): InteractionBlock {
+  const isWriteResult = result.delegated_mode === "write";
+  const hasSession = result.session?.session_id != null;
+  const hasWorktree = hasWorktreeObservation(result);
+  const hasWriteRecoveryContext = isWriteResult && (hasSession || hasWorktree);
+
   if (result.completed_inline && result.status === "success") {
     return {
       headline: "Claude result is ready.",
       state: "result_ready",
-      next_step: hasWorktreeObservation(result)
+      next_step: hasWorktree
         ? "Preview the worktree changes with claude_apply preview=true."
         : "Review the result above. No apply step is needed for read-only tasks.",
     };
   }
   if (result.completed_inline && result.status === "failed") {
+    if (hasWriteRecoveryContext) {
+      return {
+        headline: "Claude task failed.",
+        state: "failed",
+        next_step: hasWorktree
+          ? hasSession
+            ? "Inspect the error. Preview any worktree changes with claude_apply preview=true, then ask the user whether to apply, resume, start fresh, or discard. Do not auto-resume or auto-apply."
+            : "Inspect the error. Preview any worktree changes with claude_apply preview=true, then ask the user whether to apply, start fresh, or discard. Do not auto-apply."
+          : "Inspect the error, then ask the user whether to resume the session, start fresh, or discard. Do not auto-resume.",
+      };
+    }
     return {
       headline: "Claude task failed.",
       state: "failed",
@@ -383,10 +399,21 @@ export function buildTaskInteraction(result: ClaudeTaskResult): InteractionBlock
     };
   }
   if (result.completed_inline && result.status === "partial") {
+    if (hasWriteRecoveryContext) {
+      return {
+        headline: "Claude result is partially ready.",
+        state: "result_ready",
+        next_step: hasWorktree
+          ? hasSession
+            ? "Preview the worktree changes with claude_apply preview=true. Then ask the user whether to apply, resume, start fresh, or discard. Do not auto-resume or auto-apply."
+            : "Preview the worktree changes with claude_apply preview=true. Then ask the user whether to apply, start fresh, or discard. Do not auto-apply."
+          : "Review the partial result, then ask the user whether to resume the session, start fresh, or discard. Do not auto-resume.",
+      };
+    }
     return {
       headline: "Claude result is partially ready.",
       state: "result_ready",
-      next_step: hasWorktreeObservation(result)
+      next_step: hasWorktree
         ? "Preview the worktree changes with claude_apply preview=true. Note that the task did not complete fully."
         : "Review the partial result above.",
     };
@@ -399,6 +426,17 @@ export function buildTaskInteraction(result: ClaudeTaskResult): InteractionBlock
     };
   }
   if (result.completed_inline && result.status === "needs_user") {
+    if (hasWriteRecoveryContext) {
+      return {
+        headline: "Claude needs input.",
+        state: "needs_user",
+        next_step: hasWorktree
+          ? hasSession
+            ? "Inspect the requested input and preview existing worktree changes if useful. Then ask the user whether to provide input, resume, start fresh, or discard. Do not auto-resume."
+            : "Inspect the requested input and preview existing worktree changes if useful. Then ask the user whether to provide input, start fresh, or discard."
+          : "Inspect the requested input, then ask the user whether to provide input, resume the session, start fresh, or discard. Do not auto-resume.",
+      };
+    }
     return {
       headline: "Claude needs input.",
       state: "needs_user",
