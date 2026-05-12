@@ -7,7 +7,7 @@ First run sequence: `claude_setup` -> `claude_task` -> (if status=running) `clau
 
 For write tasks, `claude_task` produces an isolated git worktree result only — it never directly applies changes to the main workspace. Non-preview `claude_apply` modifies the main workspace. Always run `claude_apply preview=true` first, show or summarize the planned diff, and wait for explicit user approval before calling non-preview `claude_apply` with `confirmed_by_user=true`.
 
-`preview=true` and `cleanup=true` must not be combined in a single `claude_apply` call — the server rejects this combination. Workflow `next_actions` from `claude_result` or `claude_job_wait` only suggests `preview=true` actions; it never emits direct non-preview apply suggestions.
+`preview=true` and `cleanup=true` must not be combined in a single `claude_apply` call — the server rejects this combination. Workflow `next_actions` from `claude_task` and `claude_result` only suggests `preview=true` actions; it never emits direct non-preview apply suggestions.
 
 For normal `claude_task` calls, do not pass `files`. If Claude should read a plan or checklist, use `instruction_files` or mention the file in `task`; these files are context, not modification scope. Use Advanced / Debug `claude_implement.files` only when strict file modification limits are explicitly required.
 
@@ -30,7 +30,7 @@ When a write task returns `status="partial"` or `status="failed"` with a `sessio
 
 ## Default workflow
 
-1. Start with `claude_task mode=write` and pass `task`, `cwd`, optional `instruction_files`, `constraints`, `max_cost_usd`, `max_changed_files`.
+1. Start with `claude_task mode=write` and pass `task`, `cwd`, optional `instruction_files`, `constraints`, and `dirty_policy`.
 2. `claude_task` defaults to inline wait — it blocks until the job completes or the wait timeout is reached.
 3. If the returned `status="running"`, call `claude_task(job_id=...)` to continue waiting for the same job.
 4. When the job completes inline, the result is returned directly — no separate `claude_result` call is needed.

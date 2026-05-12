@@ -136,10 +136,6 @@ export interface ClaudeJobWaitResult {
   waiting: boolean;
   timed_out: boolean;
   do_not_start_duplicate_job: boolean;
-  poll_too_soon?: boolean;
-  recommended_delay_ms?: number;
-  remaining_delay_ms?: number;
-  next_allowed_poll_at?: string;
   age_ms: number;
   heartbeat_age_ms?: number;
   stale_state: BackgroundJobStaleState;

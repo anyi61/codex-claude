@@ -1,23 +1,23 @@
 # Claude Code Rescue — Failure Recovery
 
-Rescue workflows may use Advanced / Debug tools such as `claude_workspace_status`, `claude_job_result`, `claude_runs`, `claude_run_inspect`, and `claude_job_cancel`. Use them only after the default `claude_job_wait` / `claude_result` path is insufficient or the user explicitly asks for diagnosis.
+Rescue workflows may use Advanced / Debug tools such as `claude_workspace_status`, `claude_job_result`, `claude_runs`, `claude_run_inspect`, and `claude_job_cancel`. Use them only after the default `claude_task` / `claude_result` path is insufficient or the user explicitly asks for diagnosis.
 
 If an apply was refused because a high-level `claude_task` was given a plan file through deprecated `files`, retry the high-level task with `instruction_files` instead. Strict file scope belongs to Advanced / Debug `claude_implement.files`.
 
 ## When to use rescue procedures
 
-Use these steps when `claude_implement` fails or produces unexpected results:
+Use these steps when delegated write work fails or produces unexpected results:
 
-### 1. Implement failed (timeout / max_turns / error)
+### 1. Write task failed or only partially completed
 
 ```
-claude_status  # check if worktree exists
+claude_result  # inspect the latest finished job/run
 ```
 
-If worktree was created but Claude timed out:
-- Run `claude_query` to inspect the partial worktree state
-- Consider re-running `claude_implement` with a **smaller, more focused task**
-- Use `session_key` if you want Claude to resume (but beware context pollution)
+If a worktree was created:
+- Run `claude_apply preview=true` before any apply decision
+- If the result includes a `session` and the user explicitly wants to continue, use the suggested `claude_task(mode="write", resume_latest=true, task="Continue the previous implementation task and finish incomplete work.")`
+- If there is no resumable session, start a fresh, smaller `claude_task(mode="write")`
 
 ### 2. Changed files exceeded limit
 
@@ -34,13 +34,13 @@ If `claude_apply` reports conflicts (uncommitted changes in main workspace):
 - Do NOT force-apply partial changes (the tool refuses to partially apply)
 
 If `claude_apply` reports `No changed source files found`:
-- Confirm the worktree actually changed files under `src/`
-- Remember docs, `dist/`, and root-level files are intentionally ignored
-- Untracked `src/` files should be detected; if not, inspect `git status --short -- src/` inside the worktree
+- Confirm the delegated worktree actually contains changed files
+- Docs, tests, package metadata, and root-level files are valid apply candidates when they were produced by the delegated run
+- If untracked files are missing from preview, inspect `git status --short` inside the worktree
 
 ### 4. Stale worktrees
 
-If `claude_status` shows leftover worktrees:
+If `claude_cleanup(dry_run=true)` shows leftover worktrees:
 - Run `claude_cleanup` (dry-run first to see what will be removed)
 - Then `claude_cleanup dry_run: false` to remove them
 - This frees disk space and keeps `git worktree list` clean
@@ -49,4 +49,4 @@ If `claude_status` shows leftover worktrees:
 
 - **Never apply blindly**: always review Claude's diff via `server_observed` first
 - **Prefer smaller tasks**: a failed 5-file refactor should be split into 3 single-file tasks
-- **Check worktree state**: use `claude_status` before retrying to understand what was left behind
+- **Check worktree state**: use `claude_result`, `claude_apply preview=true`, or Advanced / Debug inspection tools before retrying

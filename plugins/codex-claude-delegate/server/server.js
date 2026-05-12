@@ -25665,10 +25665,6 @@ function buildReviewGateState(cwd, state, hookInstalled) {
     last_review_at: state?.last_review_at
   };
 }
-function normalizeSessionType(value) {
-  if (value === "query" || value === "review" || value === "implement") return value;
-  return void 0;
-}
 function toWorkflowSessionSummaryFromStore(session) {
   return {
     session_id: session.session_id,
@@ -26116,7 +26112,6 @@ function buildResultSummaryFromRun(entry) {
 }
 async function resolveWorkflowSessionSummary(input) {
   const store = await getStore(input.cwd);
-  const repoKey = await computeRepoKey(input.cwd);
   const run = input.run;
   if (run?.returned_session_id) {
     const stored = store.getById(run.returned_session_id);
@@ -26129,22 +26124,8 @@ async function resolveWorkflowSessionSummary(input) {
         source: "run"
       };
     }
-    const type2 = normalizeSessionType(run.type);
-    if (type2) {
-      return {
-        session_id: run.returned_session_id,
-        type: type2,
-        requested_session_id: run.requested_session_id,
-        returned_session_id: run.returned_session_id,
-        resumed: !!run.requested_session_id,
-        source: "run"
-      };
-    }
   }
-  const type = normalizeSessionType(run?.type);
-  if (!type) return void 0;
-  const recent = store.listByRepo(repoKey, 20).find((session) => session.type === type && !session.expired);
-  return recent ? toWorkflowSessionSummaryFromStore(recent) : void 0;
+  return void 0;
 }
 function buildNextActions(input) {
   const actions = [];
@@ -26152,6 +26133,8 @@ function buildNextActions(input) {
   const job = input.job;
   const type = run?.type ?? job?.type;
   const worktreePath = run?.worktree_path;
+  const hasChanges = input.change_count !== void 0 ? input.change_count > 0 : !!worktreePath;
+  const isNonSuccess = run?.status === "partial" || run?.status === "failed" || run?.status === "needs_user";
   if (job && (job.status === "queued" || job.status === "running")) {
     return [
       {
@@ -26162,18 +26145,18 @@ function buildNextActions(input) {
     ];
   }
   if (type === "implement") {
-    if (worktreePath) {
+    if (hasChanges && worktreePath) {
       actions.push({
         tool: "claude_apply",
         reason: "Preview the delegated worktree diff before modifying the main workspace. After preview, ask the user for explicit approval before any non-preview apply.",
         args: { cwd: input.cwd, worktree_path: worktreePath, preview: true }
       });
     }
-    if (input.session?.session_id) {
+    if (input.session?.session_id && isNonSuccess) {
       actions.push({
-        tool: "claude_implement",
-        reason: "This implementation has a resumable Claude session.",
-        args: { cwd: input.cwd, resume_latest: true }
+        tool: "claude_task",
+        reason: "This implementation has a resumable Claude session. Review the existing changes, then ask the user whether to preview, resume, or discard.",
+        args: { cwd: input.cwd, mode: "write", task: "Continue the previous implementation task and finish incomplete work.", resume_latest: true }
       });
     }
   }
@@ -26204,11 +26187,13 @@ function buildNextActions(input) {
         args: { cwd: input.cwd, dry_run: true }
       });
     }
-    actions.push({
-      tool: "claude_implement",
-      reason: "If the Claude session cannot be resumed, start a fresh implementation with the same task.",
-      args: { cwd: input.cwd }
-    });
+    if (!input.session?.session_id) {
+      actions.push({
+        tool: "claude_implement",
+        reason: "If the Claude session cannot be resumed, start a fresh implementation with the same task.",
+        args: { cwd: input.cwd }
+      });
+    }
   }
   if (input.related_runs?.cleanup_run_id) {
     actions.push({
@@ -26315,6 +26300,8 @@ async function getClaudeResult(input) {
     throw new Error("No matching finished job or run found for this workspace.");
   }
   const runEntry = resolvedRun?.entry;
+  const rawObserved = resolvedRun?.raw?.observed;
+  const changeCount = Array.isArray(rawObserved?.changed_files) ? rawObserved.changed_files.length : void 0;
   const session = await resolveWorkflowSessionSummary({ cwd: input.cwd, run: runEntry });
   const summary = resolvedJob?.summary ?? (runEntry ? buildResultSummaryFromRun(runEntry) : "Background job resolved");
   const jobIsActive = resolvedJob?.status === "queued" || resolvedJob?.status === "running";
@@ -26332,7 +26319,8 @@ async function getClaudeResult(input) {
       job: resolvedJob,
       run: runEntry,
       related_runs: resolvedRun?.related_runs,
-      session
+      session,
+      change_count: changeCount
     })
   };
 }
@@ -26575,8 +26563,11 @@ async function buildClaudeTaskInlineResult(input) {
     topStatus = deriveClaudeTaskTopStatus(job, result);
   }
   const runEntry = job.run_id ? (await getRunLogById({ cwd, run_id: job.run_id }).catch(() => null))?.entry : void 0;
+  const rawRun = job.run_id ? await readRunLogFile(job.run_id, cwd).catch(() => null) : null;
   const session = runEntry ? await resolveWorkflowSessionSummary({ cwd, run: runEntry }).catch(() => void 0) : void 0;
   const relatedRuns = result?.related_runs;
+  const rawObserved = rawRun?.observed;
+  const changeCount = Array.isArray(rawObserved?.changed_files) ? rawObserved.changed_files.length : void 0;
   return {
     delegated_mode: delegatedMode,
     status: topStatus,
@@ -26591,7 +26582,7 @@ async function buildClaudeTaskInlineResult(input) {
     waiting: waiting || void 0,
     do_not_start_duplicate_job: staled || waiting ? true : false,
     warnings: [],
-    next_actions: buildNextActions({ cwd, job })
+    next_actions: buildNextActions({ cwd, job, run: runEntry, session, related_runs: relatedRuns, change_count: changeCount })
   };
 }
 async function runClaudeTask(input, _runId) {
@@ -27940,14 +27931,25 @@ function hasWorktreeObservation(result) {
   return result.server_observed != null && typeof result.server_observed === "object" && "worktree_path" in result.server_observed;
 }
 function buildTaskInteraction(result) {
+  const isWriteResult = result.delegated_mode === "write";
+  const hasSession = result.session?.session_id != null;
+  const hasWorktree = hasWorktreeObservation(result);
+  const hasWriteRecoveryContext = isWriteResult && (hasSession || hasWorktree);
   if (result.completed_inline && result.status === "success") {
     return {
       headline: "Claude result is ready.",
       state: "result_ready",
-      next_step: hasWorktreeObservation(result) ? "Preview the worktree changes with claude_apply preview=true." : "Review the result above. No apply step is needed for read-only tasks."
+      next_step: hasWorktree ? "Preview the worktree changes with claude_apply preview=true." : "Review the result above. No apply step is needed for read-only tasks."
     };
   }
   if (result.completed_inline && result.status === "failed") {
+    if (hasWriteRecoveryContext) {
+      return {
+        headline: "Claude task failed.",
+        state: "failed",
+        next_step: hasWorktree ? hasSession ? "Inspect the error. Preview any worktree changes with claude_apply preview=true, then ask the user whether to apply, resume, start fresh, or discard. Do not auto-resume or auto-apply." : "Inspect the error. Preview any worktree changes with claude_apply preview=true, then ask the user whether to apply, start fresh, or discard. Do not auto-apply." : "Inspect the error, then ask the user whether to resume the session, start fresh, or discard. Do not auto-resume."
+      };
+    }
     return {
       headline: "Claude task failed.",
       state: "failed",
@@ -27955,10 +27957,17 @@ function buildTaskInteraction(result) {
     };
   }
   if (result.completed_inline && result.status === "partial") {
+    if (hasWriteRecoveryContext) {
+      return {
+        headline: "Claude result is partially ready.",
+        state: "result_ready",
+        next_step: hasWorktree ? hasSession ? "Preview the worktree changes with claude_apply preview=true. Then ask the user whether to apply, resume, start fresh, or discard. Do not auto-resume or auto-apply." : "Preview the worktree changes with claude_apply preview=true. Then ask the user whether to apply, start fresh, or discard. Do not auto-apply." : "Review the partial result, then ask the user whether to resume the session, start fresh, or discard. Do not auto-resume."
+      };
+    }
     return {
       headline: "Claude result is partially ready.",
       state: "result_ready",
-      next_step: hasWorktreeObservation(result) ? "Preview the worktree changes with claude_apply preview=true. Note that the task did not complete fully." : "Review the partial result above."
+      next_step: hasWorktree ? "Preview the worktree changes with claude_apply preview=true. Note that the task did not complete fully." : "Review the partial result above."
     };
   }
   if (result.completed_inline && result.status === "cancelled") {
@@ -27969,6 +27978,13 @@ function buildTaskInteraction(result) {
     };
   }
   if (result.completed_inline && result.status === "needs_user") {
+    if (hasWriteRecoveryContext) {
+      return {
+        headline: "Claude needs input.",
+        state: "needs_user",
+        next_step: hasWorktree ? hasSession ? "Inspect the requested input and preview existing worktree changes if useful. Then ask the user whether to provide input, resume, start fresh, or discard. Do not auto-resume." : "Inspect the requested input and preview existing worktree changes if useful. Then ask the user whether to provide input, start fresh, or discard." : "Inspect the requested input, then ask the user whether to provide input, resume the session, start fresh, or discard. Do not auto-resume."
+      };
+    }
     return {
       headline: "Claude needs input.",
       state: "needs_user",

@@ -1237,7 +1237,7 @@ describe("claude cli argument construction", () => {
       waitForBackgroundJob?: (input: {
         cwd: string;
         job_id: string;
-      }) => Promise<{ job: { status: string; result_status?: string; summary?: string }; summary: string; waiting: boolean; timed_out: boolean; recommended_delay_ms?: number; result?: Record<string, unknown> }>;
+      }) => Promise<{ job: { status: string; result_status?: string; summary?: string }; summary: string; waiting: boolean; timed_out: boolean; result?: Record<string, unknown> }>;
     }).waitForBackgroundJob;
 
     const result = await waitForBackgroundJob!({
@@ -1251,7 +1251,6 @@ describe("claude cli argument construction", () => {
     expect(result.summary).toContain("is succeeded");
     expect(result.waiting).toBe(false);
     expect(result.timed_out).toBe(false);
-    expect(result.recommended_delay_ms).toBeUndefined();
     expect(result.result?.status).toBe("partial");
 
     delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
