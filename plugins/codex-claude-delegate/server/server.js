@@ -25578,8 +25578,85 @@ function withInteraction(result, interaction) {
   return { ...result, interaction };
 }
 
-// src/claude-cli.ts
+// src/claude-process.ts
+init_guard();
 var CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
+function successExecution(durationMs = 0) {
+  return { exit_code: 0, duration_ms: durationMs, timed_out: false, stdout_tail: "", stderr_tail: "" };
+}
+function makeEnvelope(status, data, execution, warnings = [], extra = {}) {
+  return { status, data, execution, warnings, ...extra };
+}
+function redactEnvStatus(key, safeEnv) {
+  if (safeEnv[key]) {
+    return key.includes("TOKEN") || key.includes("API_KEY") ? "set-redacted" : "set";
+  }
+  if (process.env[key]) {
+    return "present-in-parent-stripped";
+  }
+  return "unset";
+}
+function parseLocalProxy(raw) {
+  if (!raw) return null;
+  try {
+    const url2 = new URL(raw);
+    const host = url2.hostname;
+    const port = Number.parseInt(url2.port, 10);
+    if (!host || !Number.isFinite(port)) return null;
+    if (host !== "127.0.0.1" && host !== "localhost" && host !== "::1") return null;
+    return { host, port };
+  } catch {
+    return null;
+  }
+}
+async function probeLocalPort(host, port, timeoutMs = 1e3) {
+  const net = await import("node:net");
+  return await new Promise((resolve3) => {
+    const socket = net.createConnection({ host, port });
+    const timer = setTimeout(() => {
+      socket.destroy();
+      resolve3({ reachable: false, error: "timeout" });
+    }, timeoutMs);
+    socket.once("connect", () => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve3({ reachable: true });
+    });
+    socket.once("error", (err) => {
+      clearTimeout(timer);
+      resolve3({ reachable: false, error: err.code ?? err.message });
+    });
+  });
+}
+async function getEnvironmentDiagnostics(safeEnv = sanitizeEnv()) {
+  const proxyRaw = safeEnv.HTTPS_PROXY ?? safeEnv.HTTP_PROXY ?? process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY;
+  const localProxy = parseLocalProxy(proxyRaw);
+  let reachable;
+  let proxyError;
+  if (localProxy) {
+    const probe = await probeLocalPort(localProxy.host, localProxy.port);
+    reachable = probe.reachable;
+    proxyError = probe.error;
+  }
+  const likelySandboxBlocked = !!localProxy && reachable === false && (proxyError === "EPERM" || proxyError === "EACCES" || proxyError === "timeout");
+  return {
+    proxy_env_present: !!(safeEnv.HTTP_PROXY || safeEnv.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.HTTPS_PROXY),
+    http_proxy: redactEnvStatus("HTTP_PROXY", safeEnv),
+    https_proxy: redactEnvStatus("HTTPS_PROXY", safeEnv),
+    no_proxy: redactEnvStatus("NO_PROXY", safeEnv),
+    anthropic_base_url: redactEnvStatus("ANTHROPIC_BASE_URL", safeEnv),
+    anthropic_auth_token: redactEnvStatus("ANTHROPIC_AUTH_TOKEN", safeEnv),
+    anthropic_api_key: redactEnvStatus("ANTHROPIC_API_KEY", safeEnv),
+    local_proxy_host: localProxy?.host,
+    local_proxy_port: localProxy?.port,
+    local_proxy_reachable: reachable,
+    local_proxy_error: proxyError,
+    likely_sandbox_blocked: likelySandboxBlocked,
+    recommendation: likelySandboxBlocked ? "Claude CLI likely cannot reach its local proxy/API from this sandbox. Run the MCP server outside the restricted sandbox or approve the outer command execution." : void 0
+  };
+}
+
+// src/claude-cli.ts
 function getRunLogDir(cwd) {
   if (process.env.CODEX_CLAUDE_RUN_LOG_DIR) {
     return path6.resolve(process.env.CODEX_CLAUDE_RUN_LOG_DIR);
@@ -27417,80 +27494,6 @@ async function expandDirectoryChange(change, worktreeRoot) {
   };
   await walk(change.file);
   return expanded.sort((a, b) => a.file.localeCompare(b.file));
-}
-function successExecution(durationMs = 0) {
-  return { exit_code: 0, duration_ms: durationMs, timed_out: false, stdout_tail: "", stderr_tail: "" };
-}
-function makeEnvelope(status, data, execution, warnings = [], extra = {}) {
-  return { status, data, execution, warnings, ...extra };
-}
-function redactEnvStatus(key, safeEnv) {
-  if (safeEnv[key]) {
-    return key.includes("TOKEN") || key.includes("API_KEY") ? "set-redacted" : "set";
-  }
-  if (process.env[key]) {
-    return "present-in-parent-stripped";
-  }
-  return "unset";
-}
-function parseLocalProxy(raw) {
-  if (!raw) return null;
-  try {
-    const url2 = new URL(raw);
-    const host = url2.hostname;
-    const port = Number.parseInt(url2.port, 10);
-    if (!host || !Number.isFinite(port)) return null;
-    if (host !== "127.0.0.1" && host !== "localhost" && host !== "::1") return null;
-    return { host, port };
-  } catch {
-    return null;
-  }
-}
-async function probeLocalPort(host, port, timeoutMs = 1e3) {
-  const net = await import("node:net");
-  return await new Promise((resolve3) => {
-    const socket = net.createConnection({ host, port });
-    const timer = setTimeout(() => {
-      socket.destroy();
-      resolve3({ reachable: false, error: "timeout" });
-    }, timeoutMs);
-    socket.once("connect", () => {
-      clearTimeout(timer);
-      socket.destroy();
-      resolve3({ reachable: true });
-    });
-    socket.once("error", (err) => {
-      clearTimeout(timer);
-      resolve3({ reachable: false, error: err.code ?? err.message });
-    });
-  });
-}
-async function getEnvironmentDiagnostics(safeEnv = sanitizeEnv()) {
-  const proxyRaw = safeEnv.HTTPS_PROXY ?? safeEnv.HTTP_PROXY ?? process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY;
-  const localProxy = parseLocalProxy(proxyRaw);
-  let reachable;
-  let proxyError;
-  if (localProxy) {
-    const probe = await probeLocalPort(localProxy.host, localProxy.port);
-    reachable = probe.reachable;
-    proxyError = probe.error;
-  }
-  const likelySandboxBlocked = !!localProxy && reachable === false && (proxyError === "EPERM" || proxyError === "EACCES" || proxyError === "timeout");
-  return {
-    proxy_env_present: !!(safeEnv.HTTP_PROXY || safeEnv.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.HTTPS_PROXY),
-    http_proxy: redactEnvStatus("HTTP_PROXY", safeEnv),
-    https_proxy: redactEnvStatus("HTTPS_PROXY", safeEnv),
-    no_proxy: redactEnvStatus("NO_PROXY", safeEnv),
-    anthropic_base_url: redactEnvStatus("ANTHROPIC_BASE_URL", safeEnv),
-    anthropic_auth_token: redactEnvStatus("ANTHROPIC_AUTH_TOKEN", safeEnv),
-    anthropic_api_key: redactEnvStatus("ANTHROPIC_API_KEY", safeEnv),
-    local_proxy_host: localProxy?.host,
-    local_proxy_port: localProxy?.port,
-    local_proxy_reachable: reachable,
-    local_proxy_error: proxyError,
-    likely_sandbox_blocked: likelySandboxBlocked,
-    recommendation: likelySandboxBlocked ? "Claude CLI likely cannot reach its local proxy/API from this sandbox. Run the MCP server outside the restricted sandbox or approve the outer command execution." : void 0
-  };
 }
 async function checkClaudeStatus(cwd) {
   const result = {

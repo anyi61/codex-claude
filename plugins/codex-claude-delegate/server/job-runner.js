@@ -250,7 +250,6 @@ var JobStore = class {
 };
 
 // src/claude-cli.ts
-import { spawn as spawn2 } from "node:child_process";
 import { cp, rm as rm2, writeFile as writeFile3, mkdir as mkdir4, readFile as readFile3, readdir as readdir2, stat as stat2, unlink as unlink2 } from "node:fs/promises";
 import { existsSync as existsSync3 } from "node:fs";
 import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
@@ -15298,8 +15297,272 @@ var StructuredToolError = class extends Error {
   }
 };
 
-// src/claude-cli.ts
+// src/claude-process.ts
+import { spawn as spawn2 } from "node:child_process";
+function log(msg) {
+  process.stderr.write(`[claude-delegate] ${msg}
+`);
+}
 var CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
+var activeClaudeChild = null;
+function redactSensitive(input) {
+  return input.replace(/(ANTHROPIC_AUTH_TOKEN=)[^\s]+/gi, "$1***").replace(/(ANTHROPIC_API_KEY=)[^\s]+/gi, "$1***").replace(/(Authorization:\s*Bearer\s+)[^\s]+/gi, "$1***").replace(/\b(sk-ant-[a-zA-Z0-9]{20,})\b/g, "sk-ant-***").replace(/\b(sk-[a-zA-Z0-9]{20,})\b/g, "sk-***");
+}
+function truncateTail(input, maxChars = 4e3) {
+  return input.length <= maxChars ? input : input.slice(-maxChars);
+}
+function abortActiveClaudeRun(signal = "SIGTERM") {
+  if (!activeClaudeChild?.pid) return false;
+  try {
+    process.kill(activeClaudeChild.pid, signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function buildClaudeArgs(opts) {
+  const args = ["-p"];
+  if (opts.worktree) {
+    args.push("-w", opts.worktree);
+  }
+  if (opts.resumeSessionId) {
+    args.push("-r", opts.resumeSessionId);
+  }
+  if (opts.forkSession) {
+    args.push("--fork-session");
+  }
+  if (opts.noSessionPersistence) {
+    args.push("--no-session-persistence");
+  }
+  args.push(
+    "--permission-mode",
+    "dontAsk"
+  );
+  if (opts.maxBudgetUsd !== void 0) {
+    args.push("--max-budget-usd", String(opts.maxBudgetUsd));
+  }
+  args.push("--tools", opts.tools);
+  if (opts.maxTurns !== void 0) {
+    args.push("--max-turns", String(opts.maxTurns));
+  }
+  args.push("--output-format", "json");
+  if (opts.allowedTools.length > 0) {
+    args.push("--allowedTools");
+    for (const t of opts.allowedTools) {
+      args.push(t);
+    }
+  }
+  if (opts.disallowedTools.length > 0) {
+    args.push("--disallowedTools");
+    for (const t of opts.disallowedTools) {
+      args.push(t);
+    }
+  }
+  args.push("--json-schema", JSON.stringify(opts.jsonSchema));
+  args.push(opts.prompt);
+  return args;
+}
+function successExecution(durationMs = 0) {
+  return { exit_code: 0, duration_ms: durationMs, timed_out: false, stdout_tail: "", stderr_tail: "" };
+}
+function makeEnvelope(status, data, execution, warnings = [], extra = {}) {
+  return { status, data, execution, warnings, ...extra };
+}
+function reportIndicatesFailure(report, execution) {
+  return execution.exit_code !== null && execution.exit_code !== 0 || execution.timed_out || report.is_error === true || report.status === "failed";
+}
+function implementEnvelopeStatus(report, execution, observed) {
+  if (!reportIndicatesFailure(report, execution)) {
+    if (report.status === "partial" || report.status === "needs_user") return report.status;
+    return "success";
+  }
+  return observed.changed_files.length > 0 ? "partial" : "failed";
+}
+function noOutputPayload(message, opts, code, signal, stdout, stderr, stderrTail, environmentDiagnostics) {
+  return {
+    error: message,
+    diagnostics: {
+      exit_code: code,
+      signal: signal ?? "none",
+      timeout_sec: opts.timeoutSec,
+      stdout_len: stdout.length,
+      stderr_len: stderr.length,
+      stderr_tail: stderrTail,
+      environment_diagnostics: environmentDiagnostics
+    },
+    next_actions: [
+      {
+        tool: "claude_review",
+        reason: "Retry with a higher timeout_sec if the review scope is broad or Claude was still starting."
+      },
+      {
+        tool: "claude_review",
+        args: { background: true },
+        reason: "Run broad reviews in the background so Codex can poll the job instead of timing out foreground execution."
+      },
+      {
+        tool: "claude_status",
+        reason: "Check Claude CLI auth, PATH, proxy, and local environment diagnostics before retrying."
+      }
+    ]
+  };
+}
+function spawnClaude(opts) {
+  const args = buildClaudeArgs(opts);
+  const safeEnv = sanitizeEnv();
+  const startTime = Date.now();
+  log(`spawning: ${CLAUDE_BIN} -p (${args.length} args, worktree=${opts.worktree ?? "none"}, maxTurns=${opts.maxTurns ?? "unlimited"})`);
+  return new Promise((resolve2, reject) => {
+    const child = spawn2(CLAUDE_BIN, args, {
+      cwd: opts.cwd,
+      env: safeEnv,
+      timeout: opts.timeoutSec * 1e3,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    activeClaudeChild = child;
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (err) => {
+      activeClaudeChild = null;
+      if (err.code === "ENOENT") {
+        reject(new Error(`Claude CLI not found. Ensure "claude" is in PATH or set CLAUDE_BIN env var.`));
+      } else {
+        reject(err);
+      }
+    });
+    child.on("close", async (code, signal) => {
+      activeClaudeChild = null;
+      if (stderr) log(`claude stderr: ${redactSensitive(stderr.slice(0, 2e3))}`);
+      try {
+        const trimmed = stdout.trim();
+        if (!trimmed) {
+          const stderrTail = redactSensitive(stderr.slice(-1e3));
+          let environmentDiagnostics;
+          let diagStr = "";
+          try {
+            environmentDiagnostics = await getEnvironmentDiagnostics(safeEnv);
+            diagStr = ` environment_diagnostics=${JSON.stringify(environmentDiagnostics)}`;
+          } catch {
+          }
+          const message = `Claude produced no output (exit ${code}, signal ${signal ?? "none"}, timeout_sec=${opts.timeoutSec}, stdoutLen=${stdout.length}, stderrLen=${stderr.length}, stderrTail=${JSON.stringify(stderrTail)})` + diagStr;
+          reject(new StructuredToolError(
+            message,
+            noOutputPayload(message, opts, code, signal, stdout, stderr, stderrTail, environmentDiagnostics)
+          ));
+          return;
+        }
+        let parsed;
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch {
+          const lines = trimmed.split("\n").filter((l) => l.trim());
+          if (lines.length === 0) {
+            reject(new Error(`Claude produced unparseable output (exit ${code}): ${trimmed.slice(0, 500)}`));
+            return;
+          }
+          const lastLine = lines[lines.length - 1];
+          parsed = JSON.parse(lastLine);
+        }
+        const report = parsed.structured_output ?? parsed;
+        const sessionId = parsed.session_id ?? null;
+        if (code !== 0 && code !== null) {
+          log(`Claude exited ${code} (subtype=${parsed.subtype ?? "unknown"}), returning partial result`);
+        }
+        resolve2({
+          report,
+          session_id: sessionId,
+          execution: {
+            exit_code: code,
+            duration_ms: Date.now() - startTime,
+            timed_out: signal === "SIGTERM",
+            stdout_tail: truncateTail(stdout),
+            stderr_tail: redactSensitive(truncateTail(stderr))
+          }
+        });
+      } catch (err) {
+        const diag = `exit=${code}, signal=${signal ?? "none"}, timeout_sec=${opts.timeoutSec}, stdoutLen=${stdout.length}, stderrLen=${stderr.length}, stderr=${redactSensitive(stderr.slice(0, 200))}`;
+        reject(new Error(`Failed to parse Claude output. ${diag}
+${err.message}`));
+      }
+    });
+  });
+}
+function redactEnvStatus(key, safeEnv) {
+  if (safeEnv[key]) {
+    return key.includes("TOKEN") || key.includes("API_KEY") ? "set-redacted" : "set";
+  }
+  if (process.env[key]) {
+    return "present-in-parent-stripped";
+  }
+  return "unset";
+}
+function parseLocalProxy(raw) {
+  if (!raw) return null;
+  try {
+    const url2 = new URL(raw);
+    const host = url2.hostname;
+    const port = Number.parseInt(url2.port, 10);
+    if (!host || !Number.isFinite(port)) return null;
+    if (host !== "127.0.0.1" && host !== "localhost" && host !== "::1") return null;
+    return { host, port };
+  } catch {
+    return null;
+  }
+}
+async function probeLocalPort(host, port, timeoutMs = 1e3) {
+  const net = await import("node:net");
+  return await new Promise((resolve2) => {
+    const socket = net.createConnection({ host, port });
+    const timer = setTimeout(() => {
+      socket.destroy();
+      resolve2({ reachable: false, error: "timeout" });
+    }, timeoutMs);
+    socket.once("connect", () => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve2({ reachable: true });
+    });
+    socket.once("error", (err) => {
+      clearTimeout(timer);
+      resolve2({ reachable: false, error: err.code ?? err.message });
+    });
+  });
+}
+async function getEnvironmentDiagnostics(safeEnv = sanitizeEnv()) {
+  const proxyRaw = safeEnv.HTTPS_PROXY ?? safeEnv.HTTP_PROXY ?? process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY;
+  const localProxy = parseLocalProxy(proxyRaw);
+  let reachable;
+  let proxyError;
+  if (localProxy) {
+    const probe = await probeLocalPort(localProxy.host, localProxy.port);
+    reachable = probe.reachable;
+    proxyError = probe.error;
+  }
+  const likelySandboxBlocked = !!localProxy && reachable === false && (proxyError === "EPERM" || proxyError === "EACCES" || proxyError === "timeout");
+  return {
+    proxy_env_present: !!(safeEnv.HTTP_PROXY || safeEnv.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.HTTPS_PROXY),
+    http_proxy: redactEnvStatus("HTTP_PROXY", safeEnv),
+    https_proxy: redactEnvStatus("HTTPS_PROXY", safeEnv),
+    no_proxy: redactEnvStatus("NO_PROXY", safeEnv),
+    anthropic_base_url: redactEnvStatus("ANTHROPIC_BASE_URL", safeEnv),
+    anthropic_auth_token: redactEnvStatus("ANTHROPIC_AUTH_TOKEN", safeEnv),
+    anthropic_api_key: redactEnvStatus("ANTHROPIC_API_KEY", safeEnv),
+    local_proxy_host: localProxy?.host,
+    local_proxy_port: localProxy?.port,
+    local_proxy_reachable: reachable,
+    local_proxy_error: proxyError,
+    likely_sandbox_blocked: likelySandboxBlocked,
+    recommendation: likelySandboxBlocked ? "Claude CLI likely cannot reach its local proxy/API from this sandbox. Run the MCP server outside the restricted sandbox or approve the outer command execution." : void 0
+  };
+}
+
+// src/claude-cli.ts
 function getRunLogDir(cwd) {
   if (process.env.CODEX_CLAUDE_RUN_LOG_DIR) {
     return path5.resolve(process.env.CODEX_CLAUDE_RUN_LOG_DIR);
@@ -15311,7 +15574,6 @@ var JOB_STATE_DIR_ENV = "CODEX_CLAUDE_BACKGROUND_STATE_DIR";
 var REVIEW_GATE_RELATIVE_PATH = path5.join(".codex-claude-delegate", "review-gate.json");
 var JOB_HEARTBEAT_INTERVAL_MS = 15e3;
 var stores = /* @__PURE__ */ new Map();
-var activeClaudeChild = null;
 async function getStore(cwd) {
   let sessionStore = stores.get(cwd);
   if (!sessionStore) {
@@ -15472,7 +15734,7 @@ function getBackgroundWorktreeName(type, payload, result) {
   if (!observed || typeof observed !== "object") return void 0;
   return typeof observed.worktree_name === "string" ? observed.worktree_name : void 0;
 }
-function log(msg) {
+function log2(msg) {
   process.stderr.write(`[claude-delegate] ${msg}
 `);
 }
@@ -15793,9 +16055,6 @@ async function applyDirtySnapshotToWorktree(cwd, worktreePath) {
   }
   return copied;
 }
-function redactSensitive(input) {
-  return input.replace(/(ANTHROPIC_AUTH_TOKEN=)[^\s]+/gi, "$1***").replace(/(ANTHROPIC_API_KEY=)[^\s]+/gi, "$1***").replace(/(Authorization:\s*Bearer\s+)[^\s]+/gi, "$1***").replace(/\b(sk-ant-[a-zA-Z0-9]{20,})\b/g, "sk-ant-***").replace(/\b(sk-[a-zA-Z0-9]{20,})\b/g, "sk-***");
-}
 function parseStatusPorcelainZ(output) {
   const entries = output.split("\0");
   const parsed = [];
@@ -15914,259 +16173,6 @@ var DANGEROUS_DISALLOWED_TOOLS = [
   "Bash(nc *)",
   "Bash(netcat *)"
 ];
-function truncateTail(input, maxChars = 4e3) {
-  return input.length <= maxChars ? input : input.slice(-maxChars);
-}
-function abortActiveClaudeRun(signal = "SIGTERM") {
-  if (!activeClaudeChild?.pid) return false;
-  try {
-    process.kill(activeClaudeChild.pid, signal);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function buildClaudeArgs(opts) {
-  const args = ["-p"];
-  if (opts.worktree) {
-    args.push("-w", opts.worktree);
-  }
-  if (opts.resumeSessionId) {
-    args.push("-r", opts.resumeSessionId);
-  }
-  if (opts.forkSession) {
-    args.push("--fork-session");
-  }
-  if (opts.noSessionPersistence) {
-    args.push("--no-session-persistence");
-  }
-  args.push(
-    "--permission-mode",
-    "dontAsk"
-  );
-  if (opts.maxBudgetUsd !== void 0) {
-    args.push("--max-budget-usd", String(opts.maxBudgetUsd));
-  }
-  args.push("--tools", opts.tools);
-  if (opts.maxTurns !== void 0) {
-    args.push("--max-turns", String(opts.maxTurns));
-  }
-  args.push("--output-format", "json");
-  if (opts.allowedTools.length > 0) {
-    args.push("--allowedTools");
-    for (const t of opts.allowedTools) {
-      args.push(t);
-    }
-  }
-  if (opts.disallowedTools.length > 0) {
-    args.push("--disallowedTools");
-    for (const t of opts.disallowedTools) {
-      args.push(t);
-    }
-  }
-  args.push("--json-schema", JSON.stringify(opts.jsonSchema));
-  args.push(opts.prompt);
-  return args;
-}
-function successExecution(durationMs = 0) {
-  return { exit_code: 0, duration_ms: durationMs, timed_out: false, stdout_tail: "", stderr_tail: "" };
-}
-function makeEnvelope(status, data, execution, warnings = [], extra = {}) {
-  return { status, data, execution, warnings, ...extra };
-}
-function reportIndicatesFailure(report, execution) {
-  return execution.exit_code !== null && execution.exit_code !== 0 || execution.timed_out || report.is_error === true || report.status === "failed";
-}
-function implementEnvelopeStatus(report, execution, observed) {
-  if (!reportIndicatesFailure(report, execution)) {
-    if (report.status === "partial" || report.status === "needs_user") return report.status;
-    return "success";
-  }
-  return observed.changed_files.length > 0 ? "partial" : "failed";
-}
-function noOutputPayload(message, opts, code, signal, stdout, stderr, stderrTail, environmentDiagnostics) {
-  return {
-    error: message,
-    diagnostics: {
-      exit_code: code,
-      signal: signal ?? "none",
-      timeout_sec: opts.timeoutSec,
-      stdout_len: stdout.length,
-      stderr_len: stderr.length,
-      stderr_tail: stderrTail,
-      environment_diagnostics: environmentDiagnostics
-    },
-    next_actions: [
-      {
-        tool: "claude_review",
-        reason: "Retry with a higher timeout_sec if the review scope is broad or Claude was still starting."
-      },
-      {
-        tool: "claude_review",
-        args: { background: true },
-        reason: "Run broad reviews in the background so Codex can poll the job instead of timing out foreground execution."
-      },
-      {
-        tool: "claude_status",
-        reason: "Check Claude CLI auth, PATH, proxy, and local environment diagnostics before retrying."
-      }
-    ]
-  };
-}
-function spawnClaude(opts) {
-  const args = buildClaudeArgs(opts);
-  const safeEnv = sanitizeEnv();
-  const startTime = Date.now();
-  log(`spawning: ${CLAUDE_BIN} -p (${args.length} args, worktree=${opts.worktree ?? "none"}, maxTurns=${opts.maxTurns ?? "unlimited"})`);
-  return new Promise((resolve2, reject) => {
-    const child = spawn2(CLAUDE_BIN, args, {
-      cwd: opts.cwd,
-      env: safeEnv,
-      timeout: opts.timeoutSec * 1e3,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    activeClaudeChild = child;
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr?.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on("error", (err) => {
-      activeClaudeChild = null;
-      if (err.code === "ENOENT") {
-        reject(new Error(`Claude CLI not found. Ensure "claude" is in PATH or set CLAUDE_BIN env var.`));
-      } else {
-        reject(err);
-      }
-    });
-    child.on("close", async (code, signal) => {
-      activeClaudeChild = null;
-      if (stderr) log(`claude stderr: ${redactSensitive(stderr.slice(0, 2e3))}`);
-      try {
-        const trimmed = stdout.trim();
-        if (!trimmed) {
-          const stderrTail = redactSensitive(stderr.slice(-1e3));
-          let environmentDiagnostics;
-          let diagStr = "";
-          try {
-            environmentDiagnostics = await getEnvironmentDiagnostics(safeEnv);
-            diagStr = ` environment_diagnostics=${JSON.stringify(environmentDiagnostics)}`;
-          } catch {
-          }
-          const message = `Claude produced no output (exit ${code}, signal ${signal ?? "none"}, timeout_sec=${opts.timeoutSec}, stdoutLen=${stdout.length}, stderrLen=${stderr.length}, stderrTail=${JSON.stringify(stderrTail)})` + diagStr;
-          reject(new StructuredToolError(
-            message,
-            noOutputPayload(message, opts, code, signal, stdout, stderr, stderrTail, environmentDiagnostics)
-          ));
-          return;
-        }
-        let parsed;
-        try {
-          parsed = JSON.parse(trimmed);
-        } catch {
-          const lines = trimmed.split("\n").filter((l) => l.trim());
-          if (lines.length === 0) {
-            reject(new Error(`Claude produced unparseable output (exit ${code}): ${trimmed.slice(0, 500)}`));
-            return;
-          }
-          const lastLine = lines[lines.length - 1];
-          parsed = JSON.parse(lastLine);
-        }
-        const report = parsed.structured_output ?? parsed;
-        const sessionId = parsed.session_id ?? null;
-        if (code !== 0 && code !== null) {
-          log(`Claude exited ${code} (subtype=${parsed.subtype ?? "unknown"}), returning partial result`);
-        }
-        resolve2({
-          report,
-          session_id: sessionId,
-          execution: {
-            exit_code: code,
-            duration_ms: Date.now() - startTime,
-            timed_out: signal === "SIGTERM",
-            stdout_tail: truncateTail(stdout),
-            stderr_tail: redactSensitive(truncateTail(stderr))
-          }
-        });
-      } catch (err) {
-        const diag = `exit=${code}, signal=${signal ?? "none"}, timeout_sec=${opts.timeoutSec}, stdoutLen=${stdout.length}, stderrLen=${stderr.length}, stderr=${redactSensitive(stderr.slice(0, 200))}`;
-        reject(new Error(`Failed to parse Claude output. ${diag}
-${err.message}`));
-      }
-    });
-  });
-}
-function redactEnvStatus(key, safeEnv) {
-  if (safeEnv[key]) {
-    return key.includes("TOKEN") || key.includes("API_KEY") ? "set-redacted" : "set";
-  }
-  if (process.env[key]) {
-    return "present-in-parent-stripped";
-  }
-  return "unset";
-}
-function parseLocalProxy(raw) {
-  if (!raw) return null;
-  try {
-    const url2 = new URL(raw);
-    const host = url2.hostname;
-    const port = Number.parseInt(url2.port, 10);
-    if (!host || !Number.isFinite(port)) return null;
-    if (host !== "127.0.0.1" && host !== "localhost" && host !== "::1") return null;
-    return { host, port };
-  } catch {
-    return null;
-  }
-}
-async function probeLocalPort(host, port, timeoutMs = 1e3) {
-  const net = await import("node:net");
-  return await new Promise((resolve2) => {
-    const socket = net.createConnection({ host, port });
-    const timer = setTimeout(() => {
-      socket.destroy();
-      resolve2({ reachable: false, error: "timeout" });
-    }, timeoutMs);
-    socket.once("connect", () => {
-      clearTimeout(timer);
-      socket.destroy();
-      resolve2({ reachable: true });
-    });
-    socket.once("error", (err) => {
-      clearTimeout(timer);
-      resolve2({ reachable: false, error: err.code ?? err.message });
-    });
-  });
-}
-async function getEnvironmentDiagnostics(safeEnv = sanitizeEnv()) {
-  const proxyRaw = safeEnv.HTTPS_PROXY ?? safeEnv.HTTP_PROXY ?? process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY;
-  const localProxy = parseLocalProxy(proxyRaw);
-  let reachable;
-  let proxyError;
-  if (localProxy) {
-    const probe = await probeLocalPort(localProxy.host, localProxy.port);
-    reachable = probe.reachable;
-    proxyError = probe.error;
-  }
-  const likelySandboxBlocked = !!localProxy && reachable === false && (proxyError === "EPERM" || proxyError === "EACCES" || proxyError === "timeout");
-  return {
-    proxy_env_present: !!(safeEnv.HTTP_PROXY || safeEnv.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.HTTPS_PROXY),
-    http_proxy: redactEnvStatus("HTTP_PROXY", safeEnv),
-    https_proxy: redactEnvStatus("HTTPS_PROXY", safeEnv),
-    no_proxy: redactEnvStatus("NO_PROXY", safeEnv),
-    anthropic_base_url: redactEnvStatus("ANTHROPIC_BASE_URL", safeEnv),
-    anthropic_auth_token: redactEnvStatus("ANTHROPIC_AUTH_TOKEN", safeEnv),
-    anthropic_api_key: redactEnvStatus("ANTHROPIC_API_KEY", safeEnv),
-    local_proxy_host: localProxy?.host,
-    local_proxy_port: localProxy?.port,
-    local_proxy_reachable: reachable,
-    local_proxy_error: proxyError,
-    likely_sandbox_blocked: likelySandboxBlocked,
-    recommendation: likelySandboxBlocked ? "Claude CLI likely cannot reach its local proxy/API from this sandbox. Run the MCP server outside the restricted sandbox or approve the outer command execution." : void 0
-  };
-}
 async function observeResult(cwd, worktree, baseCommit, requestedFiles) {
   const obsCwd = worktree ? path5.join(cwd, ".claude", "worktrees", worktree) : cwd;
   const warnings = [];
@@ -16455,7 +16461,7 @@ async function runClaudeQuery(input, runId) {
     const errorMsg = err.message;
     if (requestedSessionId && isSessionNotFoundError(errorMsg)) {
       store.markExpired(requestedSessionId);
-      log(`Session ${requestedSessionId} not found, falling back to new session`);
+      log2(`Session ${requestedSessionId} not found, falling back to new session`);
       const retryOpts = { ...opts, resumeSessionId: void 0 };
       try {
         const claudeRunStart = Date.now();
@@ -16648,7 +16654,7 @@ async function runClaudeImplement(input, runId) {
     const errorMsg = err.message;
     if (resumeSessionId && isSessionNotFoundError(errorMsg)) {
       store.markExpired(resumeSessionId);
-      log(`Session ${resumeSessionId} not found, marked expired`);
+      log2(`Session ${resumeSessionId} not found, marked expired`);
       const durationMs = Date.now() - startTime;
       const failedExecution = {
         exit_code: 1,
@@ -16708,7 +16714,7 @@ async function runClaudeImplement(input, runId) {
     if (exceeded) {
       const msg = `Changed ${observed.changed_files.length} files, exceeds limit of ${implementInput.max_changed_files}`;
       warnings2.push(msg);
-      log(`Resource warning: ${msg}`);
+      log2(`Resource warning: ${msg}`);
     }
     observed.resource_limits = {
       max_cost_usd: implementInput.max_cost_usd,
@@ -16720,7 +16726,7 @@ async function runClaudeImplement(input, runId) {
   }
   if (observed.scope?.scope_exceeded) {
     for (const warning of observed.scope.warnings) {
-      log(`Scope warning: ${warning}`);
+      log2(`Scope warning: ${warning}`);
     }
   }
   const sessionLog = {
@@ -16977,7 +16983,7 @@ async function runClaudeApply(input, runId) {
         await execCapture("git", ["worktree", "prune"], { cwd: input.cwd, timeoutMs: 1e4 });
         cleanupPerformed = true;
       } catch (err) {
-        log(`worktree remove failed for ${wtReal}: ${err}`);
+        log2(`worktree remove failed for ${wtReal}: ${err}`);
       }
     }
     return finish({ applied_files: copied, diff_stat: diffStat, cleanup_performed: cleanupPerformed, conflicts, planned_changes: plannedChanges });
@@ -17077,7 +17083,7 @@ async function runClaudeCleanup(input, runId) {
         });
       }
     } catch (err) {
-      log(`cleanup scan failed: ${err}`);
+      log2(`cleanup scan failed: ${err}`);
       return {
         dry_run: dryRun,
         removed_count: 0,
