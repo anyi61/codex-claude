@@ -545,6 +545,7 @@ describe("server background job handlers", () => {
       max_changed_files: undefined,
       worktreeName: undefined,
       dirty_policy: "committed",
+      security_profile: "default",
     });
     expect((payload.job as Record<string, unknown>).job_id).toBe("job-implement-default");
     expect(result.isError).toBeUndefined();

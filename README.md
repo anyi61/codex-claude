@@ -2,6 +2,8 @@
 
 通过本地 MCP 服务器，让 Codex CLI 将读取、审查、写入任务委托给 Claude Code 执行。
 
+> 非官方项目：这不是 OpenAI 或 Anthropic 官方产品。它会在你的本机启动 Claude Code CLI，并允许 Claude 在受控 allowlist 内读取文件、运行命令、在隔离 git worktree 中写入。它不是强沙箱；只在你信任的本地仓库和可信 Claude CLI 路径中使用。
+
 ## 快速开始
 
 ```bash
@@ -10,10 +12,21 @@ codex-claude setup --write
 codex-claude doctor
 ```
 
-重启 Codex，然后输入：
+`npx` 不是推荐安装路径：MCP server 需要稳定的可执行命令、PATH、版本和卸载行为；临时 `npx` 生命周期不适合作为 Codex 的长期 MCP 配置。
+
+Ready means：
+
+- Codex 配置中 `claude_delegate` 使用 `command = "codex-claude"`。
+- 默认启用恰好 5 个工具：`claude_setup`、`claude_task`、`claude_result`、`claude_apply`、`claude_cleanup`。
+- `tool_timeout_sec` 至少为 600，可以覆盖默认 540 秒 block wait。
+- 当前仓库在 `CODEX_CLAUDE_ALLOW_ROOTS` 中。
+- Claude CLI 可用；如果 doctor 报告 auth unknown，请先手动确认 Claude Code 能运行一次简单任务。
+
+One Message To Codex：
 
 ```text
-Use claude_setup to check this repository.
+请先调用 claude_setup 检查当前仓库。
+如果 ready，请用 claude_task 的 read 模式总结这个仓库的结构、测试命令和适合委托给 Claude 的任务类型。
 ```
 
 ### 60 秒演示（节省 Token 的等待模式）
@@ -89,7 +102,7 @@ codex-claude setup --write
 codex-claude doctor
 ```
 
-检查项：Node.js ≥ 20、包版本、Claude CLI 路径/版本、Git、worktree 支持、Codex 配置、默认工具、allow roots。
+检查项：Node.js ≥ 20、包版本、Claude CLI 路径/版本/auth 状态、Git、worktree 支持、Codex 配置、MCP command、默认 5 工具、allow roots、`tool_timeout_sec`、MCP launch smoke。失败输出会给出 Problem / Fix / Next step。
 
 ```bash
 codex-claude doctor --json
@@ -194,6 +207,8 @@ enabled_tools = ["claude_status", "claude_runs", "claude_run_inspect", "claude_w
 
 ## 重要说明
 
+- **安全 profile：** 写入任务默认使用 `security_profile="default"`，不允许 `npx *` 这类远程包执行路径。`strict` 更收窄；只有在明确需要并理解风险时才使用 `permissive`，它会恢复更宽的本地命令 allowlist。
+- **instruction_files vs `files`：** 对普通 `claude_task`，计划、清单、规格文档必须放在 `instruction_files`，或直接在 `task` 中提到。`claude_task.files` 已废弃，只作为兼容的上下文文件处理，不是 apply 范围限制。
 - **`claude_implement.files`** 是严格的范围控制，用于需要精确文件约束的场景。
 - **未提交的工作区变更：** 默认返回 `needs_user`。传入 `dirty_policy=committed` 忽略本地变更，或 `dirty_policy=snapshot` 将脏文件复制到 worktree。
 - **内联等待：** `claude_task` 默认在 MCP 服务器内部等待任务结果长达 `wait_timeout_sec` 秒（默认 540，最大 540）。如果任务在该窗口中完成，直接返回标准化结果（`completed_inline=true`）。

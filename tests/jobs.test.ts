@@ -109,6 +109,30 @@ describe("JobStore", () => {
     expect(updated?.updated_at).toBe("2026-05-06T00:00:30.000Z");
   });
 
+  it("preserves concurrent update patches for the same job", async () => {
+    const { repo, store } = await createStoreFixture();
+    await store.create({
+      job_id: "job-concurrent",
+      type: "review",
+      status: "running",
+      cwd: repo,
+      created_at: "2026-05-06T00:00:00.000Z",
+      updated_at: "2026-05-06T00:00:00.000Z",
+      payload: { cwd: repo, task: "review it" },
+    });
+
+    await Promise.all([
+      store.touchHeartbeat("job-concurrent", "2026-05-06T00:00:30.000Z"),
+      store.touchWait("job-concurrent", "2026-05-06T00:00:31.000Z", 10_000),
+    ]);
+
+    const updated = await store.get("job-concurrent");
+    expect(updated?.heartbeat_at).toBe("2026-05-06T00:00:30.000Z");
+    expect(updated?.last_wait_at).toBe("2026-05-06T00:00:31.000Z");
+    expect(updated?.last_wait_recommended_delay_ms).toBe(10_000);
+  });
+
+
   it("cleanup does not delete running jobs", async () => {
     const { repo, store } = await createStoreFixture();
     await store.create({

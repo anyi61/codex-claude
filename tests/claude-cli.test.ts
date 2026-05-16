@@ -133,6 +133,22 @@ describe("claude cli argument construction", () => {
     expect(args.join("\0")).toContain("Bash(mkdir -p *)");
   });
 
+  it("excludes npx from the default implement security profile", () => {
+    const args = buildImplementArgs({ cwd: "/repo", task: "change code" });
+
+    expect(args).not.toContain("Bash(npx *)");
+  });
+
+  it("allows npx only in the permissive implement security profile", () => {
+    const defaultArgs = buildImplementArgs({ cwd: "/repo", task: "change code", security_profile: "default" });
+    const permissiveArgs = buildImplementArgs({ cwd: "/repo", task: "change code", security_profile: "permissive" });
+    const strictArgs = buildImplementArgs({ cwd: "/repo", task: "change code", security_profile: "strict" });
+
+    expect(defaultArgs).not.toContain("Bash(npx *)");
+    expect(strictArgs).not.toContain("Bash(npx *)");
+    expect(permissiveArgs).toContain("Bash(npx *)");
+  });
+
   it("keeps read-only modes from seeing Edit or Write", () => {
     expect(buildQueryArgs({ cwd: "/repo", task: "explain" }).join("\0")).not.toMatch(/\b(Edit|Write)\b/);
     expect(buildReviewArgs({ cwd: "/repo", task: "review" }).join("\0")).not.toMatch(/\b(Edit|Write)\b/);
@@ -486,6 +502,41 @@ describe("claude cli argument construction", () => {
     expect(await readFile(path.join(repo, "README.md"), "utf8")).toBe("# original\n");
   });
 
+  it("refuses apply while the same delegated worktree is locked", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-locked-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const logDir = path.join(stateDir, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# original\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-locked";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+    vi.resetModules();
+    const [{ acquireFileLock }, reloaded] = await Promise.all([
+      import("../src/lock.js"),
+      import("../src/claude-cli.js"),
+    ]);
+    const lock = await acquireFileLock({ cwd: repo, resource: `worktree:${path.basename(worktreeRel)}` });
+
+    const result = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+    }, "apply-locked");
+
+    expect(result.error).toContain("Another operation is already using delegated worktree codex-delegated-locked");
+    await lock.release();
+  });
+
   it("refuses non-preview apply with confirmed_by_user=false", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-approval-false-"));
     cleanupPaths.push(root);
@@ -689,6 +740,31 @@ describe("claude cli argument construction", () => {
     expect(runs.entries[0]?.lifecycle).toBe("cleaned");
     delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
     vi.resetModules();
+  });
+
+  it("refuses cleanup while the workspace cleanup lock is held", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-cleanup-locked-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    await mkdir(path.join(repo, ".claude", "worktrees", "codex-delegated-cleanup-locked"), { recursive: true });
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+    vi.resetModules();
+    const [{ acquireFileLock }, reloaded] = await Promise.all([
+      import("../src/lock.js"),
+      import("../src/claude-cli.js"),
+    ]);
+    const lock = await acquireFileLock({ cwd: repo, resource: "workspace:cleanup" });
+
+    const result = await reloaded.runClaudeCleanup({
+      cwd: repo,
+      dry_run: false,
+      older_than_hours: 0,
+    }, "cleanup-locked");
+
+    expect(result.failed_count).toBe(1);
+    expect(result.entries[0]?.error).toContain("Another cleanup operation is already running");
+    await lock.release();
   });
 
   it("recursively applies untracked directory entries from a worktree", async () => {
@@ -1369,6 +1445,45 @@ describe("claude cli argument construction", () => {
     delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
     vi.resetModules();
   });
+
+  it("dry-runs run log cleanup without selecting active job logs", async () => {
+    const { repo, logDir, jobStore } = await createWorkflowFixture();
+    await writeFile(path.join(logDir, "active-run.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+    }));
+    await writeFile(path.join(logDir, "old-run.json"), JSON.stringify({
+      type: "review",
+      input: { cwd: repo },
+    }));
+    const old = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    await utimes(path.join(logDir, "active-run.json"), old, old);
+    await utimes(path.join(logDir, "old-run.json"), old, old);
+    await jobStore.create({
+      job_id: "job-active",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      created_at: old.toISOString(),
+      updated_at: old.toISOString(),
+      run_id: "active-run",
+      payload: { cwd: repo, task: "still running" },
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.cleanupDelegateArtifacts({
+      cwd: repo,
+      older_than_hours: 24,
+      dry_run: true,
+      limit: 20,
+    });
+
+    expect(result.run_logs.entries.map((entry) => entry.run_id)).toEqual(["old-run"]);
+    expect(result.run_logs.entries[0]?.removed).toBe(false);
+    expect(existsSync(path.join(logDir, "active-run.json"))).toBe(true);
+    expect(existsSync(path.join(logDir, "old-run.json"))).toBe(true);
+  });
+
 
   it("returns a waiting status while a background job stays running", async () => {
     const { repo, store } = await createJobFixture();
@@ -2114,6 +2229,13 @@ describe("claude cli argument construction", () => {
 
     // Must NOT be background immediate-return despite background=true
     expect(result.completed_inline).toBe(true);
+    expect(result.wait).toMatchObject({
+      mode: "block",
+      timeout_sec: 540,
+      completed_inline: true,
+      waiting: false,
+      do_not_start_duplicate_job: false,
+    });
     expect(result.status).toBe("success");
 
     vi.doUnmock("node:child_process");
@@ -2319,6 +2441,14 @@ describe("claude cli argument construction", () => {
 
     expect(result.status).toBe("running");
     expect(result.waiting).toBe(true);
+    expect(result.wait).toMatchObject({
+      mode: "block",
+      timeout_sec: 1,
+      completed_inline: false,
+      waiting: true,
+      do_not_start_duplicate_job: true,
+      continuation_tool: "claude_task",
+    });
     expect(result.do_not_start_duplicate_job).toBe(true);
     expect(result.completed_inline).toBeFalsy();
     expect(result.next_actions.map((a) => a.tool)).toContain("claude_task");

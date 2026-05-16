@@ -102,6 +102,16 @@ function readTableArrayValues(config: string, tableName: string, key: string): s
   return values;
 }
 
+function readTableNumberValue(config: string, tableName: string, key: string): number | null {
+  const escapedTable = tableName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const tableMatch = config.match(new RegExp(`\\[${escapedTable}\\]\\n([\\s\\S]*?)(?=\\n\\[|$)`));
+  if (!tableMatch) return null;
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const numberMatch = tableMatch[1]?.match(new RegExp(`^\\s*${escapedKey}\\s*=\\s*(\\d+)\\s*$`, "m"));
+  if (!numberMatch) return null;
+  return Number(numberMatch[1]);
+}
+
 function removeEnvOnlyTable(config: string): string {
   if (hasManualMcpServerTable(config)) return config;
   return config.replace(new RegExp(`\\n?\\[mcp_servers\\.${SERVER_NAME}\\.env\\]\\n[\\s\\S]*?(?=\\n\\[|$)`), "");
@@ -239,6 +249,7 @@ export interface ClaudeDelegateConfigScan {
   envKeys: string[];
   mcpCommand: string | null;
   mcpEnabledTools: string[] | null;
+  mcpToolTimeoutSec: number | null;
 }
 
 /**
@@ -253,7 +264,7 @@ export async function scanClaudeDelegateConfig(): Promise<ClaudeDelegateConfigSc
     config = await readFile(configPath, "utf8");
     exists = true;
   } catch {
-    return { configPath, exists: false, hasAllowRoots: false, allowRootsValue: null, mcpClassification: null, mcpServerKeys: [], envKeys: [], mcpCommand: null, mcpEnabledTools: null };
+    return { configPath, exists: false, hasAllowRoots: false, allowRootsValue: null, mcpClassification: null, mcpServerKeys: [], envKeys: [], mcpCommand: null, mcpEnabledTools: null, mcpToolTimeoutSec: null };
   }
 
   const classification = classifyMcpServerSection(config);
@@ -265,7 +276,8 @@ export async function scanClaudeDelegateConfig(): Promise<ClaudeDelegateConfigSc
   const allowRootsValue = envAllowRoot ?? shellAllowRoot ?? null;
   const mcpCommand = classification ? readTableValue(config, `mcp_servers.${SERVER_NAME}`, "command") : null;
   const mcpEnabledTools = classification ? readTableArrayValues(config, `mcp_servers.${SERVER_NAME}`, "enabled_tools") : null;
-  return { configPath, exists, hasAllowRoots: allowRootsValue !== null, allowRootsValue, mcpClassification: classification, mcpServerKeys, envKeys, mcpCommand, mcpEnabledTools };
+  const mcpToolTimeoutSec = classification ? readTableNumberValue(config, `mcp_servers.${SERVER_NAME}`, "tool_timeout_sec") : null;
+  return { configPath, exists, hasAllowRoots: allowRootsValue !== null, allowRootsValue, mcpClassification: classification, mcpServerKeys, envKeys, mcpCommand, mcpEnabledTools, mcpToolTimeoutSec };
 }
 
 export interface RemoveAllowRootResult {

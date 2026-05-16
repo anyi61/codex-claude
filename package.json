@@ -34,7 +34,7 @@
     "prepublishOnly": "npm run build && npm run typecheck && npm test && npm run build:plugin && npm run check:plugin",
     "uninstall": "npm run build && node scripts/uninstall-plugin.mjs",
     "uninstall:dry-run": "node scripts/uninstall-plugin.mjs --dry-run",
-    "audit:docs": "node --import tsx debug/doc-audit.ts",
+    "audit:docs": "node scripts/audit-docs.mjs",
     "release": "npm version patch --no-git-tag-version && npm publish --access public",
     "release:minor": "npm version minor --no-git-tag-version && npm publish --access public",
     "release:major": "npm version major --no-git-tag-version && npm publish --access public"

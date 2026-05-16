@@ -63,7 +63,7 @@ import {
   type InteractionBlock,
 } from "./schema.js";
 
-export const TOOL_DEFINITIONS = [
+const BASE_TOOL_DEFINITIONS = [
   {
     name: "claude_status",
     description:
@@ -172,6 +172,7 @@ export const TOOL_DEFINITIONS = [
         constraints: { type: "array", items: { type: "string" }, description: "Implementation constraints for write mode" },
         diff: { type: "string", description: "Diff to review. Presence strongly biases auto mode toward review." },
         dirty_policy: { type: "string", enum: ["ask", "committed", "snapshot"], description: "Write-mode handling for uncommitted main-workspace changes: ask (default), committed (ignore dirty changes and use HEAD), or snapshot (copy dirty files into the delegated worktree)." },
+        security_profile: { type: "string", enum: ["strict", "default", "permissive"], description: "Write-mode command allowlist profile. default is conservative and does not allow npx; permissive restores broader local command flexibility." },
       },
     },
   },
@@ -251,6 +252,7 @@ export const TOOL_DEFINITIONS = [
         max_changed_files: { type: "number", description: "Warn if Claude changes more than this many files. Must be a positive integer <= 100." },
         worktreeName: { type: "string", description: "Optional delegated worktree name override" },
         dirty_policy: { type: "string", enum: ["ask", "committed", "snapshot"], description: "Handling for uncommitted main-workspace changes: ask (default), committed (ignore dirty changes and use HEAD), or snapshot (copy dirty files into the delegated worktree)." },
+        security_profile: { type: "string", enum: ["strict", "default", "permissive"], description: "Command allowlist profile for implementation tasks. default excludes remote package execution paths such as npx; permissive allows broader local project commands." },
       },
     },
   },
@@ -358,7 +360,48 @@ export const TOOL_DEFINITIONS = [
         },
       },
     },
-];
+] as const;
+
+const DEFAULT_TOOL_METADATA: Record<string, {
+  title: string;
+  annotations: Record<string, boolean>;
+  outputSchema: Record<string, unknown>;
+}> = {
+  claude_setup: {
+    title: "Check Claude Delegation Setup",
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true },
+  },
+  claude_task: {
+    title: "Delegate Task To Claude",
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true },
+  },
+  claude_result: {
+    title: "Resolve Claude Result",
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+    outputSchema: { type: "object", additionalProperties: true },
+  },
+  claude_apply: {
+    title: "Preview Or Apply Delegated Changes",
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+    outputSchema: { type: "object", additionalProperties: true },
+  },
+  claude_cleanup: {
+    title: "Clean Delegated Worktrees",
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+    outputSchema: { type: "object", additionalProperties: true },
+  },
+};
+
+export const TOOL_DEFINITIONS = BASE_TOOL_DEFINITIONS.map((tool) => ({
+  ...tool,
+  ...(DEFAULT_TOOL_METADATA[tool.name] ?? {}),
+  inputSchema: {
+    additionalProperties: false,
+    ...tool.inputSchema,
+  },
+}));
 
 function hasWorktreeObservation(result: ClaudeTaskResult): boolean {
   return result.server_observed != null && typeof result.server_observed === "object" &&
@@ -680,7 +723,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
       case "claude_implement": {
         const parsed = claudeImplementInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, files, constraints, timeout_sec, max_turns, session_key, fork_session, resume_latest, max_cost_usd, max_changed_files, worktreeName, dirty_policy } = parsed.data;
+        const { task, cwd, files, constraints, timeout_sec, max_turns, session_key, fork_session, resume_latest, max_cost_usd, max_changed_files, worktreeName, dirty_policy, security_profile } = parsed.data;
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
@@ -707,6 +750,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
           max_changed_files,
           worktreeName,
           dirty_policy,
+          security_profile,
         }));
       }
 

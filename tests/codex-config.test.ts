@@ -526,6 +526,7 @@ describe("scanClaudeDelegateConfig fields", () => {
     const scan = await scanClaudeDelegateConfig();
     expect(scan.mcpCommand).toBe("codex-claude");
     expect(scan.mcpEnabledTools).toEqual(["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"]);
+    expect(scan.mcpToolTimeoutSec).toBe(600);
   });
 
   it("returns null mcpCommand for non-standard command", async () => {

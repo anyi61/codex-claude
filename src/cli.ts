@@ -2,7 +2,7 @@
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { realpathSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 
 import { getPackageInfo } from "./package-info.js";
 import { main as startMcpServer } from "./server.js";
@@ -33,6 +33,8 @@ export interface DoctorCheckClaudeCli {
   ok: boolean;
   path?: string;
   version?: string;
+  auth_status?: "ok" | "missing" | "unknown";
+  auth_confidence?: "verified" | "unknown";
 }
 
 export interface DoctorCheckGit {
@@ -44,11 +46,17 @@ export interface DoctorCheckGit {
 export interface DoctorCheckCodexConfig {
   ok: boolean;
   path: string;
+  tool_timeout_sec?: number | null;
+  tool_timeout_ok?: boolean;
 }
 
 export interface DoctorCheckMcpServer {
   ok: boolean;
   name: "claude_delegate";
+  launch_smoke?: {
+    ok: boolean;
+    detail: string;
+  };
 }
 
 export interface DoctorCheckDefaultTools {
@@ -76,8 +84,18 @@ export interface DoctorResult {
     allow_roots: DoctorCheckAllowRoots;
   };
   warnings: string[];
+  problems: Array<{ problem: string; fix: string; next_step: string }>;
+  ready_means: string[];
   next_step: string;
 }
+
+interface LaunchSmokeResult {
+  ok: boolean;
+  detail: string;
+}
+
+const MCP_LAUNCH_SMOKE_TIMEOUT_MS = 3000;
+const MCP_INITIALIZE_PROTOCOL_VERSION = "2024-11-05";
 
 async function packageVersion(): Promise<string> {
   const info = await getPackageInfo();
@@ -95,6 +113,133 @@ function runUninstallScript(args: string[]): number {
     },
   });
   return 0;
+}
+
+function compactProcessOutput(text: string): string {
+  return text.replace(/\s+/g, " ").trim().slice(0, 500);
+}
+
+function appendProcessOutput(detail: string, stderr: string, stdout: string): string {
+  const stderrText = compactProcessOutput(stderr);
+  if (stderrText) return `${detail}: ${stderrText}`;
+  const stdoutText = compactProcessOutput(stdout);
+  if (stdoutText) return `${detail}: stdout=${stdoutText}`;
+  return detail;
+}
+
+function runLocalMcpLaunchSmoke(timeoutMs = MCP_LAUNCH_SMOKE_TIMEOUT_MS): Promise<LaunchSmokeResult> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let stdout = "";
+    let stderr = "";
+
+    const child = spawn("codex-claude", [], {
+      cwd: process.cwd(),
+      env: process.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    const stopChild = () => {
+      child.stdin?.destroy();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGTERM");
+        setTimeout(() => {
+          if (child.exitCode === null && child.signalCode === null) {
+            child.kill("SIGKILL");
+          }
+        }, 250).unref();
+      }
+      child.unref();
+    };
+
+    const finish = (result: LaunchSmokeResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      stopChild();
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => {
+      finish({
+        ok: false,
+        detail: appendProcessOutput(`Timed out after ${timeoutMs}ms waiting for MCP initialize response from codex-claude`, stderr, stdout),
+      });
+    }, timeoutMs);
+    timer.unref();
+
+    child.once("error", (err) => {
+      finish({ ok: false, detail: `Failed to launch codex-claude: ${err.message}` });
+    });
+
+    child.once("close", (code, signal) => {
+      if (settled) return;
+      const status = signal ? `signal ${signal}` : `exit ${code ?? "unknown"}`;
+      finish({
+        ok: false,
+        detail: appendProcessOutput(`codex-claude exited before MCP initialize response (${status})`, stderr, stdout),
+      });
+    });
+
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+      let newlineIndex = stdout.indexOf("\n");
+      while (newlineIndex >= 0) {
+        const line = stdout.slice(0, newlineIndex).trim();
+        stdout = stdout.slice(newlineIndex + 1);
+        if (line) {
+          try {
+            const message = JSON.parse(line) as { id?: unknown; result?: unknown; error?: unknown };
+            if (message.id === 1) {
+              if (message.error) {
+                finish({ ok: false, detail: `MCP initialize returned error: ${JSON.stringify(message.error).slice(0, 500)}` });
+              } else if (message.result && typeof message.result === "object") {
+                child.stdin?.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`);
+                finish({ ok: true, detail: "MCP initialize handshake completed using codex-claude." });
+              } else {
+                finish({ ok: false, detail: "MCP initialize response was missing a result object." });
+              }
+              return;
+            }
+          } catch {
+            finish({ ok: false, detail: `Invalid MCP JSON response from codex-claude: ${line.slice(0, 500)}` });
+            return;
+          }
+        }
+        newlineIndex = stdout.indexOf("\n");
+      }
+    });
+
+    child.stdin?.on("error", () => {
+      // The close handler reports process failures with stderr; avoid an unhandled EPIPE.
+    });
+
+    const initializeRequest = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: MCP_INITIALIZE_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: "codex-claude-doctor", version: "1.0.0" },
+      },
+    };
+
+    try {
+      child.stdin?.write(`${JSON.stringify(initializeRequest)}\n`);
+    } catch (err) {
+      finish({
+        ok: false,
+        detail: `Failed to write MCP initialize request to codex-claude: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  });
 }
 
 async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "writeErr">>, json?: boolean): Promise<number> {
@@ -116,10 +261,23 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
       allow_roots: { ok: false },
     },
     warnings: [],
+    problems: [],
+    ready_means: [
+      "Codex can launch the claude_delegate MCP server with command codex-claude.",
+      "The default 5 tools are explicitly enabled and Advanced/Recovery tools stay hidden.",
+      "tool_timeout_sec can cover the default 540 second block wait window.",
+      "The current repository is included in CODEX_CLAUDE_ALLOW_ROOTS.",
+      "Claude CLI is available; auth may still need a real Claude invocation if reported unknown.",
+    ],
     next_step: "",
   };
 
   const warnings: string[] = [];
+  const problems: DoctorResult["problems"] = [];
+  const addProblem = (problem: string, fix: string, nextStep: string) => {
+    problems.push({ problem, fix, next_step: nextStep });
+    warnings.push(problem);
+  };
   let notReady = false;
   let needsSetup = false;
   let needsAttention = false;
@@ -128,7 +286,7 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
   const nodeMajor = Number(process.versions.node.split(".")[0]);
   result.checks.node = { ok: nodeMajor >= 20, version: process.versions.node, required: ">=20" };
   if (!result.checks.node.ok) {
-    warnings.push(`Node.js ${process.versions.node} is below required >=20`);
+    addProblem(`Node.js ${process.versions.node} is below required >=20`, "Install Node.js 20 or newer.", "node -v");
     notReady = true;
   }
 
@@ -138,7 +296,7 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
     result.checks.package = { ok: true, name: info.name, version: info.version };
   } catch {
     result.checks.package = { ok: false, name: "", version: "" };
-    warnings.push("Could not read package info");
+    addProblem("Could not read package info", "Reinstall @anyi61/codex-claude-delegate-mcp globally.", "npm install -g @anyi61/codex-claude-delegate-mcp");
     notReady = true;
   }
 
@@ -146,10 +304,30 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
   const claudeBin = process.env.CLAUDE_BIN ?? "claude";
   try {
     const version = await execCapture(claudeBin, ["--version"], { cwd: process.cwd(), timeoutMs: 10000 });
-    result.checks.claude_cli = { ok: true, path: claudeBin !== "claude" ? claudeBin : undefined, version };
+    let authStatus: "ok" | "missing" | "unknown" = "unknown";
+    try {
+      const authOutput = await execCapture(claudeBin, ["auth", "status"], { cwd: process.cwd(), timeoutMs: 10000 });
+      authStatus = /logged in|authenticated|ok/i.test(authOutput) ? "ok" : /not logged in|unauthenticated|missing/i.test(authOutput) ? "missing" : "unknown";
+    } catch {
+      authStatus = "unknown";
+    }
+    result.checks.claude_cli = {
+      ok: true,
+      path: claudeBin !== "claude" ? claudeBin : undefined,
+      version,
+      auth_status: authStatus,
+      auth_confidence: authStatus === "ok" ? "verified" : "unknown",
+    };
+    if (authStatus === "missing") {
+      addProblem("Claude CLI reports that authentication is missing", "Run Claude Code login/auth setup.", "claude");
+      notReady = true;
+    } else if (authStatus === "unknown") {
+      needsAttention = true;
+      addProblem("Claude CLI auth status could not be verified", "Open Claude Code once and confirm it can run a simple prompt.", "claude");
+    }
   } catch {
     result.checks.claude_cli = { ok: false };
-    warnings.push("Claude CLI not found in PATH");
+    addProblem("Claude CLI not found in PATH", "Install Claude Code CLI or set CLAUDE_BIN to a trusted local executable.", "claude --version");
     notReady = true;
   }
 
@@ -166,7 +344,7 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
     result.checks.git = { ok: true, version: gitVersion, worktree: worktreeSupported };
   } catch {
     result.checks.git = { ok: false, worktree: false };
-    warnings.push("Git not found");
+    addProblem("Git not found", "Install Git and make sure it is available on PATH.", "git --version");
     notReady = true;
   }
 
@@ -179,7 +357,7 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
 
     if (!scan.exists) {
       needsSetup = true;
-      warnings.push("Codex config not found");
+      addProblem("Codex config not found", "Write the default claude_delegate MCP configuration.", "codex-claude setup --write");
     }
 
     // MCP server check — validate command = "codex-claude"
@@ -188,12 +366,40 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
       result.checks.mcp_server = { ok: hasCorrectCommand, name: "claude_delegate" };
       if (!hasCorrectCommand) {
         needsSetup = true;
-        warnings.push(`claude_delegate command is "${scan.mcpCommand ?? "unset"}", expected "codex-claude"`);
+        addProblem(`claude_delegate command is "${scan.mcpCommand ?? "unset"}", expected "codex-claude"`, "Replace the MCP server command with the global codex-claude launcher.", "codex-claude setup --write --force");
       }
     } else {
       result.checks.mcp_server = { ok: false, name: "claude_delegate" };
       needsSetup = true;
-      warnings.push("claude_delegate MCP server not configured");
+      addProblem("claude_delegate MCP server not configured", "Add the claude_delegate MCP server to Codex config.", "codex-claude setup --write");
+    }
+
+    if (!result.checks.mcp_server.ok) {
+      result.checks.mcp_server.launch_smoke = { ok: false, detail: "Skipped because MCP server config is not valid." };
+    } else if (!result.checks.package.ok) {
+      result.checks.mcp_server.launch_smoke = { ok: false, detail: "Skipped because package info could not be read." };
+    } else {
+      const launchSmoke = await runLocalMcpLaunchSmoke();
+      result.checks.mcp_server.launch_smoke = launchSmoke;
+      if (!launchSmoke.ok) {
+        notReady = true;
+        addProblem(
+          `MCP launch smoke failed: ${launchSmoke.detail}`,
+          "Verify the global codex-claude launcher starts the local MCP server and reinstall the package if needed.",
+          "codex-claude doctor --json",
+        );
+      }
+    }
+
+    result.checks.codex_config.tool_timeout_sec = scan.mcpToolTimeoutSec ?? null;
+    result.checks.codex_config.tool_timeout_ok = typeof scan.mcpToolTimeoutSec === "number" && scan.mcpToolTimeoutSec >= 600;
+    if (!result.checks.codex_config.tool_timeout_ok) {
+      needsAttention = true;
+      addProblem(
+        `tool_timeout_sec is ${scan.mcpToolTimeoutSec ?? "missing"}, expected at least 600`,
+        "Set tool_timeout_sec = 600 for [mcp_servers.claude_delegate].",
+        "codex-claude setup --write --force",
+      );
     }
 
     // Default tools check — validate actual enabled_tools list
@@ -206,11 +412,11 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
       } else {
         if (missingTools.length > 0) {
           needsAttention = true;
-          warnings.push(`Default tools missing from enabled_tools: ${missingTools.join(", ")}`);
+          addProblem(`Default tools missing from enabled_tools: ${missingTools.join(", ")}`, "Restore the default 5 enabled tools.", "codex-claude setup --write --force");
         }
         if (extraTools.length > 0) {
           needsAttention = true;
-          warnings.push(`Enabled tools include non-default advanced tools: ${extraTools.join(", ")}. The default config should only include the 5 standard tools.`);
+          addProblem(`Enabled tools include non-default advanced tools: ${extraTools.join(", ")}. The default config should only include the 5 standard tools.`, "Keep Advanced/Recovery tools out of the default enabled_tools list.", "codex-claude setup --write --force");
         }
       }
       result.checks.default_tools.enabled_count = scan.mcpEnabledTools.length;
@@ -220,11 +426,12 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
       result.checks.default_tools.enabled = [];
       if (scan.mcpCommand === "codex-claude" && scan.mcpEnabledTools === null) {
         needsAttention = true;
-        warnings.push("enabled_tools is missing; default config should explicitly enable the 5 standard tools");
+        addProblem("enabled_tools is missing; default config should explicitly enable the 5 standard tools", "Write the explicit default enabled_tools list.", "codex-claude setup --write --force");
       }
     }
   } catch {
     result.checks.codex_config = { ok: false, path: "" };
+    result.checks.mcp_server.launch_smoke = { ok: false, detail: "Skipped because Codex config could not be scanned." };
     needsSetup = true;
   }
 
@@ -249,11 +456,12 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
     result.checks.allow_roots = { ok: cwdAllowed, current_repo_allowed: cwdAllowed };
     if (!cwdAllowed) {
       needsAttention = true;
-      warnings.push("Current repo is not included in CODEX_CLAUDE_ALLOW_ROOTS");
+      addProblem("Current repo is not included in CODEX_CLAUDE_ALLOW_ROOTS", "Add this repository to CODEX_CLAUDE_ALLOW_ROOTS.", 'codex-claude setup --write --allow-root "' + process.cwd() + '"');
     }
   } catch {
     result.checks.allow_roots = { ok: false };
     needsAttention = true;
+    addProblem("Could not verify CODEX_CLAUDE_ALLOW_ROOTS", "Check that the current directory exists and Codex config is readable.", "codex-claude doctor --json");
   }
 
   // Determine overall status
@@ -268,6 +476,7 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
   }
   result.ready = result.status === "ready";
   result.warnings = warnings;
+  result.problems = problems;
 
   // Next step
   if (result.status === "ready") {
@@ -309,8 +518,10 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
 
     if (result.status !== "ready") {
       deps.writeOut("\n");
-      for (const w of warnings) {
-        deps.writeOut(`  ${w}\n`);
+      for (const item of problems) {
+        deps.writeOut(`Problem: ${item.problem}\n`);
+        deps.writeOut(`Fix: ${item.fix}\n`);
+        deps.writeOut(`Next step: ${item.next_step}\n\n`);
       }
     }
 

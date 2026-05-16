@@ -22,10 +22,28 @@ import {
   claudeCleanupInputSchema,
   claudeStatusInputSchema,
   buildImplementPrompt,
+  errorResult,
+  jsonResult,
 } from "../src/schema.js";
 import { TOOL_DEFINITIONS } from "../src/server.js";
 
 describe("schema definitions", () => {
+  it("returns MCP structuredContent alongside backwards-compatible text JSON", () => {
+    const payload = { ok: true, nested: { value: 1 } };
+    const result = jsonResult(payload);
+
+    expect(JSON.parse(result.content[0]!.text)).toEqual(payload);
+    expect(result.structuredContent).toEqual(payload);
+  });
+
+  it("returns structuredContent for MCP errors", () => {
+    const result = errorResult("bad input");
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0]!.text)).toEqual({ error: "bad input" });
+    expect(result.structuredContent).toEqual({ error: "bad input" });
+  });
+
   it("defines implement structured output fields", () => {
     expect(IMPLEMENT_SCHEMA.required).toEqual([
       "status",
@@ -70,6 +88,16 @@ describe("schema definitions", () => {
     expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", dirty_policy: "snapshot" }).success).toBe(true);
     expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "x", mode: "write", dirty_policy: "snapshot" }).success).toBe(true);
   });
+
+  it("accepts explicit implement security profiles and rejects unknown profiles", () => {
+    expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", security_profile: "strict" }).success).toBe(true);
+    expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", security_profile: "default" }).success).toBe(true);
+    expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", security_profile: "permissive" }).success).toBe(true);
+    expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", security_profile: "unsafe" }).success).toBe(false);
+    expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "x", mode: "write", security_profile: "strict" }).success).toBe(true);
+    expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "x", mode: "write", security_profile: "unsafe" }).success).toBe(false);
+  });
+
 
   it("accepts apply preview and validates run filters", () => {
     expect(claudeApplyInputSchema.safeParse({ cwd: "/repo", worktree_path: ".claude/worktrees/codex-delegated-x", preview: true }).success).toBe(true);
@@ -177,26 +205,23 @@ describe("schema definitions", () => {
     expect(claudeWorkspaceStatusInputSchema.safeParse({ cwd: "/repo", limit: 0 }).success).toBe(false);
   });
 
-  it("silently drops max_turns from claude_task input", () => {
+  it("rejects max_turns on claude_task input", () => {
     const parsed = claudeTaskInputSchema.safeParse({
       cwd: "/repo",
       task: "write docs",
       mode: "write",
       max_turns: 2,
     });
-    expect(parsed.success).toBe(true);
-    if (!parsed.success) throw new Error("unexpected parse failure");
-    expect(parsed.data).not.toHaveProperty("max_turns");
+    expect(parsed.success).toBe(false);
   });
 
-  it("silently drops timeout_sec from claude_task input", () => {
+  it("rejects timeout_sec on claude_task input", () => {
     const parsed = claudeTaskInputSchema.safeParse({
       cwd: "/repo",
       task: "write docs",
       timeout_sec: 10,
     });
-    expect(parsed.success).toBe(true);
-    expect(parsed.data).not.toHaveProperty("timeout_sec");
+    expect(parsed.success).toBe(false);
   });
 
   it("accepts wait_strategy, wait_timeout_sec, and job_id on claude_task", () => {
@@ -303,4 +328,36 @@ describe("schema-to-tool-definition contract", () => {
       }
     });
   }
+
+  it("default tools expose MCP metadata and strict input schemas", () => {
+    const defaultTools = new Set([
+      "claude_setup",
+      "claude_task",
+      "claude_result",
+      "claude_apply",
+      "claude_cleanup",
+    ]);
+
+    for (const def of TOOL_DEFINITIONS.filter((tool) => defaultTools.has(tool.name))) {
+      expect(def.title).toBeTruthy();
+      expect(def.annotations).toEqual(expect.any(Object));
+      expect(def.outputSchema).toEqual(expect.objectContaining({ type: "object" }));
+      expect(def.inputSchema.additionalProperties).toBe(false);
+    }
+  });
+
+  it("claude_job_wait remains advanced and outside the default tool set", async () => {
+    const { DEFAULT_ENABLED_TOOLS } = await import("../src/codex-config.js");
+
+    expect(DEFAULT_ENABLED_TOOLS).toEqual([
+      "claude_setup",
+      "claude_task",
+      "claude_result",
+      "claude_apply",
+      "claude_cleanup",
+    ]);
+    expect(DEFAULT_ENABLED_TOOLS).not.toContain("claude_job_wait");
+    expect(TOOL_DEFINITIONS.find((tool) => tool.name === "claude_job_wait")?.description)
+      .toMatch(/^Advanced \/ Recovery/);
+  });
 });

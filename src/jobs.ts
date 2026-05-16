@@ -7,6 +7,7 @@ import type {
   BackgroundJobSummary,
   BackgroundJobType,
 } from "./schema.js";
+import { withFileLock } from "./lock.js";
 
 export interface BackgroundJobRecord extends BackgroundJobSummary {
   payload: Record<string, unknown>;
@@ -64,15 +65,17 @@ export class JobStore {
   }
 
   async update(jobId: string, patch: Partial<BackgroundJobRecord>): Promise<BackgroundJobRecord | null> {
-    const current = await this.get(jobId);
-    if (!current) return null;
-    const next = {
-      ...current,
-      ...patch,
-      job_id: current.job_id,
-    } satisfies BackgroundJobRecord;
-    await this.writeRecord(next);
-    return next;
+    return withFileLock({ cwd: this.baseDir, resource: `job:${jobId}` }, async () => {
+      const current = await this.get(jobId);
+      if (!current) return null;
+      const next = {
+        ...current,
+        ...patch,
+        job_id: current.job_id,
+      } satisfies BackgroundJobRecord;
+      await this.writeRecord(next);
+      return next;
+    });
   }
 
   async list(input: JobListInput): Promise<BackgroundJobRecord[]> {

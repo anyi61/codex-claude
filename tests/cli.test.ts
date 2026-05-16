@@ -1,5 +1,8 @@
-import { readFile } from "node:fs/promises";
-import { describe, expect, it, vi } from "vitest";
+import { chmodSync } from "node:fs";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli.js";
 
 // Mock guard and codex-config so doctor tests can be isolated.
@@ -29,6 +32,15 @@ function makeIo() {
     writeErr(this: { stderr: string }, text: string) { this.stderr += text; },
   };
 }
+
+const cleanupPaths: string[] = [];
+
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  while (cleanupPaths.length > 0) {
+    await rm(cleanupPaths.pop()!, { recursive: true, force: true });
+  }
+});
 
 describe("codex-claude CLI", () => {
   it("prints package version", async () => {
@@ -204,12 +216,13 @@ describe("codex-claude CLI", () => {
     execCapture?: (cmd: string, args: string[], opts?: any) => Promise<string>;
     scanResult?: any;
     allowRoots?: string[];
+    fakeCodex?: "success" | "failure" | "none";
   }) {
     const guardModule = vi.mocked(await import("../src/guard.js"));
     guardModule.execCapture.mockImplementation(opts.execCapture ?? (async () => "1.0.0"));
     guardModule.getAllowRoots.mockReturnValue(opts.allowRoots ?? []);
     const codexModule = vi.mocked(await import("../src/codex-config.js"));
-    codexModule.scanClaudeDelegateConfig.mockResolvedValue(opts.scanResult ?? {
+    const scanResult = opts.scanResult ?? {
       configPath: "/fake/.codex/config.toml",
       exists: false,
       hasAllowRoots: false,
@@ -219,7 +232,50 @@ describe("codex-claude CLI", () => {
       envKeys: [],
       mcpCommand: null,
       mcpEnabledTools: null,
-    });
+      mcpToolTimeoutSec: null,
+    };
+    codexModule.scanClaudeDelegateConfig.mockResolvedValue(scanResult);
+    if (scanResult.mcpCommand === "codex-claude" && opts.fakeCodex !== "none") {
+      await installFakeCodexClaude(opts.fakeCodex ?? "success");
+    }
+  }
+
+  async function installFakeCodexClaude(mode: "success" | "failure") {
+    const binDir = await mkdtemp(path.join(os.tmpdir(), "codex-doctor-cli-"));
+    cleanupPaths.push(binDir);
+    const scriptPath = path.join(binDir, "codex-claude");
+    const body = mode === "success"
+      ? [
+        "#!/usr/bin/env node",
+        "let buffered = '';",
+        "process.stdin.setEncoding('utf8');",
+        "process.stdin.on('data', (chunk) => {",
+        "  buffered += chunk;",
+        "  const line = buffered.split(/\\r?\\n/).find(Boolean);",
+        "  if (!line) return;",
+        "  const request = JSON.parse(line);",
+        "  if (request.method !== 'initialize') process.exit(3);",
+        "  process.stdout.write(JSON.stringify({",
+        "    jsonrpc: '2.0',",
+        "    id: request.id,",
+        "    result: {",
+        "      protocolVersion: request.params.protocolVersion,",
+        "      capabilities: { tools: {} },",
+        "      serverInfo: { name: 'fake-codex-claude', version: '1.0.0' }",
+        "    }",
+        "  }) + '\\n');",
+        "});",
+        "",
+      ].join("\n")
+      : [
+        "#!/usr/bin/env node",
+        "process.stderr.write('fake launch failed\\n');",
+        "process.exit(42);",
+        "",
+      ].join("\n");
+    await writeFile(scriptPath, body, "utf8");
+    chmodSync(scriptPath, 0o755);
+    vi.stubEnv("PATH", `${binDir}${path.delimiter}${process.env.PATH ?? ""}`);
   }
 
   it("returns structured doctor --json output", async () => {
@@ -235,6 +291,7 @@ describe("codex-claude CLI", () => {
         envKeys: [],
         mcpCommand: "codex-claude",
         mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"],
+        mcpToolTimeoutSec: 600,
       },
     });
 
@@ -257,6 +314,85 @@ describe("codex-claude CLI", () => {
     expect(parsed.checks).toHaveProperty("default_tools");
     expect(parsed.checks).toHaveProperty("allow_roots");
     expect(parsed.checks.claude_cli).not.toHaveProperty("authenticated");
+    expect(parsed.checks.claude_cli.auth_status).toBe("unknown");
+    expect(parsed.checks.mcp_server.launch_smoke).toHaveProperty("ok");
+    expect(parsed.checks.mcp_server.launch_smoke.ok).toBe(true);
+    expect(parsed.ready_means).toEqual(expect.arrayContaining([
+      expect.stringContaining("default 5 tools"),
+    ]));
+  });
+
+  it("doctor performs a real bounded MCP initialize smoke when static config is valid", async () => {
+    const cwd = process.cwd();
+    await setupDoctorMocks({
+      execCapture: async (_cmd, args) => args[0] === "auth" ? "logged in" : "1.0.0",
+      scanResult: {
+        configPath: "/fake/.codex/config.toml",
+        exists: true,
+        hasAllowRoots: true,
+        allowRootsValue: cwd,
+        mcpClassification: { origin: "manual", hasCommand: true, hasArgs: true, hasEnv: false },
+        mcpServerKeys: ["command", "enabled_tools"],
+        envKeys: [],
+        mcpCommand: "codex-claude",
+        mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"],
+        mcpToolTimeoutSec: 600,
+      },
+    });
+
+    const io = makeIo();
+    const exitCode = await runCli(["node", "codex-claude", "doctor", "--json"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+
+    const parsed = JSON.parse(io.stdout);
+    expect(exitCode).toBe(0);
+    expect(parsed.ready).toBe(true);
+    expect(parsed.checks.mcp_server.launch_smoke).toEqual({
+      ok: true,
+      detail: expect.stringContaining("MCP initialize handshake completed"),
+    });
+  });
+
+  it("doctor reports launch smoke failure as not_ready with problem details", async () => {
+    const cwd = process.cwd();
+    await setupDoctorMocks({
+      fakeCodex: "failure",
+      execCapture: async (_cmd, args) => args[0] === "auth" ? "logged in" : "1.0.0",
+      scanResult: {
+        configPath: "/fake/.codex/config.toml",
+        exists: true,
+        hasAllowRoots: true,
+        allowRootsValue: cwd,
+        mcpClassification: { origin: "manual", hasCommand: true, hasArgs: true, hasEnv: false },
+        mcpServerKeys: ["command", "enabled_tools"],
+        envKeys: [],
+        mcpCommand: "codex-claude",
+        mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"],
+        mcpToolTimeoutSec: 600,
+      },
+    });
+
+    const io = makeIo();
+    const exitCode = await runCli(["node", "codex-claude", "doctor", "--json"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+
+    const parsed = JSON.parse(io.stdout);
+    expect(exitCode).toBe(1);
+    expect(parsed.ready).toBe(false);
+    expect(parsed.status).toBe("not_ready");
+    expect(parsed.checks.mcp_server.launch_smoke.ok).toBe(false);
+    expect(parsed.checks.mcp_server.launch_smoke.detail).toContain("fake launch failed");
+    expect(parsed.problems).toContainEqual({
+      problem: expect.stringContaining("MCP launch smoke failed"),
+      fix: expect.stringContaining("codex-claude launcher"),
+      next_step: "codex-claude doctor --json",
+    });
   });
 
   it("doctor non-json output includes status and next_step", async () => {
@@ -272,6 +408,7 @@ describe("codex-claude CLI", () => {
         envKeys: [],
         mcpCommand: "codex-claude",
         mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"],
+        mcpToolTimeoutSec: 600,
       },
     });
 
@@ -284,6 +421,7 @@ describe("codex-claude CLI", () => {
     expect(typeof exitCode).toBe("number");
     expect(io.stdout).toContain("Codex-Claude doctor");
     expect(io.stdout).toContain("Status:");
+    expect(io.stdout).toMatch(/Problem:|Next step:/);
   });
 
   it("doctor detects wrong MCP command as needs_setup", async () => {
@@ -299,6 +437,7 @@ describe("codex-claude CLI", () => {
         envKeys: [],
         mcpCommand: "npx",
         mcpEnabledTools: null,
+        mcpToolTimeoutSec: null,
       },
     });
 
@@ -312,6 +451,11 @@ describe("codex-claude CLI", () => {
     expect(exitCode).toBe(1);
     expect(parsed.status).toBe("needs_setup");
     expect(parsed.checks.mcp_server.ok).toBe(false);
+    expect(parsed.checks.mcp_server.launch_smoke).toEqual({
+      ok: false,
+      detail: "Skipped because MCP server config is not valid.",
+    });
+    expect(parsed.problems[0]).toHaveProperty("fix");
     expect(parsed.warnings.some((w: string) => w.includes("npx"))).toBe(true);
   });
 
@@ -328,6 +472,7 @@ describe("codex-claude CLI", () => {
         envKeys: [],
         mcpCommand: "codex-claude",
         mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply"],
+        mcpToolTimeoutSec: 600,
       },
     });
 
@@ -357,6 +502,7 @@ describe("codex-claude CLI", () => {
         envKeys: [],
         mcpCommand: "codex-claude",
         mcpEnabledTools: null,
+        mcpToolTimeoutSec: 600,
       },
     });
 
@@ -388,6 +534,7 @@ describe("codex-claude CLI", () => {
         envKeys: [],
         mcpCommand: "codex-claude",
         mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"],
+        mcpToolTimeoutSec: 600,
       },
     });
 
@@ -400,5 +547,36 @@ describe("codex-claude CLI", () => {
     const parsed = JSON.parse(io.stdout);
     expect(parsed.checks.allow_roots.ok).toBe(true);
     expect(parsed.checks.allow_roots.current_repo_allowed).toBe(true);
+  });
+
+  it("doctor detects too-low tool_timeout_sec for default block wait", async () => {
+    const cwd = process.cwd();
+    await setupDoctorMocks({
+      execCapture: async () => "1.0.0",
+      scanResult: {
+        configPath: "/fake/.codex/config.toml",
+        exists: true,
+        hasAllowRoots: true,
+        allowRootsValue: cwd,
+        mcpClassification: { origin: "manual", hasCommand: true, hasArgs: true, hasEnv: false },
+        mcpServerKeys: ["command", "enabled_tools", "tool_timeout_sec"],
+        envKeys: [],
+        mcpCommand: "codex-claude",
+        mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"],
+        mcpToolTimeoutSec: 120,
+      },
+    });
+
+    const io = makeIo();
+    const exitCode = await runCli(["node", "codex-claude", "doctor", "--json"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+    const parsed = JSON.parse(io.stdout);
+    expect(exitCode).toBe(1);
+    expect(parsed.status).toBe("needs_attention");
+    expect(parsed.checks.codex_config.tool_timeout_ok).toBe(false);
+    expect(parsed.problems.some((p: { problem: string }) => p.problem.includes("tool_timeout_sec"))).toBe(true);
   });
 });

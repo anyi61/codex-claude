@@ -46,6 +46,7 @@ export interface ClaudeImplementInput {
   max_changed_files?: number;
   worktreeName?: string;
   dirty_policy?: "ask" | "committed" | "snapshot";
+  security_profile?: SecurityProfile;
 }
 
 export type ClaudeTaskMode = "auto" | "read" | "review" | "write";
@@ -65,7 +66,10 @@ export interface ClaudeTaskInput {
   constraints?: string[];
   diff?: string;
   dirty_policy?: "ask" | "committed" | "snapshot";
+  security_profile?: SecurityProfile;
 }
+
+export type SecurityProfile = "strict" | "default" | "permissive";
 
 export type BackgroundJobType = "query" | "review" | "implement" | "apply" | "cleanup";
 export type BackgroundJobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
@@ -139,6 +143,7 @@ export interface ClaudeJobWaitResult {
   age_ms: number;
   heartbeat_age_ms?: number;
   stale_state: BackgroundJobStaleState;
+  wait: ClaudeWaitMetadata;
   next_actions: WorkflowNextAction[];
 }
 
@@ -312,8 +317,21 @@ export interface ClaudeTaskResult {
   completed_inline?: boolean;
   waiting?: boolean;
   do_not_start_duplicate_job?: boolean;
+  wait?: ClaudeWaitMetadata;
   warnings?: string[];
   next_actions: WorkflowNextAction[];
+}
+
+export interface ClaudeWaitMetadata {
+  mode: "block" | "background";
+  timeout_sec: number;
+  completed_inline: boolean;
+  waiting: boolean;
+  timed_out: boolean;
+  do_not_start_duplicate_job: boolean;
+  continuation_tool: "claude_task";
+  progress_notifications: "not_available";
+  progress_note: string;
 }
 
 // ---- Structured output types ----
@@ -546,15 +564,16 @@ const filesSchema = z.array(z.string().trim().min(1)).optional();
 const constraintsSchema = z.array(z.string().trim().min(1)).optional();
 const worktreeNameSchema = z.string().regex(/^[A-Za-z0-9_-]+$/, "worktreeName may only contain letters, numbers, hyphens, and underscores").optional();
 const dirtyPolicySchema = z.enum(["ask", "committed", "snapshot"]).optional();
+const securityProfileSchema = z.enum(["strict", "default", "permissive"]).optional().default("default");
 
 export const claudeStatusInputSchema = z.object({
   cwd: cwdSchema,
-});
+}).strict();
 
 export const claudeSetupInputSchema = z.object({
   cwd: cwdSchema,
   configure_allow_root: z.boolean().optional().default(false),
-});
+}).strict();
 
 export const claudeQueryInputSchema = z.object({
   task: taskSchema,
@@ -564,7 +583,7 @@ export const claudeQueryInputSchema = z.object({
   max_turns: maxTurnsSchema.optional(),
   fast: z.boolean().optional(),
   resume: z.boolean().optional(),
-});
+}).strict();
 
 export const claudeReviewInputSchema = z.object({
   task: taskSchema,
@@ -574,7 +593,7 @@ export const claudeReviewInputSchema = z.object({
   files: filesSchema,
   timeout_sec: timeoutSchema.default(180),
   max_turns: maxTurnsSchema.optional(),
-});
+}).strict();
 
 export const claudeImplementInputSchema = z.object({
   task: taskSchema,
@@ -590,7 +609,8 @@ export const claudeImplementInputSchema = z.object({
   max_changed_files: z.number().int().positive().max(100).optional(),
   worktreeName: worktreeNameSchema,
   dirty_policy: dirtyPolicySchema,
-}).refine((value) => !value.fork_session || !!value.session_key, {
+  security_profile: securityProfileSchema,
+}).strict().refine((value) => !value.fork_session || !!value.session_key, {
   message: "fork_session requires session_key",
   path: ["fork_session"],
 }).refine((value) => !value.resume_latest || !value.session_key, {
@@ -612,7 +632,8 @@ export const claudeTaskInputSchema = z.object({
   constraints: constraintsSchema,
   diff: z.string().optional(),
   dirty_policy: dirtyPolicySchema,
-}).refine((value) => value.mode !== "read" || !value.resume_latest, {
+  security_profile: securityProfileSchema,
+}).strict().refine((value) => value.mode !== "read" || !value.resume_latest, {
   message: "resume_latest is only supported for write mode",
   path: ["resume_latest"],
 }).refine((value) => value.mode !== "review" || !value.resume_latest, {
@@ -630,7 +651,7 @@ export const claudeApplyInputSchema = z.object({
   preview: z.boolean().optional(),
   background: z.boolean().optional(),
   confirmed_by_user: z.boolean().optional(),
-}).refine((value) => !(value.preview === true && value.cleanup === true), {
+}).strict().refine((value) => !(value.preview === true && value.cleanup === true), {
   message: "preview=true cannot be combined with cleanup=true",
   path: ["cleanup"],
 });
@@ -640,7 +661,7 @@ export const claudeCleanupInputSchema = z.object({
   older_than_hours: z.number().nonnegative().max(24 * 365).optional().default(24),
   dry_run: z.boolean().optional().default(true),
   background: z.boolean().optional(),
-});
+}).strict();
 
 export const claudeRunsInputSchema = z.object({
   cwd: cwdSchema,
@@ -648,31 +669,31 @@ export const claudeRunsInputSchema = z.object({
   type: z.enum(["query", "review", "implement", "apply", "cleanup"]).optional(),
   status: z.enum(["success", "failed", "partial", "needs_user", "unknown"]).optional(),
   worktree_name: z.string().trim().min(1).optional(),
-});
+}).strict();
 
 export const claudeRunInspectInputSchema = z.object({
   cwd: cwdSchema,
   run_id: z.string().trim().min(1, "run_id is required"),
-});
+}).strict();
 
 export const claudeJobsInputSchema = z.object({
   cwd: cwdSchema,
   limit: z.number().int().positive().max(200).optional().default(20),
   status: z.enum(["queued", "running", "succeeded", "failed", "cancelled"]).optional(),
   type: z.enum(["query", "review", "implement", "apply", "cleanup"]).optional(),
-});
+}).strict();
 
 export const claudeJobResultInputSchema = z.object({
   cwd: cwdSchema,
   job_id: z.string().trim().min(1, "job_id is required"),
-});
+}).strict();
 
 export const claudeResultInputSchema = z.object({
   cwd: cwdSchema,
   job_id: z.string().trim().min(1).optional(),
   run_id: z.string().trim().min(1).optional(),
   prefer: z.enum(["latest-job", "latest-run", "latest-implement", "latest-review"]).optional().default("latest-job"),
-}).refine((value) => !(value.job_id && value.run_id), {
+}).strict().refine((value) => !(value.job_id && value.run_id), {
   message: "job_id and run_id cannot be combined",
   path: ["job_id"],
 });
@@ -685,25 +706,25 @@ export const claudeJobWaitInputSchema = z.object({
 export const claudeJobCancelInputSchema = z.object({
   cwd: cwdSchema,
   job_id: z.string().trim().min(1, "job_id is required"),
-});
+}).strict();
 
 export const claudeJobCleanupInputSchema = z.object({
   cwd: cwdSchema,
   older_than_hours: z.number().nonnegative().max(24 * 365).optional().default(24),
   dry_run: z.boolean().optional().default(true),
   limit: z.number().int().positive().max(200).optional().default(20),
-});
+}).strict();
 
 export const claudeWorkspaceStatusInputSchema = z.object({
   cwd: cwdSchema,
   limit: z.number().int().positive().max(200).optional().default(10),
   include_terminal: z.boolean().optional().default(true),
-});
+}).strict();
 
 export const claudeReviewGateInputSchema = z.object({
   cwd: cwdSchema,
   action: z.enum(["status", "enable", "disable"]).optional().default("status"),
-});
+}).strict();
 
 export function validationErrorMessage(err: unknown): string {
   if (err instanceof z.ZodError) {
@@ -868,7 +889,8 @@ export function buildQueryPrompt(input: ClaudeQueryInput): string {
 export function jsonResult(data: unknown): CallToolResult {
   return {
     content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-  };
+    structuredContent: data as Record<string, unknown>,
+  } as CallToolResult;
 }
 
 export class StructuredToolError extends Error {
@@ -885,8 +907,9 @@ export function errorResult(error: string | Record<string, unknown>): CallToolRe
   const payload = typeof error === "string" ? { error } : error;
   return {
     content: [{ type: "text", text: JSON.stringify(payload) }],
+    structuredContent: payload,
     isError: true,
-  };
+  } as CallToolResult;
 }
 
 export function formatDuration(ms: number): string {

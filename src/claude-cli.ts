@@ -1,12 +1,13 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { cp, rm, writeFile, mkdir, readFile, readdir, stat } from "node:fs/promises";
+import { cp, rm, writeFile, mkdir, readFile, readdir, stat, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { execCapture, sanitizeEnv, resolveRepoLocalPath } from "./guard.js";
 import { JobStore, type BackgroundJobRecord } from "./jobs.js";
+import { acquireFileLock, LockBusyError } from "./lock.js";
 import { SessionStore, computeRepoKey, RECENT_WINDOW_MINUTES, type Session } from "./session.js";
 import type {
   ApplyPlannedChange,
@@ -61,6 +62,8 @@ import type {
   WorkspaceAttentionItem,
   ClaudeReviewGateInput,
   ClaudeReviewGateResult,
+  ClaudeWaitMetadata,
+  SecurityProfile,
 } from "./schema.js";
 import {
   QUERY_SCHEMA,
@@ -395,6 +398,26 @@ export function createTaskFingerprint(input: {
 
 function buildDuplicateJobMessage(job: BackgroundJobSummary): string {
   return `An equivalent ${job.type} job is already ${job.status}: ${job.job_id}. Use claude_task(job_id="${job.job_id}") to continue waiting; do not restart or duplicate the task.`;
+}
+
+function buildWaitMetadata(input: {
+  mode?: "block" | "background";
+  timeoutSec?: number;
+  completedInline?: boolean;
+  waiting?: boolean;
+  doNotStartDuplicateJob?: boolean;
+}): ClaudeWaitMetadata {
+  return {
+    mode: input.mode ?? "block",
+    timeout_sec: input.timeoutSec ?? 540,
+    completed_inline: input.completedInline === true,
+    waiting: input.waiting === true,
+    timed_out: input.waiting === true,
+    do_not_start_duplicate_job: input.doNotStartDuplicateJob === true,
+    continuation_tool: "claude_task",
+    progress_notifications: "not_available",
+    progress_note: "The current MCP SDK/server wrapper does not expose a request progress token in this handler, so progress is represented in structured wait metadata.",
+  };
 }
 
 type InlineWaitResult = {
@@ -1559,6 +1582,11 @@ async function buildClaudeTaskInlineResult(input: {
         related_runs: claudeResult.related_runs,
         completed_inline: true,
         do_not_start_duplicate_job: false,
+        wait: buildWaitMetadata({
+          completedInline: true,
+          waiting: false,
+          doNotStartDuplicateJob: false,
+        }),
         warnings: [],
         next_actions: claudeResult.next_actions,
       };
@@ -1600,6 +1628,11 @@ async function buildClaudeTaskInlineResult(input: {
     completed_inline: completedInline || undefined,
     waiting: waiting || undefined,
     do_not_start_duplicate_job: staled || waiting ? true : false,
+    wait: buildWaitMetadata({
+      completedInline,
+      waiting: waiting || staled,
+      doNotStartDuplicateJob: staled || waiting ? true : false,
+    }),
     warnings: [],
     next_actions: buildNextActions({ cwd, job, run: runEntry, session, related_runs: relatedRuns, change_count: changeCount }),
   };
@@ -1616,6 +1649,12 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         status: "failed",
         summary: `Job not found: ${input.job_id}`,
         do_not_start_duplicate_job: true,
+        wait: buildWaitMetadata({
+          timeoutSec: input.wait_timeout_sec ?? 540,
+          completedInline: false,
+          waiting: false,
+          doNotStartDuplicateJob: true,
+        }),
         warnings: [],
         next_actions: [],
       };
@@ -1640,6 +1679,12 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         delegated_mode: delegatedModeForJobType(job.type),
         status: "failed",
         summary: `Job not found during wait: ${input.job_id}`,
+        wait: buildWaitMetadata({
+          timeoutSec: input.wait_timeout_sec ?? 540,
+          completedInline: false,
+          waiting: false,
+          doNotStartDuplicateJob: true,
+        }),
         warnings: [],
         next_actions: [],
       };
@@ -1676,6 +1721,12 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
       completed_inline: false,
       waiting: true,
       do_not_start_duplicate_job: true,
+      wait: buildWaitMetadata({
+        timeoutSec: input.wait_timeout_sec ?? 540,
+        completedInline: false,
+        waiting: true,
+        doNotStartDuplicateJob: true,
+      }),
       warnings: [],
       next_actions: [
         {
@@ -1723,6 +1774,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         timeout_sec: INTERNAL_CLAUDE_TIMEOUT_SEC,
         resume_latest: input.resume_latest,
         dirty_policy: input.dirty_policy,
+        security_profile: input.security_profile,
       });
       if (!("job" in implementResult)) {
         return {
@@ -1730,6 +1782,12 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
           status: "needs_user",
           summary: "Write task needs a dirty-workspace decision before it can be delegated.",
           result: implementResult as unknown as Record<string, unknown>,
+          wait: buildWaitMetadata({
+            timeoutSec: input.wait_timeout_sec ?? 540,
+            completedInline: false,
+            waiting: false,
+            doNotStartDuplicateJob: false,
+          }),
           warnings,
           next_actions: [],
         } satisfies ClaudeTaskResult;
@@ -1742,6 +1800,12 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         delegated_mode: delegatedMode,
         status: "failed",
         summary: "Failed to create background job.",
+        wait: buildWaitMetadata({
+          timeoutSec: input.wait_timeout_sec ?? 540,
+          completedInline: false,
+          waiting: false,
+          doNotStartDuplicateJob: false,
+        }),
         warnings,
         next_actions: [],
       } satisfies ClaudeTaskResult;
@@ -1756,6 +1820,13 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         deduped: queued.deduped,
         completed_inline: false,
         do_not_start_duplicate_job: queued.do_not_start_duplicate_job ?? (queued.deduped ? true : undefined),
+        wait: buildWaitMetadata({
+          mode: "background",
+          timeoutSec: input.wait_timeout_sec ?? 540,
+          completedInline: false,
+          waiting: false,
+          doNotStartDuplicateJob: queued.do_not_start_duplicate_job ?? queued.deduped === true,
+        }),
         warnings,
         next_actions: [
           {
@@ -1779,6 +1850,12 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         summary: `Job ${queued.job.job_id} not found during inline wait.`,
         job: queued.job,
         deduped: queued.deduped,
+        wait: buildWaitMetadata({
+          timeoutSec: input.wait_timeout_sec ?? 540,
+          completedInline: false,
+          waiting: false,
+          doNotStartDuplicateJob: true,
+        }),
         warnings,
         next_actions: [],
       } satisfies ClaudeTaskResult;
@@ -1801,6 +1878,12 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
           delegated_mode: delegatedMode,
           status: "failed",
           summary: `Job ${queued.job.job_id} disappeared during inline wait.`,
+          wait: buildWaitMetadata({
+            timeoutSec: input.wait_timeout_sec ?? 540,
+            completedInline: false,
+            waiting: false,
+            doNotStartDuplicateJob: true,
+          }),
           warnings,
           next_actions: [],
         } satisfies ClaudeTaskResult;
@@ -1825,6 +1908,12 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
       completed_inline: false,
       waiting: true,
       do_not_start_duplicate_job: true,
+      wait: buildWaitMetadata({
+        timeoutSec: input.wait_timeout_sec ?? 540,
+        completedInline: false,
+        waiting: true,
+        doNotStartDuplicateJob: true,
+      }),
       warnings,
       next_actions: [
         {
@@ -2029,6 +2118,11 @@ export async function waitForBackgroundJob(
       do_not_start_duplicate_job: false,
       age_ms: ageMsSince(record.created_at, Date.now()) ?? 0,
       stale_state: "fresh",
+      wait: buildWaitMetadata({
+        completedInline: true,
+        waiting: false,
+        doNotStartDuplicateJob: false,
+      }),
       next_actions: buildNextActions({ cwd: input.cwd, job }),
     };
   }
@@ -2053,6 +2147,11 @@ export async function waitForBackgroundJob(
       do_not_start_duplicate_job: false,
       age_ms: ageMsSince(job.created_at, Date.now()) ?? 0,
       stale_state: "fresh",
+      wait: buildWaitMetadata({
+        completedInline: true,
+        waiting: false,
+        doNotStartDuplicateJob: false,
+      }),
       next_actions: buildNextActions({ cwd: input.cwd, job }),
     };
   }
@@ -2070,6 +2169,11 @@ export async function waitForBackgroundJob(
       age_ms: ageMsSince(job.created_at, Date.now()) ?? 0,
       heartbeat_age_ms: ageMsSince(job.heartbeat_at ?? job.updated_at, Date.now()),
       stale_state: "stale",
+      wait: buildWaitMetadata({
+        completedInline: false,
+        waiting: true,
+        doNotStartDuplicateJob: true,
+      }),
       next_actions: buildActiveWaitActions({ cwd: input.cwd, job, staleState: "stale" }),
     };
   }
@@ -2090,6 +2194,11 @@ export async function waitForBackgroundJob(
       job,
       heartbeatAgeMs: ageMsSince(job.heartbeat_at ?? job.updated_at, Date.now()),
       pidAlive: isPidAlive(job.pid),
+    }),
+    wait: buildWaitMetadata({
+      completedInline: false,
+      waiting: true,
+      doNotStartDuplicateJob: true,
     }),
     next_actions: buildActiveWaitActions({ cwd: input.cwd, job, staleState: "fresh" }),
   };
@@ -2140,6 +2249,102 @@ export async function cleanupBackgroundJobs(
     dry_run: input.dry_run ?? true,
     limit: input.limit ?? 20,
   });
+}
+
+export interface DelegateArtifactCleanupInput {
+  cwd: string;
+  older_than_hours: number;
+  dry_run: boolean;
+  limit: number;
+}
+
+export interface DelegateArtifactCleanupResult {
+  jobs: ClaudeJobCleanupResult;
+  run_logs: {
+    dry_run: boolean;
+    matched_count: number;
+    removed_count: number;
+    failed_count: number;
+    entries: Array<{
+      run_id: string;
+      removed: boolean;
+      updated_at?: string;
+      error?: string;
+    }>;
+  };
+}
+
+export async function cleanupDelegateArtifacts(
+  input: DelegateArtifactCleanupInput
+): Promise<DelegateArtifactCleanupResult> {
+  const jobStore = await getJobStore();
+  const jobs = await jobStore.cleanup({
+    cwd: input.cwd,
+    older_than_hours: input.older_than_hours,
+    dry_run: input.dry_run,
+    limit: input.limit,
+  });
+  const activeRunIds = new Set(
+    (await jobStore.list({ cwd: input.cwd, limit: 1000 }))
+      .filter((job) => job.status === "queued" || job.status === "running")
+      .map((job) => job.run_id)
+      .filter((runId): runId is string => typeof runId === "string" && runId.length > 0)
+  );
+  const cutoff = Date.now() - input.older_than_hours * 60 * 60 * 1000;
+  const logDir = getRunLogDir(input.cwd);
+  const names = await readdir(logDir).catch(() => []);
+  const candidates = (await Promise.all(
+    names
+      .filter((name) => name.endsWith(".json"))
+      .map(async (name) => {
+        const file = path.join(logDir, name);
+        try {
+          const st = await stat(file);
+          const runId = name.replace(/\.json$/, "");
+          if (st.mtimeMs > cutoff || activeRunIds.has(runId)) return null;
+          return { run_id: runId, file, updated_at: st.mtime.toISOString(), mtimeMs: st.mtimeMs };
+        } catch {
+          return null;
+        }
+      })
+  ))
+    .filter((entry): entry is { run_id: string; file: string; updated_at: string; mtimeMs: number } => entry !== null)
+    .sort((a, b) => a.mtimeMs - b.mtimeMs)
+    .slice(0, input.limit);
+
+  const entries: DelegateArtifactCleanupResult["run_logs"]["entries"] = [];
+  let removedCount = 0;
+  let failedCount = 0;
+  for (const candidate of candidates) {
+    if (input.dry_run) {
+      entries.push({ run_id: candidate.run_id, removed: false, updated_at: candidate.updated_at });
+      continue;
+    }
+    try {
+      await unlink(candidate.file);
+      removedCount += 1;
+      entries.push({ run_id: candidate.run_id, removed: true, updated_at: candidate.updated_at });
+    } catch (err) {
+      failedCount += 1;
+      entries.push({
+        run_id: candidate.run_id,
+        removed: false,
+        updated_at: candidate.updated_at,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return {
+    jobs,
+    run_logs: {
+      dry_run: input.dry_run,
+      matched_count: candidates.length,
+      removed_count: removedCount,
+      failed_count: failedCount,
+      entries,
+    },
+  };
 }
 
 export async function resolveLatestImplementSession(input: { cwd: string }): Promise<{ run_id: string; session_id: string } | null> {
@@ -2998,50 +3203,7 @@ function createImplementOptions(
     prompt: buildImplementPrompt(input),
     cwd: input.cwd,
     tools: "Read,Glob,Grep,Edit,Write,Bash",
-    allowedTools: [
-      "Read",
-      "Glob",
-      "Grep",
-      "Edit",
-      "Write",
-      "Bash(git status)",
-      "Bash(git diff *)",
-      "Bash(git add *)",
-      "Bash(git log *)",
-      "Bash(git show *)",
-      "Bash(npm test *)",
-      "Bash(npm run test *)",
-      "Bash(npm run lint *)",
-      "Bash(npx *)",
-      "Bash(pytest *)",
-      "Bash(go test *)",
-      "Bash(cargo test *)",
-      "Bash(yarn test *)",
-      "Bash(pnpm test *)",
-      "Bash(pnpm run lint *)",
-      "Bash(ls *)",
-      "Bash(cat *)",
-      "Bash(wc *)",
-      "Bash(find *)",
-      "Bash(head *)",
-      "Bash(tail *)",
-      "Bash(sort *)",
-      "Bash(uniq *)",
-      "Bash(grep *)",
-      "Bash(rg *)",
-      "Bash(which *)",
-      "Bash(echo *)",
-      "Bash(date *)",
-      "Bash(mkdir *)",
-      "Bash(mkdir -p *)",
-      "Bash(cp *)",
-      "Bash(mv *)",
-      "Bash(node *)",
-      "Bash(python *)",
-      "Bash(python3 *)",
-      "Bash(tsc *)",
-      "Bash(eslint *)",
-    ],
+    allowedTools: implementAllowedTools(input.security_profile ?? "default"),
     disallowedTools: [
       ...DANGEROUS_DISALLOWED_TOOLS,
       "Bash(git push --force *)",
@@ -3070,6 +3232,58 @@ function createImplementOptions(
     forkSession: forked,
     maxBudgetUsd: input.max_cost_usd,
   };
+}
+
+function implementAllowedTools(profile: SecurityProfile): string[] {
+  const strictTools = [
+    "Read",
+    "Glob",
+    "Grep",
+    "Edit",
+    "Write",
+    "Bash(git status)",
+    "Bash(git diff *)",
+    "Bash(git add *)",
+    "Bash(git log *)",
+    "Bash(git show *)",
+    "Bash(npm test *)",
+    "Bash(npm run test *)",
+    "Bash(npm run lint *)",
+    "Bash(pytest *)",
+    "Bash(go test *)",
+    "Bash(cargo test *)",
+    "Bash(yarn test *)",
+    "Bash(pnpm test *)",
+    "Bash(pnpm run lint *)",
+    "Bash(ls *)",
+    "Bash(cat *)",
+    "Bash(wc *)",
+    "Bash(find *)",
+    "Bash(head *)",
+    "Bash(tail *)",
+    "Bash(sort *)",
+    "Bash(uniq *)",
+    "Bash(grep *)",
+    "Bash(rg *)",
+    "Bash(which *)",
+    "Bash(echo *)",
+    "Bash(date *)",
+  ];
+  const defaultTools = [
+    ...strictTools,
+    "Bash(mkdir *)",
+    "Bash(mkdir -p *)",
+    "Bash(cp *)",
+    "Bash(mv *)",
+    "Bash(node *)",
+    "Bash(python *)",
+    "Bash(python3 *)",
+    "Bash(tsc *)",
+    "Bash(eslint *)",
+  ];
+  if (profile === "strict") return strictTools;
+  if (profile === "permissive") return [...defaultTools, "Bash(npx *)"];
+  return defaultTools;
 }
 
 export async function checkClaudeStatus(cwd: string): Promise<ClaudeStatusResult> {
@@ -3638,6 +3852,26 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
     return finish({ applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: `worktree directory not found: ${wtReal}` });
   }
 
+  const worktreeLock = await acquireFileLock({
+    cwd: input.cwd,
+    resource: `worktree:${path.basename(wtReal)}`,
+  }).catch((err) => {
+    if (err instanceof LockBusyError) return err;
+    throw err;
+  });
+  if (worktreeLock instanceof LockBusyError) {
+    return finish({
+      applied_files: [],
+      diff_stat: "",
+      cleanup_performed: false,
+      conflicts: [],
+      error: `Another operation is already using delegated worktree ${path.basename(wtReal)}. Retry after the current apply or cleanup finishes.`,
+      preview: input.preview === true,
+      planned_changes: [],
+    });
+  }
+
+  try {
   // Non-preview apply requires explicit user approval
   if (input.preview !== true && input.confirmed_by_user !== true) {
     return finish({
@@ -3830,6 +4064,9 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   }
 
   return finish({ applied_files: copied, diff_stat: diffStat, cleanup_performed: cleanupPerformed, conflicts, planned_changes: plannedChanges });
+  } finally {
+    await worktreeLock.release();
+  }
 }
 
 // ---- Cleanup delegated worktrees ----
@@ -3839,6 +4076,27 @@ export async function runClaudeCleanup(input: ClaudeCleanupInput, runId: string)
   const dryRun = input.dry_run !== false; // default true
   const olderThanHours = input.older_than_hours ?? 0;
 
+  const cleanupLock = await acquireFileLock({
+    cwd: input.cwd,
+    resource: "workspace:cleanup",
+  }).catch((err) => {
+    if (err instanceof LockBusyError) return err;
+    throw err;
+  });
+  if (cleanupLock instanceof LockBusyError) {
+    return {
+      dry_run: dryRun,
+      removed_count: 0,
+      failed_count: 1,
+      entries: [{
+        worktree_name: "",
+        removed: false,
+        error: "Another cleanup operation is already running for this workspace. Retry after it finishes.",
+      }],
+    };
+  }
+
+  try {
   const worktreeDir = path.join(input.cwd, ".claude", "worktrees");
   const entries: CleanupEntry[] = [];
   let removedCount = 0;
@@ -3881,6 +4139,22 @@ export async function runClaudeCleanup(input: ClaudeCleanupInput, runId: string)
       }
 
       // Actual remove — use relative path from repo root, not just basename
+      const worktreeLock = await acquireFileLock({
+        cwd: input.cwd,
+        resource: `worktree:${name}`,
+      }).catch((err) => {
+        if (err instanceof LockBusyError) return err;
+        throw err;
+      });
+      if (worktreeLock instanceof LockBusyError) {
+        failedCount++;
+        entries.push({
+          worktree_name: name,
+          removed: false,
+          error: `Another operation is already using delegated worktree ${name}. Retry after it finishes.`,
+        });
+        continue;
+      }
       try {
         await execCapture("git", ["worktree", "remove", "--force", wtRelPath], { cwd: input.cwd, timeoutMs: 30000 });
         removedCount++;
@@ -3893,6 +4167,8 @@ export async function runClaudeCleanup(input: ClaudeCleanupInput, runId: string)
       } catch (err) {
         failedCount++;
         entries.push({ worktree_name: name, removed: false, error: err instanceof Error ? err.message : String(err) });
+      } finally {
+        await worktreeLock.release();
       }
     }
 
@@ -3918,4 +4194,7 @@ export async function runClaudeCleanup(input: ClaudeCleanupInput, runId: string)
   }, input.cwd);
 
   return { dry_run: dryRun, removed_count: removedCount, failed_count: failedCount, entries };
+  } finally {
+    await cleanupLock.release();
+  }
 }
