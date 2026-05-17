@@ -3224,8 +3224,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path7) {
-      let input = path7;
+    function removeDotSegments(path8) {
+      let input = path8;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3424,8 +3424,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path7, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path7 && path7 !== "/" ? path7 : void 0;
+        const [path8, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path8 && path8 !== "/" ? path8 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -7554,10 +7554,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path7) {
-  if (!path7)
+function getElementAtPath(obj, path8) {
+  if (!path8)
     return obj;
-  return path7.reduce((acc, key) => acc?.[key], obj);
+  return path8.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -7966,11 +7966,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path7, issues) {
+function prefixIssues(path8, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path7);
+    iss.path.unshift(path8);
     return iss;
   });
 }
@@ -8117,16 +8117,16 @@ function flattenError(error51, mapper = (issue2) => issue2.message) {
 }
 function formatError(error51, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error52, path7 = []) => {
+  const processError = (error52, path8 = []) => {
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path7, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path8, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path7, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path8, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path7, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path8, ...issue2.path]);
       } else {
-        const fullpath = [...path7, ...issue2.path];
+        const fullpath = [...path8, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -8153,17 +8153,17 @@ function formatError(error51, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error51, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error52, path7 = []) => {
+  const processError = (error52, path8 = []) => {
     var _a3, _b;
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path7, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path8, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path7, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path8, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path7, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path8, ...issue2.path]);
       } else {
-        const fullpath = [...path7, ...issue2.path];
+        const fullpath = [...path8, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -8195,8 +8195,8 @@ function treeifyError(error51, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path7 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path7) {
+  const path8 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path8) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -21188,13 +21188,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path7 = ref.slice(1).split("/").filter(Boolean);
-  if (path7.length === 0) {
+  const path8 = ref.slice(1).split("/").filter(Boolean);
+  if (path8.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path7[0] === defsKey) {
-    const key = path7[1];
+  if (path8[0] === defsKey) {
+    const key = path8[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -24899,7 +24899,7 @@ var StdioServerTransport = class {
 init_guard();
 import { randomUUID as randomUUID3 } from "node:crypto";
 import { resolve as resolve2 } from "node:path";
-import { fileURLToPath as fileURLToPath3 } from "node:url";
+import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/package-info.ts
 import { readFile } from "node:fs/promises";
@@ -25036,18 +25036,11 @@ async function configureCodexAllowRoot(rawCwd) {
 }
 
 // src/claude-cli.ts
-init_guard();
-import { spawn as spawn2 } from "node:child_process";
 import { cp as cp2, rm as rm2, writeFile as writeFile4, mkdir as mkdir5, readFile as readFile5, readdir as readdir2, stat as stat3, unlink as unlink2 } from "node:fs/promises";
 import { existsSync as existsSync3 } from "node:fs";
-import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
-import path6 from "node:path";
-
-// src/jobs.ts
-import { existsSync } from "node:fs";
-import { mkdir as mkdir3, readFile as readFile4, readdir, rename, unlink, writeFile as writeFile3 } from "node:fs/promises";
-import path4 from "node:path";
+init_guard();
+import { fileURLToPath as fileURLToPath3 } from "node:url";
+import path7 from "node:path";
 
 // src/lock.ts
 import { mkdir as mkdir2, readFile as readFile3, rm, stat as stat2, writeFile as writeFile2 } from "node:fs/promises";
@@ -25140,155 +25133,11 @@ async function withFileLock(input, fn) {
   }
 }
 
-// src/jobs.ts
-var TERMINAL_JOB_STATUSES = /* @__PURE__ */ new Set(["succeeded", "failed", "cancelled"]);
-var ACTIVE_JOB_STATUSES = /* @__PURE__ */ new Set(["queued", "running"]);
-var JobStore = class {
-  constructor(baseDir) {
-    this.baseDir = baseDir;
-    this.jobsDir = path4.join(baseDir, "jobs");
-  }
-  jobsDir;
-  async init() {
-    await mkdir3(this.jobsDir, { recursive: true });
-  }
-  async create(record2) {
-    await this.init();
-    await this.writeRecord(record2);
-  }
-  async get(jobId) {
-    const filePath = this.getJobPath(jobId);
-    if (!existsSync(filePath)) return null;
-    try {
-      return JSON.parse(await readFile4(filePath, "utf8"));
-    } catch {
-      return null;
-    }
-  }
-  async update(jobId, patch) {
-    return withFileLock({ cwd: this.baseDir, resource: `job:${jobId}` }, async () => {
-      const current = await this.get(jobId);
-      if (!current) return null;
-      const next = {
-        ...current,
-        ...patch,
-        job_id: current.job_id
-      };
-      await this.writeRecord(next);
-      return next;
-    });
-  }
-  async list(input) {
-    const jobs = await this.readAllRecords();
-    return jobs.filter((entry) => entry !== null).filter((entry) => entry.cwd === input.cwd).filter((entry) => !input.status || entry.status === input.status).filter((entry) => !input.type || entry.type === input.type).sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, input.limit);
-  }
-  async cleanup(input) {
-    const cutoff = typeof input.older_than_hours === "number" ? Date.now() - input.older_than_hours * 60 * 60 * 1e3 : null;
-    const jobs = (await this.readAllRecords()).filter((entry) => entry !== null).filter((entry) => entry.cwd === input.cwd).filter((entry) => TERMINAL_JOB_STATUSES.has(entry.status)).filter((entry) => {
-      if (cutoff === null) return true;
-      const updatedAt = Date.parse(entry.updated_at);
-      return Number.isFinite(updatedAt) && updatedAt <= cutoff;
-    }).sort((a, b) => a.updated_at.localeCompare(b.updated_at)).slice(0, input.limit);
-    const entries = [];
-    let removedCount = 0;
-    let failedCount = 0;
-    for (const job of jobs) {
-      if (input.dry_run) {
-        entries.push({
-          job_id: job.job_id,
-          type: job.type,
-          status: job.status,
-          updated_at: job.updated_at,
-          removed: false,
-          summary: job.summary
-        });
-        continue;
-      }
-      try {
-        await unlink(this.getJobPath(job.job_id));
-        removedCount += 1;
-        entries.push({
-          job_id: job.job_id,
-          type: job.type,
-          status: job.status,
-          updated_at: job.updated_at,
-          removed: true,
-          summary: job.summary
-        });
-      } catch (err) {
-        failedCount += 1;
-        entries.push({
-          job_id: job.job_id,
-          type: job.type,
-          status: job.status,
-          updated_at: job.updated_at,
-          removed: false,
-          summary: job.summary,
-          error: err instanceof Error ? err.message : String(err)
-        });
-      }
-    }
-    return {
-      dry_run: input.dry_run,
-      matched_count: jobs.length,
-      removed_count: removedCount,
-      failed_count: failedCount,
-      entries
-    };
-  }
-  async findActiveByFingerprint(input) {
-    const jobs = await this.readAllRecords();
-    const match = jobs.filter((entry) => entry !== null).filter((entry) => entry.cwd === input.cwd).filter((entry) => !input.type || entry.type === input.type).filter((entry) => entry.fingerprint === input.fingerprint).filter((entry) => ACTIVE_JOB_STATUSES.has(entry.status)).sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
-    return match ?? null;
-  }
-  async touchHeartbeat(jobId, heartbeatAt = (/* @__PURE__ */ new Date()).toISOString()) {
-    const current = await this.get(jobId);
-    if (!current) return null;
-    if (TERMINAL_JOB_STATUSES.has(current.status)) return current;
-    return this.update(jobId, {
-      heartbeat_at: heartbeatAt,
-      updated_at: heartbeatAt
-    });
-  }
-  async touchWait(jobId, waitAt = (/* @__PURE__ */ new Date()).toISOString(), recommendedDelayMs) {
-    const current = await this.get(jobId);
-    if (!current) return null;
-    if (TERMINAL_JOB_STATUSES.has(current.status)) return current;
-    return this.update(jobId, {
-      last_wait_at: waitAt,
-      last_wait_recommended_delay_ms: recommendedDelayMs
-    });
-  }
-  getJobPath(jobId) {
-    return path4.join(this.jobsDir, `${jobId}.json`);
-  }
-  async readAllRecords() {
-    await this.init();
-    const entries = await readdir(this.jobsDir).catch(() => []);
-    return Promise.all(
-      entries.filter((entry) => entry.endsWith(".json")).map(async (entry) => {
-        try {
-          const raw = await readFile4(path4.join(this.jobsDir, entry), "utf8");
-          return JSON.parse(raw);
-        } catch {
-          return null;
-        }
-      })
-    );
-  }
-  async writeRecord(record2) {
-    const filePath = this.getJobPath(record2.job_id);
-    const tmpPath = `${filePath}.tmp`;
-    await writeFile3(tmpPath, JSON.stringify(record2, null, 2), "utf8");
-    await rename(tmpPath, filePath);
-  }
-};
-
 // src/session.ts
-import { readFileSync, writeFileSync, renameSync, existsSync as existsSync2 } from "node:fs";
-import { mkdir as mkdir4, realpath as realpath3 } from "node:fs/promises";
+import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
+import { mkdir as mkdir3, realpath as realpath3 } from "node:fs/promises";
 import { createHash as createHash2 } from "node:crypto";
-import path5 from "node:path";
+import path4 from "node:path";
 async function computeRepoKey(cwd) {
   const resolved = await realpath3(cwd);
   return createHash2("sha256").update(resolved).digest("hex");
@@ -25299,11 +25148,11 @@ var MAX_AGE_HOURS = 24;
 var SessionStore = class {
   filePath;
   constructor(baseDir) {
-    this.filePath = path5.join(baseDir, "sessions.json");
+    this.filePath = path4.join(baseDir, "sessions.json");
   }
   async init() {
-    await mkdir4(path5.dirname(this.filePath), { recursive: true });
-    if (!existsSync2(this.filePath)) {
+    await mkdir3(path4.dirname(this.filePath), { recursive: true });
+    if (!existsSync(this.filePath)) {
       this.atomicWrite({ version: STORE_VERSION, sessions: [] });
     }
   }
@@ -25547,8 +25396,8 @@ var claudeReviewGateInputSchema = external_exports.object({
 function validationErrorMessage(err) {
   if (err instanceof external_exports.ZodError) {
     return err.issues.map((issue2) => {
-      const path7 = issue2.path.length ? issue2.path.join(".") : "input";
-      return `${path7}: ${issue2.message}`;
+      const path8 = issue2.path.length ? issue2.path.join(".") : "input";
+      return `${path8}: ${issue2.message}`;
     }).join("; ");
   }
   return err instanceof Error ? err.message : String(err);
@@ -25657,17 +25506,162 @@ async function getEnvironmentDiagnostics(safeEnv = sanitizeEnv()) {
   };
 }
 
-// src/claude-cli.ts
-function getRunLogDir(cwd) {
-  if (process.env.CODEX_CLAUDE_RUN_LOG_DIR) {
-    return path6.resolve(process.env.CODEX_CLAUDE_RUN_LOG_DIR);
+// src/background-jobs.ts
+init_guard();
+import { spawn as spawn2 } from "node:child_process";
+import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
+import path6 from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+
+// src/jobs.ts
+import { existsSync as existsSync2 } from "node:fs";
+import { mkdir as mkdir4, readFile as readFile4, readdir, rename, unlink, writeFile as writeFile3 } from "node:fs/promises";
+import path5 from "node:path";
+var TERMINAL_JOB_STATUSES = /* @__PURE__ */ new Set(["succeeded", "failed", "cancelled"]);
+var ACTIVE_JOB_STATUSES = /* @__PURE__ */ new Set(["queued", "running"]);
+var JobStore = class {
+  constructor(baseDir) {
+    this.baseDir = baseDir;
+    this.jobsDir = path5.join(baseDir, "jobs");
   }
-  const base = cwd ?? process.cwd();
-  return path6.join(base, ".codex-claude-delegate", "runs");
-}
+  jobsDir;
+  async init() {
+    await mkdir4(this.jobsDir, { recursive: true });
+  }
+  async create(record2) {
+    await this.init();
+    await this.writeRecord(record2);
+  }
+  async get(jobId) {
+    const filePath = this.getJobPath(jobId);
+    if (!existsSync2(filePath)) return null;
+    try {
+      return JSON.parse(await readFile4(filePath, "utf8"));
+    } catch {
+      return null;
+    }
+  }
+  async update(jobId, patch) {
+    return withFileLock({ cwd: this.baseDir, resource: `job:${jobId}` }, async () => {
+      const current = await this.get(jobId);
+      if (!current) return null;
+      const next = {
+        ...current,
+        ...patch,
+        job_id: current.job_id
+      };
+      await this.writeRecord(next);
+      return next;
+    });
+  }
+  async list(input) {
+    const jobs = await this.readAllRecords();
+    return jobs.filter((entry) => entry !== null).filter((entry) => entry.cwd === input.cwd).filter((entry) => !input.status || entry.status === input.status).filter((entry) => !input.type || entry.type === input.type).sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, input.limit);
+  }
+  async cleanup(input) {
+    const cutoff = typeof input.older_than_hours === "number" ? Date.now() - input.older_than_hours * 60 * 60 * 1e3 : null;
+    const jobs = (await this.readAllRecords()).filter((entry) => entry !== null).filter((entry) => entry.cwd === input.cwd).filter((entry) => TERMINAL_JOB_STATUSES.has(entry.status)).filter((entry) => {
+      if (cutoff === null) return true;
+      const updatedAt = Date.parse(entry.updated_at);
+      return Number.isFinite(updatedAt) && updatedAt <= cutoff;
+    }).sort((a, b) => a.updated_at.localeCompare(b.updated_at)).slice(0, input.limit);
+    const entries = [];
+    let removedCount = 0;
+    let failedCount = 0;
+    for (const job of jobs) {
+      if (input.dry_run) {
+        entries.push({
+          job_id: job.job_id,
+          type: job.type,
+          status: job.status,
+          updated_at: job.updated_at,
+          removed: false,
+          summary: job.summary
+        });
+        continue;
+      }
+      try {
+        await unlink(this.getJobPath(job.job_id));
+        removedCount += 1;
+        entries.push({
+          job_id: job.job_id,
+          type: job.type,
+          status: job.status,
+          updated_at: job.updated_at,
+          removed: true,
+          summary: job.summary
+        });
+      } catch (err) {
+        failedCount += 1;
+        entries.push({
+          job_id: job.job_id,
+          type: job.type,
+          status: job.status,
+          updated_at: job.updated_at,
+          removed: false,
+          summary: job.summary,
+          error: err instanceof Error ? err.message : String(err)
+        });
+      }
+    }
+    return {
+      dry_run: input.dry_run,
+      matched_count: jobs.length,
+      removed_count: removedCount,
+      failed_count: failedCount,
+      entries
+    };
+  }
+  async findActiveByFingerprint(input) {
+    const jobs = await this.readAllRecords();
+    const match = jobs.filter((entry) => entry !== null).filter((entry) => entry.cwd === input.cwd).filter((entry) => !input.type || entry.type === input.type).filter((entry) => entry.fingerprint === input.fingerprint).filter((entry) => ACTIVE_JOB_STATUSES.has(entry.status)).sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
+    return match ?? null;
+  }
+  async touchHeartbeat(jobId, heartbeatAt = (/* @__PURE__ */ new Date()).toISOString()) {
+    const current = await this.get(jobId);
+    if (!current) return null;
+    if (TERMINAL_JOB_STATUSES.has(current.status)) return current;
+    return this.update(jobId, {
+      heartbeat_at: heartbeatAt,
+      updated_at: heartbeatAt
+    });
+  }
+  async touchWait(jobId, waitAt = (/* @__PURE__ */ new Date()).toISOString(), recommendedDelayMs) {
+    const current = await this.get(jobId);
+    if (!current) return null;
+    if (TERMINAL_JOB_STATUSES.has(current.status)) return current;
+    return this.update(jobId, {
+      last_wait_at: waitAt,
+      last_wait_recommended_delay_ms: recommendedDelayMs
+    });
+  }
+  getJobPath(jobId) {
+    return path5.join(this.jobsDir, `${jobId}.json`);
+  }
+  async readAllRecords() {
+    await this.init();
+    const entries = await readdir(this.jobsDir).catch(() => []);
+    return Promise.all(
+      entries.filter((entry) => entry.endsWith(".json")).map(async (entry) => {
+        try {
+          const raw = await readFile4(path5.join(this.jobsDir, entry), "utf8");
+          return JSON.parse(raw);
+        } catch {
+          return null;
+        }
+      })
+    );
+  }
+  async writeRecord(record2) {
+    const filePath = this.getJobPath(record2.job_id);
+    const tmpPath = `${filePath}.tmp`;
+    await writeFile3(tmpPath, JSON.stringify(record2, null, 2), "utf8");
+    await rename(tmpPath, filePath);
+  }
+};
+
+// src/background-jobs.ts
 var JOB_STATE_DIR_ENV = "CODEX_CLAUDE_BACKGROUND_STATE_DIR";
-var REVIEW_GATE_RELATIVE_PATH = path6.join(".codex-claude-delegate", "review-gate.json");
-var REVIEW_GATE_HOOK_COMMAND = "node '${CLAUDE_PLUGIN_ROOT}/hooks/review-gate-stop.mjs'";
 var JOB_RUNNER_STARTUP_GRACE_MS = 100;
 var STALE_CANDIDATE_HEARTBEAT_MS = 9e4;
 var STALE_HEARTBEAT_MS = 3e5;
@@ -25675,17 +25669,6 @@ var __test = {
   inlineWaitPollIntervalMs: 2e3,
   inlineWaitTimeoutMs: 54e4
 };
-var stores = /* @__PURE__ */ new Map();
-async function getStore(cwd) {
-  let sessionStore = stores.get(cwd);
-  if (!sessionStore) {
-    const sessionDir = path6.join(cwd, ".codex-claude-delegate");
-    sessionStore = new SessionStore(sessionDir);
-    await sessionStore.init();
-    stores.set(cwd, sessionStore);
-  }
-  return sessionStore;
-}
 function getBackgroundStateDir() {
   if (process.env[JOB_STATE_DIR_ENV]) {
     return path6.resolve(process.env[JOB_STATE_DIR_ENV]);
@@ -25700,33 +25683,421 @@ async function getJobStore() {
   await store.init();
   return store;
 }
+function isRunLogStatus(value) {
+  return value === "success" || value === "failed" || value === "partial" || value === "needs_user" || value === "unknown";
+}
+function extractBackgroundResultStatus(result) {
+  if (!result) return void 0;
+  if (isRunLogStatus(result.status)) return result.status;
+  const claudeReport = result.claude_report;
+  if (claudeReport && typeof claudeReport === "object") {
+    const reportStatus = claudeReport.status;
+    if (isRunLogStatus(reportStatus)) return reportStatus;
+  }
+  return void 0;
+}
+function toJobSummary(record2) {
+  return {
+    job_id: record2.job_id,
+    type: record2.type,
+    status: record2.status,
+    result_status: record2.result_status ?? extractBackgroundResultStatus(record2.result),
+    cwd: record2.cwd,
+    created_at: record2.created_at,
+    updated_at: record2.updated_at,
+    heartbeat_at: record2.heartbeat_at,
+    last_wait_at: record2.last_wait_at,
+    last_wait_recommended_delay_ms: record2.last_wait_recommended_delay_ms,
+    fingerprint: record2.fingerprint,
+    pid: record2.pid,
+    run_id: record2.run_id,
+    worktree_name: record2.worktree_name,
+    summary: record2.summary,
+    error: record2.error
+  };
+}
+function stableJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value).filter(([, entryValue]) => entryValue !== void 0).sort(([left], [right]) => left.localeCompare(right));
+    return `{${entries.map(([key, entryValue]) => `${JSON.stringify(key)}:${stableJson(entryValue)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+function normalizeStringArray(value) {
+  if (!Array.isArray(value)) return void 0;
+  return value.filter((entry) => typeof entry === "string").map((entry) => entry.trim()).filter((entry) => entry.length > 0).sort((a, b) => a.localeCompare(b));
+}
+function buildFingerprintPayload(input) {
+  return {
+    cwd: path6.resolve(input.cwd),
+    tool: input.type,
+    mode: input.payload.mode,
+    task: typeof input.payload.task === "string" ? input.payload.task.trim() : void 0,
+    files: normalizeStringArray(input.payload.files),
+    instruction_files: normalizeStringArray(input.payload.instruction_files),
+    dirty_policy: input.payload.dirty_policy ?? (input.type === "implement" ? "ask" : void 0),
+    session_key: input.payload.session_key,
+    resume_latest: input.payload.resume_latest,
+    fork_session: input.payload.fork_session,
+    max_changed_files: input.payload.max_changed_files,
+    max_cost_usd: input.payload.max_cost_usd
+  };
+}
+function createTaskFingerprint(input) {
+  const normalized = buildFingerprintPayload(input);
+  return createHash3("sha256").update(stableJson(normalized)).digest("hex");
+}
+function buildDuplicateJobMessage(job) {
+  return `An equivalent ${job.type} job is already ${job.status}: ${job.job_id}. Use claude_task(job_id="${job.job_id}") to continue waiting; do not restart or duplicate the task.`;
+}
+function buildWaitMetadata(input) {
+  return {
+    mode: input.mode ?? "block",
+    timeout_sec: input.timeoutSec ?? 540,
+    completed_inline: input.completedInline === true,
+    waiting: input.waiting === true,
+    timed_out: input.timedOut === true,
+    do_not_start_duplicate_job: input.doNotStartDuplicateJob === true,
+    continuation_tool: "claude_task",
+    progress_notifications: "not_available",
+    progress_note: "The current MCP SDK/server wrapper does not expose a request progress token in this handler, so progress is represented in structured wait metadata."
+  };
+}
+async function waitForJobCompletionInline(jobStore, jobId, cwd, waitTimeoutMs, pollIntervalMs) {
+  const interval = pollIntervalMs ?? __test.inlineWaitPollIntervalMs;
+  const deadline = Date.now() + waitTimeoutMs;
+  while (Date.now() < deadline) {
+    const record3 = await jobStore.get(jobId);
+    if (!record3 || record3.cwd !== cwd) {
+      return { status: "not_found" };
+    }
+    const job = toJobSummary(record3);
+    if (job.status === "succeeded" || job.status === "failed" || job.status === "cancelled") {
+      return { status: "completed", job, jobRecord: record3 };
+    }
+    const heartbeatAgeMs = ageMsSince(job.heartbeat_at ?? job.updated_at, Date.now()) ?? 0;
+    const pidAlive2 = isPidAlive(job.pid);
+    if (classifyJobStaleState({ job, heartbeatAgeMs, pidAlive: pidAlive2 }) === "stale") {
+      return { status: "stale", job };
+    }
+    await new Promise((resolve3) => setTimeout(resolve3, interval));
+  }
+  const record2 = await jobStore.get(jobId);
+  if (!record2 || record2.cwd !== cwd) return { status: "not_found" };
+  return { status: "running", job: toJobSummary(record2) };
+}
+function ageMsSince(timestamp, nowMs = Date.now()) {
+  if (!timestamp) return void 0;
+  const parsed = Date.parse(timestamp);
+  if (!Number.isFinite(parsed)) return void 0;
+  return Math.max(0, nowMs - parsed);
+}
+function isPidAlive(pid) {
+  if (!pid) return void 0;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
+}
+function classifyJobStaleState(input) {
+  if (input.job.status !== "queued" && input.job.status !== "running") return "fresh";
+  if (input.pidAlive === false) return "stale";
+  const heartbeatAgeMs = input.heartbeatAgeMs;
+  if (heartbeatAgeMs === void 0) return "fresh";
+  if (heartbeatAgeMs > STALE_HEARTBEAT_MS) return "stale";
+  if (heartbeatAgeMs > STALE_CANDIDATE_HEARTBEAT_MS) return "stale_candidate";
+  return "fresh";
+}
+function buildActiveWaitActions(cwd, job, staleState) {
+  if (staleState === "stale") {
+    return [
+      {
+        tool: "claude_job_cancel",
+        reason: "Job appears stale because heartbeat is too old or its pid is gone. Cancel only after inspecting or when intentionally abandoning this run.",
+        args: { cwd, job_id: job.job_id }
+      },
+      {
+        tool: "claude_workspace_status",
+        reason: "Inspect workspace-level state before deciding whether to cancel, apply, cleanup, or retry.",
+        args: { cwd }
+      },
+      {
+        tool: "claude_job_result",
+        reason: "Inspect persisted job details before starting a replacement job.",
+        args: { cwd, job_id: job.job_id }
+      }
+    ];
+  }
+  return [{ tool: "claude_task", reason: "Claude is still working. Continue waiting for the same job_id instead of starting a duplicate task.", args: { cwd, job_id: job.job_id, wait_strategy: "block", wait_timeout_sec: 540 } }];
+}
+function buildJobNextActions(cwd, job) {
+  if (job.status === "queued" || job.status === "running") {
+    return buildActiveWaitActions(cwd, job, "fresh");
+  }
+  if (job.type === "review") {
+    return [
+      {
+        tool: "claude_review",
+        reason: "Run another review pass or adjust review instructions if follow-up validation is needed.",
+        args: { cwd }
+      }
+    ];
+  }
+  return [];
+}
+function getJobRunnerArgs(jobId) {
+  const currentFile = fileURLToPath2(import.meta.url);
+  const currentDir = path6.dirname(currentFile);
+  if (currentFile.endsWith(".ts") && process.argv[1]?.includes("tsx")) {
+    return [process.argv[1], path6.join(currentDir, "job-runner.ts"), jobId];
+  }
+  return [path6.join(currentDir, "job-runner.js"), jobId];
+}
+function formatJobRunnerCommand(args) {
+  return [process.execPath, ...args].join(" ");
+}
+function waitForJobRunnerStartup(child, args, timeoutMs = JOB_RUNNER_STARTUP_GRACE_MS) {
+  return new Promise((resolve3) => {
+    let settled = false;
+    const finish = (error51) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.off("error", onError);
+      child.off("exit", onExit);
+      resolve3(error51);
+    };
+    const onError = (err) => finish(`Background job runner failed to start: ${err.message}`);
+    const onExit = (code, signal) => {
+      const reason = signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
+      finish(`Background job runner exited during startup (${reason}). Command: ${formatJobRunnerCommand(args)}`);
+    };
+    const timer = setTimeout(() => finish(), timeoutMs);
+    timer.unref?.();
+    child.once("error", onError);
+    child.once("exit", onExit);
+  });
+}
+function buildBackgroundJobResponse(input) {
+  const deduped = input.deduped === true;
+  return {
+    job: input.job,
+    deduped,
+    do_not_start_duplicate_job: deduped || input.job.status === "queued" || input.job.status === "running",
+    message: deduped ? buildDuplicateJobMessage(input.job) : void 0,
+    next_actions: buildJobNextActions(input.cwd, input.job)
+  };
+}
+async function enqueueBackgroundJob(input) {
+  const jobStore = await getJobStore();
+  const fingerprint = input.dedupe === true ? createTaskFingerprint({ cwd: input.cwd, type: input.type, payload: input.payload }) : void 0;
+  if (fingerprint) {
+    const existing = await jobStore.findActiveByFingerprint({ cwd: input.cwd, type: input.type, fingerprint });
+    if (existing) return buildBackgroundJobResponse({ cwd: input.cwd, job: toJobSummary(existing), deduped: true });
+  }
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const jobId = `job-${randomUUID2()}`;
+  const record2 = { job_id: jobId, type: input.type, status: "queued", cwd: input.cwd, created_at: now, updated_at: now, fingerprint, payload: input.payload };
+  await jobStore.create(record2);
+  let child;
+  const runnerArgs = getJobRunnerArgs(jobId);
+  try {
+    child = spawn2(process.execPath, runnerArgs, {
+      cwd: input.cwd,
+      detached: true,
+      stdio: "ignore",
+      env: { ...sanitizeEnv(), [JOB_STATE_DIR_ENV]: getBackgroundStateDir() }
+    });
+  } catch (err) {
+    const error51 = err instanceof Error ? err.message : String(err);
+    const updated2 = await jobStore.update(jobId, { status: "failed", updated_at: (/* @__PURE__ */ new Date()).toISOString(), summary: "Background job runner failed to start", error: error51 });
+    return buildBackgroundJobResponse({ cwd: input.cwd, job: toJobSummary(updated2 ?? { ...record2, status: "failed", error: error51 }) });
+  }
+  child.unref();
+  const launchError = await waitForJobRunnerStartup(child, runnerArgs);
+  if (launchError) {
+    const updated2 = await jobStore.update(jobId, { status: "failed", pid: child.pid ?? void 0, updated_at: (/* @__PURE__ */ new Date()).toISOString(), summary: "Background job runner failed to start", error: launchError });
+    return buildBackgroundJobResponse({ cwd: input.cwd, job: toJobSummary(updated2 ?? { ...record2, status: "failed", pid: child.pid ?? void 0, error: launchError }) });
+  }
+  const updated = await jobStore.update(jobId, { pid: child.pid ?? void 0, updated_at: (/* @__PURE__ */ new Date()).toISOString() });
+  return buildBackgroundJobResponse({ cwd: input.cwd, job: toJobSummary(updated ?? { ...record2, pid: child.pid ?? void 0 }) });
+}
+async function startBackgroundReview(input) {
+  return enqueueBackgroundJob({ cwd: input.cwd, type: "review", payload: { ...input }, dedupe: true });
+}
+async function startBackgroundQuery(input) {
+  return enqueueBackgroundJob({ cwd: input.cwd, type: "query", payload: { ...input }, dedupe: true });
+}
+async function startBackgroundImplement(input) {
+  return enqueueBackgroundJob({ cwd: input.cwd, type: "implement", payload: { ...input }, dedupe: true });
+}
+async function startBackgroundApply(input) {
+  return enqueueBackgroundJob({ cwd: input.cwd, type: "apply", payload: { ...input } });
+}
+async function startBackgroundCleanup(input) {
+  return enqueueBackgroundJob({ cwd: input.cwd, type: "cleanup", payload: { ...input } });
+}
+async function listBackgroundJobs(input) {
+  const jobStore = await getJobStore();
+  const entries = await jobStore.list({ cwd: input.cwd, limit: input.limit ?? 20, status: input.status, type: input.type });
+  return { entries: entries.map(toJobSummary) };
+}
+async function getBackgroundJobResult(input) {
+  const jobStore = await getJobStore();
+  const job = await jobStore.get(input.job_id);
+  if (!job || job.cwd !== input.cwd) return null;
+  return { job: toJobSummary(job), result: job.result };
+}
+async function waitForBackgroundJob(input) {
+  const jobStore = await getJobStore();
+  const record2 = await jobStore.get(input.job_id);
+  if (!record2 || record2.cwd !== input.cwd) throw new Error(`Job not found: ${input.job_id}`);
+  if (record2.status === "succeeded" || record2.status === "failed" || record2.status === "cancelled") {
+    const job2 = toJobSummary(record2);
+    return {
+      job: job2,
+      result: record2.result,
+      status: job2.status,
+      summary: `Job ${input.job_id} is ${job2.status}; use the returned result or claude_result for follow-up.`,
+      waiting: false,
+      timed_out: false,
+      do_not_start_duplicate_job: false,
+      age_ms: ageMsSince(record2.created_at, Date.now()) ?? 0,
+      stale_state: "fresh",
+      wait: buildWaitMetadata({ completedInline: true, waiting: false, doNotStartDuplicateJob: false }),
+      next_actions: buildJobNextActions(input.cwd, job2)
+    };
+  }
+  const inlineResult = await waitForJobCompletionInline(jobStore, input.job_id, input.cwd, Math.min(__test.inlineWaitTimeoutMs, 54e4));
+  if (inlineResult.status === "not_found") throw new Error(`Job not found: ${input.job_id}`);
+  if (inlineResult.status === "completed") {
+    const job2 = inlineResult.job;
+    return {
+      job: job2,
+      result: inlineResult.jobRecord?.result,
+      status: job2.status,
+      summary: `Job ${input.job_id} is ${job2.status}; use the returned result or claude_result for follow-up.`,
+      waiting: false,
+      timed_out: false,
+      do_not_start_duplicate_job: false,
+      age_ms: ageMsSince(job2.created_at, Date.now()) ?? 0,
+      stale_state: "fresh",
+      wait: buildWaitMetadata({ completedInline: true, waiting: false, doNotStartDuplicateJob: false }),
+      next_actions: buildJobNextActions(input.cwd, job2)
+    };
+  }
+  if (inlineResult.status === "stale") {
+    const job2 = inlineResult.job;
+    return {
+      job: job2,
+      result: void 0,
+      status: job2.status,
+      summary: `Job ${input.job_id} appears stale; inspect or cancel it before starting any replacement job.`,
+      waiting: true,
+      timed_out: false,
+      do_not_start_duplicate_job: true,
+      age_ms: ageMsSince(job2.created_at, Date.now()) ?? 0,
+      heartbeat_age_ms: ageMsSince(job2.heartbeat_at ?? job2.updated_at, Date.now()),
+      stale_state: "stale",
+      wait: buildWaitMetadata({ completedInline: false, waiting: true, doNotStartDuplicateJob: true }),
+      next_actions: buildActiveWaitActions(input.cwd, job2, "stale")
+    };
+  }
+  const job = inlineResult.job;
+  return {
+    job,
+    result: void 0,
+    status: job.status,
+    summary: `Job ${input.job_id} is still ${job.status}; do not duplicate this task locally. Use claude_task(job_id=...) to continue waiting.`,
+    waiting: true,
+    timed_out: false,
+    do_not_start_duplicate_job: true,
+    age_ms: ageMsSince(job.created_at, Date.now()) ?? 0,
+    heartbeat_age_ms: ageMsSince(job.heartbeat_at ?? job.updated_at, Date.now()),
+    stale_state: classifyJobStaleState({ job, heartbeatAgeMs: ageMsSince(job.heartbeat_at ?? job.updated_at, Date.now()), pidAlive: isPidAlive(job.pid) }),
+    wait: buildWaitMetadata({ completedInline: false, waiting: true, doNotStartDuplicateJob: true }),
+    next_actions: buildActiveWaitActions(input.cwd, job, "fresh")
+  };
+}
+async function cancelBackgroundJob(input) {
+  const jobStore = await getJobStore();
+  const job = await jobStore.get(input.job_id);
+  if (!job || job.cwd !== input.cwd) return { cancelled: false, error: `Job not found: ${input.job_id}` };
+  if (job.status === "cancelled" || job.status === "failed" || job.status === "succeeded") {
+    return { cancelled: false, job: toJobSummary(job), error: `Job is already ${job.status}` };
+  }
+  if (job.status === "running" && job.pid) {
+    try {
+      process.kill(job.pid, "SIGTERM");
+    } catch (err) {
+      return { cancelled: false, job: toJobSummary(job), error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+  const updated = await jobStore.update(job.job_id, { status: "cancelled", updated_at: (/* @__PURE__ */ new Date()).toISOString(), summary: job.summary ?? "Cancelled by user", error: void 0 });
+  return { cancelled: true, job: updated ? toJobSummary(updated) : void 0 };
+}
+async function cleanupBackgroundJobs(input) {
+  const jobStore = await getJobStore();
+  return jobStore.cleanup({ cwd: input.cwd, older_than_hours: input.older_than_hours ?? 24, dry_run: input.dry_run ?? true, limit: input.limit ?? 20 });
+}
+
+// src/claude-cli.ts
+function getRunLogDir(cwd) {
+  if (process.env.CODEX_CLAUDE_RUN_LOG_DIR) {
+    return path7.resolve(process.env.CODEX_CLAUDE_RUN_LOG_DIR);
+  }
+  const base = cwd ?? process.cwd();
+  return path7.join(base, ".codex-claude-delegate", "runs");
+}
+var REVIEW_GATE_RELATIVE_PATH = path7.join(".codex-claude-delegate", "review-gate.json");
+var REVIEW_GATE_HOOK_COMMAND = "node '${CLAUDE_PLUGIN_ROOT}/hooks/review-gate-stop.mjs'";
+var stores = /* @__PURE__ */ new Map();
+async function getStore(cwd) {
+  let sessionStore = stores.get(cwd);
+  if (!sessionStore) {
+    const sessionDir = path7.join(cwd, ".codex-claude-delegate");
+    sessionStore = new SessionStore(sessionDir);
+    await sessionStore.init();
+    stores.set(cwd, sessionStore);
+  }
+  return sessionStore;
+}
+var getJobStore2 = getJobStore;
+var toJobSummary2 = toJobSummary;
+var extractBackgroundResultStatus2 = extractBackgroundResultStatus;
+var waitForJobCompletionInline2 = waitForJobCompletionInline;
 function getRepoRootFromModule() {
-  return path6.resolve(path6.dirname(fileURLToPath2(import.meta.url)), "..");
+  return path7.resolve(path7.dirname(fileURLToPath3(import.meta.url)), "..");
 }
 function resolvePluginRootFromModule() {
-  const moduleDir = path6.dirname(fileURLToPath2(import.meta.url));
-  const envPluginRoot = process.env.CLAUDE_PLUGIN_ROOT ? path6.resolve(process.env.CLAUDE_PLUGIN_ROOT) : null;
+  const moduleDir = path7.dirname(fileURLToPath3(import.meta.url));
+  const envPluginRoot = process.env.CLAUDE_PLUGIN_ROOT ? path7.resolve(process.env.CLAUDE_PLUGIN_ROOT) : null;
   const candidates = [
     envPluginRoot,
-    path6.resolve(moduleDir, ".."),
-    path6.join(getRepoRootFromModule(), "plugins", "codex-claude-delegate")
+    path7.resolve(moduleDir, ".."),
+    path7.join(getRepoRootFromModule(), "plugins", "codex-claude-delegate")
   ].filter((candidate) => typeof candidate === "string");
   for (const candidate of candidates) {
-    const hooksDir = path6.join(candidate, "hooks");
-    if (existsSync3(path6.join(hooksDir, "hooks.json")) || existsSync3(path6.join(hooksDir, "review-gate-stop.mjs"))) {
+    const hooksDir = path7.join(candidate, "hooks");
+    if (existsSync3(path7.join(hooksDir, "hooks.json")) || existsSync3(path7.join(hooksDir, "review-gate-stop.mjs"))) {
       return candidate;
     }
   }
-  return path6.join(getRepoRootFromModule(), "plugins", "codex-claude-delegate");
+  return path7.join(getRepoRootFromModule(), "plugins", "codex-claude-delegate");
 }
 function getHookManifestPath() {
-  return path6.join(resolvePluginRootFromModule(), "hooks", "hooks.json");
+  return path7.join(resolvePluginRootFromModule(), "hooks", "hooks.json");
 }
 function getHookScriptPath() {
-  return path6.join(resolvePluginRootFromModule(), "hooks", "review-gate-stop.mjs");
+  return path7.join(resolvePluginRootFromModule(), "hooks", "review-gate-stop.mjs");
 }
 function getReviewGateStatePath(cwd) {
-  return path6.join(cwd, REVIEW_GATE_RELATIVE_PATH);
+  return path7.join(cwd, REVIEW_GATE_RELATIVE_PATH);
 }
 async function readReviewGateState(cwd) {
   const filePath = getReviewGateStatePath(cwd);
@@ -25742,7 +26113,7 @@ async function writeReviewGateState(cwd, enabled) {
   if (!pathCheck.ok) {
     throw new Error(pathCheck.error);
   }
-  await mkdir5(path6.dirname(pathCheck.resolved), { recursive: true });
+  await mkdir5(path7.dirname(pathCheck.resolved), { recursive: true });
   const next = {
     workspace_root: cwd,
     config_path: pathCheck.resolved,
@@ -25776,12 +26147,12 @@ async function markReviewGatePending(cwd, pending, activity) {
     last_write_at: activity === "write" ? now : current.last_write_at,
     last_review_at: activity === "review" ? now : current.last_review_at
   };
-  await mkdir5(path6.dirname(pathCheck.resolved), { recursive: true });
+  await mkdir5(path7.dirname(pathCheck.resolved), { recursive: true });
   await writeFile4(pathCheck.resolved, JSON.stringify(next, null, 2), "utf8");
 }
 async function ensureReviewGateHookManifest() {
   const manifestPath = getHookManifestPath();
-  await mkdir5(path6.dirname(manifestPath), { recursive: true });
+  await mkdir5(path7.dirname(manifestPath), { recursive: true });
   const existingRaw = existsSync3(manifestPath) ? await readFile5(manifestPath, "utf8").catch(() => "") : "";
   let parsed = {};
   if (existingRaw.trim()) {
@@ -25855,215 +26226,8 @@ function toWorkflowSessionSummaryFromStore(session) {
     source: "store"
   };
 }
-function toJobSummary(record2) {
-  return {
-    job_id: record2.job_id,
-    type: record2.type,
-    status: record2.status,
-    result_status: record2.result_status ?? extractBackgroundResultStatus(record2.result),
-    cwd: record2.cwd,
-    created_at: record2.created_at,
-    updated_at: record2.updated_at,
-    heartbeat_at: record2.heartbeat_at,
-    last_wait_at: record2.last_wait_at,
-    last_wait_recommended_delay_ms: record2.last_wait_recommended_delay_ms,
-    fingerprint: record2.fingerprint,
-    pid: record2.pid,
-    run_id: record2.run_id,
-    worktree_name: record2.worktree_name,
-    summary: record2.summary,
-    error: record2.error
-  };
-}
-function extractBackgroundResultStatus(result) {
-  if (!result) return void 0;
-  if (isRunLogStatus(result.status)) return result.status;
-  const claudeReport = result.claude_report;
-  if (claudeReport && typeof claudeReport === "object") {
-    const reportStatus = claudeReport.status;
-    if (isRunLogStatus(reportStatus)) return reportStatus;
-  }
-  return void 0;
-}
-function isRunLogStatus(value) {
-  return value === "success" || value === "failed" || value === "partial" || value === "needs_user" || value === "unknown";
-}
-function stableJson(value) {
-  if (Array.isArray(value)) {
-    return `[${value.map(stableJson).join(",")}]`;
-  }
-  if (value && typeof value === "object") {
-    const entries = Object.entries(value).filter(([, entryValue]) => entryValue !== void 0).sort(([left], [right]) => left.localeCompare(right));
-    return `{${entries.map(([key, entryValue]) => `${JSON.stringify(key)}:${stableJson(entryValue)}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-function normalizeStringArray(value) {
-  if (!Array.isArray(value)) return void 0;
-  return value.filter((entry) => typeof entry === "string").map((entry) => entry.trim()).filter((entry) => entry.length > 0).sort((a, b) => a.localeCompare(b));
-}
-function buildFingerprintPayload(input) {
-  return {
-    cwd: path6.resolve(input.cwd),
-    tool: input.type,
-    mode: input.payload.mode,
-    task: typeof input.payload.task === "string" ? input.payload.task.trim() : void 0,
-    files: normalizeStringArray(input.payload.files),
-    instruction_files: normalizeStringArray(input.payload.instruction_files),
-    dirty_policy: input.payload.dirty_policy ?? (input.type === "implement" ? "ask" : void 0),
-    session_key: input.payload.session_key,
-    resume_latest: input.payload.resume_latest,
-    fork_session: input.payload.fork_session,
-    max_changed_files: input.payload.max_changed_files,
-    max_cost_usd: input.payload.max_cost_usd
-  };
-}
-function createTaskFingerprint(input) {
-  const normalized = buildFingerprintPayload(input);
-  return createHash3("sha256").update(stableJson(normalized)).digest("hex");
-}
-function buildDuplicateJobMessage(job) {
-  return `An equivalent ${job.type} job is already ${job.status}: ${job.job_id}. Use claude_task(job_id="${job.job_id}") to continue waiting; do not restart or duplicate the task.`;
-}
-function buildWaitMetadata(input) {
-  return {
-    mode: input.mode ?? "block",
-    timeout_sec: input.timeoutSec ?? 540,
-    completed_inline: input.completedInline === true,
-    waiting: input.waiting === true,
-    timed_out: input.timedOut === true,
-    do_not_start_duplicate_job: input.doNotStartDuplicateJob === true,
-    continuation_tool: "claude_task",
-    progress_notifications: "not_available",
-    progress_note: "The current MCP SDK/server wrapper does not expose a request progress token in this handler, so progress is represented in structured wait metadata."
-  };
-}
-async function waitForJobCompletionInline(jobStore, jobId, cwd, waitTimeoutMs, pollIntervalMs) {
-  const interval = pollIntervalMs ?? __test.inlineWaitPollIntervalMs;
-  const deadline = Date.now() + waitTimeoutMs;
-  while (Date.now() < deadline) {
-    const record3 = await jobStore.get(jobId);
-    if (!record3 || record3.cwd !== cwd) {
-      return { status: "not_found" };
-    }
-    const job = toJobSummary(record3);
-    if (job.status === "succeeded" || job.status === "failed" || job.status === "cancelled") {
-      return { status: "completed", job, jobRecord: record3 };
-    }
-    const heartbeatAgeMs = ageMsSince(job.heartbeat_at ?? job.updated_at, Date.now()) ?? 0;
-    const pidAlive2 = isPidAlive(job.pid);
-    const staleState = classifyJobStaleState({ job, heartbeatAgeMs, pidAlive: pidAlive2 });
-    if (staleState === "stale") {
-      return { status: "stale", job, staleState };
-    }
-    await new Promise((resolve3) => setTimeout(resolve3, interval));
-  }
-  const record2 = await jobStore.get(jobId);
-  if (!record2 || record2.cwd !== cwd) return { status: "not_found" };
-  return { status: "running", job: toJobSummary(record2) };
-}
-function ageMsSince(timestamp, nowMs = Date.now()) {
-  if (!timestamp) return void 0;
-  const parsed = Date.parse(timestamp);
-  if (!Number.isFinite(parsed)) return void 0;
-  return Math.max(0, nowMs - parsed);
-}
-function isPidAlive(pid) {
-  if (!pid) return void 0;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    const code = err.code;
-    return code === "EPERM";
-  }
-}
-function classifyJobStaleState(input) {
-  if (input.job.status !== "queued" && input.job.status !== "running") {
-    return "fresh";
-  }
-  if (input.pidAlive === false) {
-    return "stale";
-  }
-  const heartbeatAgeMs = input.heartbeatAgeMs;
-  if (heartbeatAgeMs === void 0) {
-    return "fresh";
-  }
-  if (heartbeatAgeMs > STALE_HEARTBEAT_MS) {
-    return "stale";
-  }
-  if (heartbeatAgeMs > STALE_CANDIDATE_HEARTBEAT_MS) {
-    return "stale_candidate";
-  }
-  return "fresh";
-}
-function buildActiveWaitActions(input) {
-  if (input.staleState === "stale") {
-    return [
-      {
-        tool: "claude_job_cancel",
-        reason: "Job appears stale because heartbeat is too old or its pid is gone. Cancel only after inspecting or when intentionally abandoning this run.",
-        args: { cwd: input.cwd, job_id: input.job.job_id }
-      },
-      {
-        tool: "claude_workspace_status",
-        reason: "Inspect workspace-level state before deciding whether to cancel, apply, cleanup, or retry.",
-        args: { cwd: input.cwd }
-      },
-      {
-        tool: "claude_job_result",
-        reason: "Inspect persisted job details before starting a replacement job.",
-        args: { cwd: input.cwd, job_id: input.job.job_id }
-      }
-    ];
-  }
-  return [
-    {
-      tool: "claude_task",
-      reason: "Claude is still working. Continue waiting for the same job_id instead of starting a duplicate task.",
-      args: {
-        cwd: input.cwd,
-        job_id: input.job.job_id,
-        wait_strategy: "block",
-        wait_timeout_sec: 540
-      }
-    }
-  ];
-}
-function getJobRunnerArgs(jobId) {
-  const currentFile = fileURLToPath2(import.meta.url);
-  const currentDir = path6.dirname(currentFile);
-  if (currentFile.endsWith(".ts") && process.argv[1]?.includes("tsx")) {
-    return [process.argv[1], path6.join(currentDir, "job-runner.ts"), jobId];
-  }
-  return [path6.join(currentDir, "job-runner.js"), jobId];
-}
-function formatJobRunnerCommand(args) {
-  return [process.execPath, ...args].join(" ");
-}
-function waitForJobRunnerStartup(child, args, timeoutMs = JOB_RUNNER_STARTUP_GRACE_MS) {
-  return new Promise((resolve3) => {
-    let settled = false;
-    const finish = (error51) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      child.off("error", onError);
-      child.off("exit", onExit);
-      resolve3(error51);
-    };
-    const onError = (err) => {
-      finish(`Background job runner failed to start: ${err.message}`);
-    };
-    const onExit = (code, signal) => {
-      const reason = signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
-      finish(`Background job runner exited during startup (${reason}). Command: ${formatJobRunnerCommand(args)}`);
-    };
-    const timer = setTimeout(() => finish(), timeoutMs);
-    timer.unref?.();
-    child.once("error", onError);
-    child.once("exit", onExit);
-  });
+function buildWaitMetadata2(input) {
+  return buildWaitMetadata(input);
 }
 function log(msg) {
   process.stderr.write(`[claude-delegate] ${msg}
@@ -26075,15 +26239,15 @@ async function logRun(runId, data, cwd) {
     await mkdir5(logDir, { recursive: true });
     const timestamp = (/* @__PURE__ */ new Date()).toISOString();
     await writeFile4(
-      path6.join(logDir, `${runId}.json`),
+      path7.join(logDir, `${runId}.json`),
       JSON.stringify({ started_at: timestamp, updated_at: timestamp, ...data }, null, 2)
     );
   } catch {
   }
 }
 function normalizeRepoPath(cwd, file2) {
-  const repoRelative = path6.isAbsolute(file2) ? path6.relative(cwd, file2) : file2;
-  return repoRelative.replaceAll(path6.sep, "/").replace(/^\.\//, "");
+  const repoRelative = path7.isAbsolute(file2) ? path7.relative(cwd, file2) : file2;
+  return repoRelative.replaceAll(path7.sep, "/").replace(/^\.\//, "");
 }
 function isUnderRequestedFile(file2, requested) {
   return file2 === requested || file2.startsWith(`${requested.replace(/\/$/, "")}/`);
@@ -26098,8 +26262,8 @@ function normalizeRequestedFiles(cwd, files) {
   return [...normalized].sort();
 }
 async function findImplementJobForWorktree(worktreePath, cwd) {
-  const wtName = path6.basename(worktreePath);
-  const jobStore = await getJobStore();
+  const wtName = path7.basename(worktreePath);
+  const jobStore = await getJobStore2();
   const jobs = await jobStore.list({
     cwd,
     limit: 100,
@@ -26114,7 +26278,7 @@ async function findImplementLogForWorktree(worktreePath, cwd) {
     const entries = await readdir2(logDir);
     const candidates = await Promise.all(
       entries.filter((name) => name.endsWith(".json")).map(async (name) => {
-        const file2 = path6.join(logDir, name);
+        const file2 = path7.join(logDir, name);
         try {
           return { file: file2, mtimeMs: (await stat3(file2)).mtimeMs };
         } catch {
@@ -26141,7 +26305,7 @@ async function findImplementLogRecordForWorktree(worktreePath, cwd) {
     const entries = await readdir2(logDir);
     const candidates = await Promise.all(
       entries.filter((name) => name.endsWith(".json")).map(async (name) => {
-        const file2 = path6.join(logDir, name);
+        const file2 = path7.join(logDir, name);
         try {
           return { file: file2, mtimeMs: (await stat3(file2)).mtimeMs };
         } catch {
@@ -26232,7 +26396,7 @@ function summarizeRunLog(runId, raw, updatedAt) {
     summary: typeof raw.report?.summary === "string" ? raw.report.summary : void 0,
     error: typeof raw.error === "string" ? raw.error : void 0,
     worktree_path: worktreePath,
-    worktree_name: typeof raw.observed?.worktree_name === "string" ? raw.observed.worktree_name : worktreePath ? path6.basename(worktreePath) : void 0,
+    worktree_name: typeof raw.observed?.worktree_name === "string" ? raw.observed.worktree_name : worktreePath ? path7.basename(worktreePath) : void 0,
     requested_session_id: typeof raw.session?.requested_session_id === "string" || raw.session?.requested_session_id === null ? raw.session.requested_session_id : void 0,
     returned_session_id: typeof raw.session?.returned_session_id === "string" || raw.session?.returned_session_id === null ? raw.session.returned_session_id : void 0,
     retried_after_session_expired: raw.retried_after_session_expired === true,
@@ -26249,7 +26413,7 @@ function summarizeRecentRuns(entries) {
 }
 async function readRunLogFile(runId, cwd) {
   const logDir = getRunLogDir(cwd);
-  const file2 = path6.join(logDir, `${runId}.json`);
+  const file2 = path7.join(logDir, `${runId}.json`);
   try {
     return JSON.parse(await readFile5(file2, "utf8"));
   } catch {
@@ -26263,7 +26427,7 @@ async function listRunLogs(input) {
     const entries = await readdir2(logDir);
     const candidates = await Promise.all(
       entries.filter((name) => name.endsWith(".json")).map(async (name) => {
-        const file2 = path6.join(logDir, name);
+        const file2 = path7.join(logDir, name);
         try {
           const stats = await stat3(file2);
           return { file: file2, runId: name.replace(/\.json$/, ""), mtimeMs: stats.mtimeMs, updatedAt: new Date(stats.mtimeMs).toISOString() };
@@ -26429,12 +26593,12 @@ function compareRecency(a, b) {
   return aTime - bTime;
 }
 async function listDelegatedWorktrees(cwd) {
-  const worktreeDir = path6.join(cwd, ".claude", "worktrees");
+  const worktreeDir = path7.join(cwd, ".claude", "worktrees");
   const cutoff = Date.now() - 24 * 60 * 60 * 1e3;
   try {
     const entries = await readdir2(worktreeDir, { withFileTypes: true });
     const summarized = await Promise.all(entries.filter((entry) => entry.isDirectory() && entry.name.startsWith("codex-delegated-")).map(async (entry) => {
-      const worktreePath = path6.join(worktreeDir, entry.name);
+      const worktreePath = path7.join(worktreeDir, entry.name);
       try {
         const details = await stat3(worktreePath);
         return {
@@ -26462,7 +26626,7 @@ async function getClaudeResult(input) {
   let resolvedRun = null;
   let resultPayload;
   if (input.job_id) {
-    const jobResult = await getBackgroundJobResult({ cwd: input.cwd, job_id: input.job_id });
+    const jobResult = await getBackgroundJobResult2({ cwd: input.cwd, job_id: input.job_id });
     if (!jobResult) {
       throw new Error(`Job not found: ${input.job_id}`);
     }
@@ -26481,9 +26645,9 @@ async function getClaudeResult(input) {
     const runTypeFilter = prefer === "latest-implement" ? "implement" : prefer === "latest-review" ? "review" : void 0;
     const jobTypeFilter = runTypeFilter;
     const terminalJobLists = await Promise.all([
-      listBackgroundJobs({ cwd: input.cwd, limit: 20, status: "succeeded", type: jobTypeFilter }),
-      listBackgroundJobs({ cwd: input.cwd, limit: 20, status: "failed", type: jobTypeFilter }),
-      listBackgroundJobs({ cwd: input.cwd, limit: 20, status: "cancelled", type: jobTypeFilter })
+      listBackgroundJobs2({ cwd: input.cwd, limit: 20, status: "succeeded", type: jobTypeFilter }),
+      listBackgroundJobs2({ cwd: input.cwd, limit: 20, status: "failed", type: jobTypeFilter }),
+      listBackgroundJobs2({ cwd: input.cwd, limit: 20, status: "cancelled", type: jobTypeFilter })
     ]);
     const latestJob = terminalJobLists.flatMap((result) => result.entries).sort((a, b) => compareRecency(b.updated_at, a.updated_at))[0];
     const latestRun = (await listRunLogs({ cwd: input.cwd, limit: 20, type: runTypeFilter })).entries.find((entry) => entry.status !== "unknown" || entry.lifecycle !== "unknown");
@@ -26494,7 +26658,7 @@ async function getClaudeResult(input) {
       }
     } else if (prefer === "latest-job" || !latestRun) {
       if (latestJob) {
-        const jobResult = await getBackgroundJobResult({ cwd: input.cwd, job_id: latestJob.job_id });
+        const jobResult = await getBackgroundJobResult2({ cwd: input.cwd, job_id: latestJob.job_id });
         resolvedJob = latestJob;
         resultPayload = jobResult?.result;
         if (latestJob.run_id) {
@@ -26503,7 +26667,7 @@ async function getClaudeResult(input) {
       }
     } else if (latestJob && latestRun) {
       if (compareRecency(latestJob.updated_at, latestRun.updated_at) >= 0) {
-        const jobResult = await getBackgroundJobResult({ cwd: input.cwd, job_id: latestJob.job_id });
+        const jobResult = await getBackgroundJobResult2({ cwd: input.cwd, job_id: latestJob.job_id });
         resolvedJob = latestJob;
         resultPayload = jobResult?.result;
         if (latestJob.run_id) {
@@ -26546,11 +26710,11 @@ async function getClaudeResult(input) {
 async function getWorkspaceStatus(input) {
   const limit = input.limit ?? 10;
   const [runningJobs, queuedJobs, succeededJobs, failedJobs, cancelledJobs, recentRuns, worktrees] = await Promise.all([
-    listBackgroundJobs({ cwd: input.cwd, limit, status: "running" }),
-    listBackgroundJobs({ cwd: input.cwd, limit, status: "queued" }),
-    input.include_terminal ? listBackgroundJobs({ cwd: input.cwd, limit, status: "succeeded" }) : Promise.resolve({ entries: [] }),
-    input.include_terminal ? listBackgroundJobs({ cwd: input.cwd, limit, status: "failed" }) : Promise.resolve({ entries: [] }),
-    input.include_terminal ? listBackgroundJobs({ cwd: input.cwd, limit, status: "cancelled" }) : Promise.resolve({ entries: [] }),
+    listBackgroundJobs2({ cwd: input.cwd, limit, status: "running" }),
+    listBackgroundJobs2({ cwd: input.cwd, limit, status: "queued" }),
+    input.include_terminal ? listBackgroundJobs2({ cwd: input.cwd, limit, status: "succeeded" }) : Promise.resolve({ entries: [] }),
+    input.include_terminal ? listBackgroundJobs2({ cwd: input.cwd, limit, status: "failed" }) : Promise.resolve({ entries: [] }),
+    input.include_terminal ? listBackgroundJobs2({ cwd: input.cwd, limit, status: "cancelled" }) : Promise.resolve({ entries: [] }),
     listRunLogs({ cwd: input.cwd, limit }),
     listDelegatedWorktrees(input.cwd)
   ]);
@@ -26743,7 +26907,7 @@ function deriveClaudeTaskTopStatus(job, result) {
   if (job.result_status === "partial") return "partial";
   if (job.result_status === "needs_user") return "needs_user";
   if (result) {
-    const extracted = extractBackgroundResultStatus(result);
+    const extracted = extractBackgroundResultStatus2(result);
     if (extracted === "failed") return "failed";
     if (extracted === "partial") return "partial";
     if (extracted === "needs_user") return "needs_user";
@@ -26768,7 +26932,7 @@ async function buildClaudeTaskInlineResult(input) {
         related_runs: claudeResult.related_runs,
         completed_inline: true,
         do_not_start_duplicate_job: false,
-        wait: buildWaitMetadata({
+        wait: buildWaitMetadata2({
           completedInline: true,
           waiting: false,
           doNotStartDuplicateJob: false
@@ -26779,7 +26943,7 @@ async function buildClaudeTaskInlineResult(input) {
     }
   }
   const result = jobRecord.result;
-  const resultStatus = extractBackgroundResultStatus(result);
+  const resultStatus = extractBackgroundResultStatus2(result);
   let topStatus;
   if (staled) {
     topStatus = "needs_attention";
@@ -26805,7 +26969,7 @@ async function buildClaudeTaskInlineResult(input) {
     completed_inline: completedInline || void 0,
     waiting: waiting || void 0,
     do_not_start_duplicate_job: staled || waiting ? true : false,
-    wait: buildWaitMetadata({
+    wait: buildWaitMetadata2({
       completedInline,
       waiting: waiting || staled,
       doNotStartDuplicateJob: staled || waiting ? true : false
@@ -26816,7 +26980,7 @@ async function buildClaudeTaskInlineResult(input) {
 }
 async function runClaudeTask(input, _runId) {
   if (input.job_id) {
-    const jobStore = await getJobStore();
+    const jobStore = await getJobStore2();
     const record2 = await jobStore.get(input.job_id);
     if (!record2 || record2.cwd !== input.cwd) {
       return {
@@ -26824,7 +26988,7 @@ async function runClaudeTask(input, _runId) {
         status: "failed",
         summary: `Job not found: ${input.job_id}`,
         do_not_start_duplicate_job: true,
-        wait: buildWaitMetadata({
+        wait: buildWaitMetadata2({
           timeoutSec: input.wait_timeout_sec ?? 540,
           completedInline: false,
           waiting: false,
@@ -26834,7 +26998,7 @@ async function runClaudeTask(input, _runId) {
         next_actions: []
       };
     }
-    const job = toJobSummary(record2);
+    const job = toJobSummary2(record2);
     if (job.status === "succeeded" || job.status === "failed" || job.status === "cancelled") {
       return buildClaudeTaskInlineResult({
         cwd: input.cwd,
@@ -26845,13 +27009,13 @@ async function runClaudeTask(input, _runId) {
       });
     }
     const waitTimeoutMs = (input.wait_timeout_sec ?? 540) * 1e3;
-    const inlineResult = await waitForJobCompletionInline(jobStore, input.job_id, input.cwd, waitTimeoutMs);
+    const inlineResult = await waitForJobCompletionInline2(jobStore, input.job_id, input.cwd, waitTimeoutMs);
     if (inlineResult.status === "not_found") {
       return {
         delegated_mode: delegatedModeForJobType(job.type),
         status: "failed",
         summary: `Job not found during wait: ${input.job_id}`,
-        wait: buildWaitMetadata({
+        wait: buildWaitMetadata2({
           timeoutSec: input.wait_timeout_sec ?? 540,
           completedInline: false,
           waiting: false,
@@ -26886,11 +27050,11 @@ async function runClaudeTask(input, _runId) {
       delegated_mode: delegatedModeForJobType((stillRunning ?? record2).type),
       status: "running",
       summary: `Job ${input.job_id} is still running.`,
-      job: toJobSummary(stillRunning ?? record2),
+      job: toJobSummary2(stillRunning ?? record2),
       completed_inline: false,
       waiting: true,
       do_not_start_duplicate_job: true,
-      wait: buildWaitMetadata({
+      wait: buildWaitMetadata2({
         timeoutSec: input.wait_timeout_sec ?? 540,
         completedInline: false,
         waiting: true,
@@ -26915,14 +27079,14 @@ async function runClaudeTask(input, _runId) {
   async function enqueueAndWait() {
     let queued;
     if (delegatedMode === "read") {
-      queued = await startBackgroundQuery({
+      queued = await startBackgroundQuery2({
         cwd: input.cwd,
         task: input.task,
         instruction_files: instructionFiles,
         timeout_sec: INTERNAL_CLAUDE_TIMEOUT_SEC
       });
     } else if (delegatedMode === "review") {
-      queued = await startBackgroundReview({
+      queued = await startBackgroundReview2({
         cwd: input.cwd,
         task: input.task,
         diff: input.diff,
@@ -26930,7 +27094,7 @@ async function runClaudeTask(input, _runId) {
         timeout_sec: INTERNAL_CLAUDE_TIMEOUT_SEC
       });
     } else {
-      const implementResult = await startBackgroundImplement({
+      const implementResult = await startBackgroundImplement2({
         cwd: input.cwd,
         task: input.task,
         instruction_files: instructionFiles,
@@ -26946,7 +27110,7 @@ async function runClaudeTask(input, _runId) {
           status: "needs_user",
           summary: "Write task needs a dirty-workspace decision before it can be delegated.",
           result: implementResult,
-          wait: buildWaitMetadata({
+          wait: buildWaitMetadata2({
             timeoutSec: input.wait_timeout_sec ?? 540,
             completedInline: false,
             waiting: false,
@@ -26963,7 +27127,7 @@ async function runClaudeTask(input, _runId) {
         delegated_mode: delegatedMode,
         status: "failed",
         summary: "Failed to create background job.",
-        wait: buildWaitMetadata({
+        wait: buildWaitMetadata2({
           timeoutSec: input.wait_timeout_sec ?? 540,
           completedInline: false,
           waiting: false,
@@ -26982,7 +27146,7 @@ async function runClaudeTask(input, _runId) {
         deduped: queued.deduped,
         completed_inline: false,
         do_not_start_duplicate_job: queued.do_not_start_duplicate_job ?? (queued.deduped ? true : void 0),
-        wait: buildWaitMetadata({
+        wait: buildWaitMetadata2({
           mode: "background",
           timeoutSec: input.wait_timeout_sec ?? 540,
           completedInline: false,
@@ -26999,9 +27163,9 @@ async function runClaudeTask(input, _runId) {
         ]
       };
     }
-    const jobStore = await getJobStore();
+    const jobStore = await getJobStore2();
     const waitTimeoutMs = (input.wait_timeout_sec ?? 540) * 1e3;
-    const inlineResult = await waitForJobCompletionInline(jobStore, queued.job.job_id, input.cwd, waitTimeoutMs);
+    const inlineResult = await waitForJobCompletionInline2(jobStore, queued.job.job_id, input.cwd, waitTimeoutMs);
     if (inlineResult.status === "not_found") {
       return {
         delegated_mode: delegatedMode,
@@ -27009,7 +27173,7 @@ async function runClaudeTask(input, _runId) {
         summary: `Job ${queued.job.job_id} not found during inline wait.`,
         job: queued.job,
         deduped: queued.deduped,
-        wait: buildWaitMetadata({
+        wait: buildWaitMetadata2({
           timeoutSec: input.wait_timeout_sec ?? 540,
           completedInline: false,
           waiting: false,
@@ -27035,7 +27199,7 @@ async function runClaudeTask(input, _runId) {
           delegated_mode: delegatedMode,
           status: "failed",
           summary: `Job ${queued.job.job_id} disappeared during inline wait.`,
-          wait: buildWaitMetadata({
+          wait: buildWaitMetadata2({
             timeoutSec: input.wait_timeout_sec ?? 540,
             completedInline: false,
             waiting: false,
@@ -27059,12 +27223,12 @@ async function runClaudeTask(input, _runId) {
       delegated_mode: delegatedMode,
       status: "running",
       summary: `Job ${queued.job.job_id} is still running.`,
-      job: stillRunning ? toJobSummary(stillRunning) : queued.job,
+      job: stillRunning ? toJobSummary2(stillRunning) : queued.job,
       deduped: queued.deduped,
       completed_inline: false,
       waiting: true,
       do_not_start_duplicate_job: true,
-      wait: buildWaitMetadata({
+      wait: buildWaitMetadata2({
         timeoutSec: input.wait_timeout_sec ?? 540,
         completedInline: false,
         waiting: true,
@@ -27095,305 +27259,50 @@ function delegatedModeForJobType(type) {
       return "read";
   }
 }
-function buildBackgroundJobResponse(input) {
-  const deduped = input.deduped === true;
-  return {
-    job: input.job,
-    deduped,
-    do_not_start_duplicate_job: deduped || input.job.status === "queued" || input.job.status === "running",
-    message: deduped ? buildDuplicateJobMessage(input.job) : void 0,
-    next_actions: buildNextActions({ cwd: input.cwd, job: input.job })
-  };
-}
-async function enqueueBackgroundJob(input) {
-  const stateDir = getBackgroundStateDir();
-  const jobStore = new JobStore(stateDir);
-  await jobStore.init();
-  const fingerprint = input.dedupe === true ? createTaskFingerprint({ cwd: input.cwd, type: input.type, payload: input.payload }) : void 0;
-  if (fingerprint) {
-    const existing = await jobStore.findActiveByFingerprint({
-      cwd: input.cwd,
-      type: input.type,
-      fingerprint
-    });
-    if (existing) {
-      return buildBackgroundJobResponse({
-        cwd: input.cwd,
-        job: toJobSummary(existing),
-        deduped: true
-      });
-    }
-  }
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const jobId = `job-${randomUUID2()}`;
-  const record2 = {
-    job_id: jobId,
-    type: input.type,
-    status: "queued",
-    cwd: input.cwd,
-    created_at: now,
-    updated_at: now,
-    fingerprint,
-    payload: input.payload
-  };
-  await jobStore.create(record2);
-  const runnerArgs = getJobRunnerArgs(jobId);
-  let child;
-  try {
-    child = spawn2(process.execPath, runnerArgs, {
-      cwd: input.cwd,
-      detached: true,
-      stdio: "ignore",
-      env: {
-        ...sanitizeEnv(),
-        [JOB_STATE_DIR_ENV]: getBackgroundStateDir()
-      }
-    });
-  } catch (err) {
-    const error51 = err instanceof Error ? err.message : String(err);
-    const updated2 = await jobStore.update(jobId, {
-      status: "failed",
-      updated_at: (/* @__PURE__ */ new Date()).toISOString(),
-      summary: "Background job runner failed to start",
-      error: error51
-    });
-    return buildBackgroundJobResponse({
-      cwd: input.cwd,
-      job: toJobSummary(updated2 ?? { ...record2, status: "failed", error: error51 })
-    });
-  }
-  child.unref();
-  const launchError = await waitForJobRunnerStartup(child, runnerArgs);
-  if (launchError) {
-    const updated2 = await jobStore.update(jobId, {
-      status: "failed",
-      pid: child.pid ?? void 0,
-      updated_at: (/* @__PURE__ */ new Date()).toISOString(),
-      summary: "Background job runner failed to start",
-      error: launchError
-    });
-    return buildBackgroundJobResponse({
-      cwd: input.cwd,
-      job: toJobSummary(updated2 ?? {
-        ...record2,
-        status: "failed",
-        pid: child.pid ?? void 0,
-        error: launchError
-      })
-    });
-  }
-  const updated = await jobStore.update(jobId, {
-    pid: child.pid ?? void 0,
-    updated_at: (/* @__PURE__ */ new Date()).toISOString()
-  });
-  return buildBackgroundJobResponse({
-    cwd: input.cwd,
-    job: toJobSummary(updated ?? { ...record2, pid: child.pid ?? void 0 })
-  });
-}
-async function startBackgroundReview(input) {
-  const queued = await enqueueBackgroundJob({
-    cwd: input.cwd,
-    type: "review",
-    payload: input,
-    dedupe: true
-  });
+async function startBackgroundReview2(input) {
+  const queued = await startBackgroundReview(input);
   await markReviewGatePending(input.cwd, false, "review").catch(() => {
   });
   return queued;
 }
-async function startBackgroundQuery(input) {
-  return enqueueBackgroundJob({
-    cwd: input.cwd,
-    type: "query",
-    payload: input,
-    dedupe: true
-  });
+async function startBackgroundQuery2(input) {
+  return startBackgroundQuery(input);
 }
-async function startBackgroundImplement(input) {
+async function startBackgroundImplement2(input) {
   if ((input.dirty_policy ?? "ask") === "ask") {
     const { requestedFiles, dirtyFiles } = await preflightImplementDirtyState(input);
     if (dirtyFiles.length > 0) {
       return dirtyNeedsUserResult(input, dirtyFiles, requestedFiles);
     }
   }
-  const queued = await enqueueBackgroundJob({
-    cwd: input.cwd,
-    type: "implement",
-    payload: input,
-    dedupe: true
-  });
+  const queued = await startBackgroundImplement(input);
   await markReviewGatePending(input.cwd, true, "write").catch(() => {
   });
   return queued;
 }
-async function startBackgroundApply(input) {
-  const queued = await enqueueBackgroundJob({
-    cwd: input.cwd,
-    type: "apply",
-    payload: input
-  });
+async function startBackgroundApply2(input) {
+  const queued = await startBackgroundApply(input);
   await markReviewGatePending(input.cwd, true, "write").catch(() => {
   });
   return queued;
 }
-async function startBackgroundCleanup(input) {
-  return enqueueBackgroundJob({
-    cwd: input.cwd,
-    type: "cleanup",
-    payload: input
-  });
+async function startBackgroundCleanup2(input) {
+  return startBackgroundCleanup(input);
 }
-async function listBackgroundJobs(input) {
-  const jobStore = await getJobStore();
-  const entries = await jobStore.list({
-    cwd: input.cwd,
-    limit: input.limit ?? 20,
-    status: input.status,
-    type: input.type
-  });
-  return { entries: entries.map(toJobSummary) };
+async function listBackgroundJobs2(input) {
+  return listBackgroundJobs(input);
 }
-async function getBackgroundJobResult(input) {
-  const jobStore = await getJobStore();
-  const job = await jobStore.get(input.job_id);
-  if (!job || job.cwd !== input.cwd) return null;
-  return {
-    job: toJobSummary(job),
-    result: job.result
-  };
+async function getBackgroundJobResult2(input) {
+  return getBackgroundJobResult(input);
 }
-async function waitForBackgroundJob(input) {
-  const jobStore = await getJobStore();
-  const record2 = await jobStore.get(input.job_id);
-  if (!record2 || record2.cwd !== input.cwd) {
-    throw new Error(`Job not found: ${input.job_id}`);
-  }
-  if (record2.status === "succeeded" || record2.status === "failed" || record2.status === "cancelled") {
-    const job2 = toJobSummary(record2);
-    return {
-      job: job2,
-      result: record2.result,
-      status: job2.status,
-      summary: `Job ${input.job_id} is ${job2.status}; use the returned result or claude_result for follow-up.`,
-      waiting: false,
-      timed_out: false,
-      do_not_start_duplicate_job: false,
-      age_ms: ageMsSince(record2.created_at, Date.now()) ?? 0,
-      stale_state: "fresh",
-      wait: buildWaitMetadata({
-        completedInline: true,
-        waiting: false,
-        doNotStartDuplicateJob: false
-      }),
-      next_actions: buildNextActions({ cwd: input.cwd, job: job2 })
-    };
-  }
-  const inlineResult = await waitForJobCompletionInline(jobStore, input.job_id, input.cwd, Math.min(__test.inlineWaitTimeoutMs, 54e4));
-  if (inlineResult.status === "not_found") {
-    throw new Error(`Job not found: ${input.job_id}`);
-  }
-  if (inlineResult.status === "completed") {
-    const job2 = inlineResult.job;
-    return {
-      job: job2,
-      result: inlineResult.jobRecord?.result,
-      status: job2.status,
-      summary: `Job ${input.job_id} is ${job2.status}; use the returned result or claude_result for follow-up.`,
-      waiting: false,
-      timed_out: false,
-      do_not_start_duplicate_job: false,
-      age_ms: ageMsSince(job2.created_at, Date.now()) ?? 0,
-      stale_state: "fresh",
-      wait: buildWaitMetadata({
-        completedInline: true,
-        waiting: false,
-        doNotStartDuplicateJob: false
-      }),
-      next_actions: buildNextActions({ cwd: input.cwd, job: job2 })
-    };
-  }
-  if (inlineResult.status === "stale") {
-    const job2 = inlineResult.job;
-    return {
-      job: job2,
-      result: void 0,
-      status: job2.status,
-      summary: `Job ${input.job_id} appears stale; inspect or cancel it before starting any replacement job.`,
-      waiting: true,
-      timed_out: false,
-      do_not_start_duplicate_job: true,
-      age_ms: ageMsSince(job2.created_at, Date.now()) ?? 0,
-      heartbeat_age_ms: ageMsSince(job2.heartbeat_at ?? job2.updated_at, Date.now()),
-      stale_state: "stale",
-      wait: buildWaitMetadata({
-        completedInline: false,
-        waiting: true,
-        doNotStartDuplicateJob: true
-      }),
-      next_actions: buildActiveWaitActions({ cwd: input.cwd, job: job2, staleState: "stale" })
-    };
-  }
-  const job = inlineResult.job;
-  return {
-    job,
-    result: void 0,
-    status: job.status,
-    summary: `Job ${input.job_id} is still ${job.status}; do not duplicate this task locally. Use claude_task(job_id=...) to continue waiting.`,
-    waiting: true,
-    timed_out: false,
-    do_not_start_duplicate_job: true,
-    age_ms: ageMsSince(job.created_at, Date.now()) ?? 0,
-    heartbeat_age_ms: ageMsSince(job.heartbeat_at ?? job.updated_at, Date.now()),
-    stale_state: classifyJobStaleState({
-      job,
-      heartbeatAgeMs: ageMsSince(job.heartbeat_at ?? job.updated_at, Date.now()),
-      pidAlive: isPidAlive(job.pid)
-    }),
-    wait: buildWaitMetadata({
-      completedInline: false,
-      waiting: true,
-      doNotStartDuplicateJob: true
-    }),
-    next_actions: buildActiveWaitActions({ cwd: input.cwd, job, staleState: "fresh" })
-  };
+async function waitForBackgroundJob2(input) {
+  return waitForBackgroundJob(input);
 }
-async function cancelBackgroundJob(input) {
-  const jobStore = await getJobStore();
-  const job = await jobStore.get(input.job_id);
-  if (!job || job.cwd !== input.cwd) {
-    return { cancelled: false, error: `Job not found: ${input.job_id}` };
-  }
-  if (job.status === "cancelled" || job.status === "failed" || job.status === "succeeded") {
-    return { cancelled: false, job: toJobSummary(job), error: `Job is already ${job.status}` };
-  }
-  if (job.status === "running" && job.pid) {
-    try {
-      process.kill(job.pid, "SIGTERM");
-    } catch (err) {
-      return {
-        cancelled: false,
-        job: toJobSummary(job),
-        error: err instanceof Error ? err.message : String(err)
-      };
-    }
-  }
-  const updated = await jobStore.update(job.job_id, {
-    status: "cancelled",
-    updated_at: (/* @__PURE__ */ new Date()).toISOString(),
-    summary: job.summary ?? "Cancelled by user",
-    error: void 0
-  });
-  return { cancelled: true, job: updated ? toJobSummary(updated) : void 0 };
+async function cancelBackgroundJob2(input) {
+  return cancelBackgroundJob(input);
 }
-async function cleanupBackgroundJobs(input) {
-  const jobStore = await getJobStore();
-  return jobStore.cleanup({
-    cwd: input.cwd,
-    older_than_hours: input.older_than_hours ?? 24,
-    dry_run: input.dry_run ?? true,
-    limit: input.limit ?? 20
-  });
+async function cleanupBackgroundJobs2(input) {
+  return cleanupBackgroundJobs(input);
 }
 async function findDirtyFiles(cwd, requestedFiles) {
   if (requestedFiles.length === 0) return [];
@@ -27534,7 +27443,7 @@ function parseNameStatusPorcelainZ(output) {
 }
 async function expandDirectoryChange(change, worktreeRoot) {
   if (change.status === "D") return [change];
-  const sourcePath = path6.join(worktreeRoot, change.file);
+  const sourcePath = path7.join(worktreeRoot, change.file);
   let sourceStat;
   try {
     sourceStat = await stat3(sourcePath);
@@ -27544,10 +27453,10 @@ async function expandDirectoryChange(change, worktreeRoot) {
   if (!sourceStat.isDirectory()) return [change];
   const expanded = [];
   const walk = async (relativeDir) => {
-    const dirPath = path6.join(worktreeRoot, relativeDir);
+    const dirPath = path7.join(worktreeRoot, relativeDir);
     const entries = await readdir2(dirPath, { withFileTypes: true });
     for (const entry of entries) {
-      const childRelative = path6.join(relativeDir, entry.name);
+      const childRelative = path7.join(relativeDir, entry.name);
       if (entry.isDirectory()) {
         await walk(childRelative);
       } else if (entry.isFile()) {
@@ -27617,7 +27526,7 @@ async function checkClaudeStatus(cwd) {
     }
   }
   result.cwd_valid = result.git_available && result.cwd_is_git_repo;
-  const worktreeDir = path6.join(cwd, ".claude", "worktrees");
+  const worktreeDir = path7.join(cwd, ".claude", "worktrees");
   try {
     const { readdirSync, statSync } = await import("node:fs");
     if (existsSync3(worktreeDir)) {
@@ -27627,7 +27536,7 @@ async function checkClaudeStatus(cwd) {
       const cutoff = Date.now() - 24 * 60 * 60 * 1e3;
       result.stale_worktrees_count = result.delegated_worktrees.filter((n) => {
         try {
-          return statSync(path6.join(worktreeDir, n)).mtimeMs < cutoff;
+          return statSync(path7.join(worktreeDir, n)).mtimeMs < cutoff;
         } catch {
           return false;
         }
@@ -27655,7 +27564,7 @@ async function runClaudeApply(input, runId) {
       error: result.error,
       duration_ms: Date.now() - startTime
     }, input.cwd);
-    const wtRelPath = path6.join(".claude", "worktrees", path6.basename(path6.resolve(input.cwd, input.worktree_path)));
+    const wtRelPath = path7.join(".claude", "worktrees", path7.basename(path7.resolve(input.cwd, input.worktree_path)));
     if (input.preview === true) {
       await updateImplementLifecycleForWorktree(wtRelPath, {
         current_lifecycle: result.error ? "apply_blocked" : "success",
@@ -27677,12 +27586,12 @@ async function runClaudeApply(input, runId) {
     }
     return result;
   };
-  const wtReal = path6.resolve(input.cwd, input.worktree_path);
-  const wtDir = path6.join(input.cwd, ".claude", "worktrees");
-  if (!wtReal.startsWith(wtDir + path6.sep)) {
+  const wtReal = path7.resolve(input.cwd, input.worktree_path);
+  const wtDir = path7.join(input.cwd, ".claude", "worktrees");
+  if (!wtReal.startsWith(wtDir + path7.sep)) {
     return finish({ applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: `worktree_path must be under ${wtDir}` });
   }
-  if (!wtReal.startsWith(wtDir + path6.sep + "codex-delegated-")) {
+  if (!wtReal.startsWith(wtDir + path7.sep + "codex-delegated-")) {
     return finish({ applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: "worktree_path must be a delegated worktree (codex-delegated-*)" });
   }
   if (!existsSync3(wtReal)) {
@@ -27690,7 +27599,7 @@ async function runClaudeApply(input, runId) {
   }
   const worktreeLock = await acquireFileLock({
     cwd: input.cwd,
-    resource: `worktree:${path6.basename(wtReal)}`
+    resource: `worktree:${path7.basename(wtReal)}`
   }).catch((err) => {
     if (err instanceof LockBusyError) return err;
     throw err;
@@ -27701,7 +27610,7 @@ async function runClaudeApply(input, runId) {
       diff_stat: "",
       cleanup_performed: false,
       conflicts: [],
-      error: `Another operation is already using delegated worktree ${path6.basename(wtReal)}. Retry after the current apply or cleanup finishes.`,
+      error: `Another operation is already using delegated worktree ${path7.basename(wtReal)}. Retry after the current apply or cleanup finishes.`,
       preview: input.preview === true,
       planned_changes: []
     });
@@ -27725,7 +27634,7 @@ async function runClaudeApply(input, runId) {
         planned_changes: []
       });
     }
-    const wtRelPath = path6.join(".claude", "worktrees", path6.basename(wtReal));
+    const wtRelPath = path7.join(".claude", "worktrees", path7.basename(wtReal));
     const jobMatch = await findImplementJobForWorktree(wtRelPath, input.cwd);
     let implementLog = null;
     if (jobMatch?.run_id) {
@@ -27743,7 +27652,7 @@ async function runClaudeApply(input, runId) {
     const hasObservedScope = baseCommit !== void 0 && observedChangedFiles.length > 0;
     const pathspecs = hasObservedScope ? observedChangedFiles : [];
     if (!baseCommit) {
-      const wtName = path6.basename(wtReal);
+      const wtName = path7.basename(wtReal);
       return finish({
         applied_files: [],
         diff_stat: "",
@@ -27831,8 +27740,8 @@ async function runClaudeApply(input, runId) {
     }
     const copied = [];
     for (const c of changes) {
-      const dest = path6.join(input.cwd, c.file);
-      const src = path6.join(wtReal, c.file);
+      const dest = path7.join(input.cwd, c.file);
+      const src = path7.join(wtReal, c.file);
       try {
         if (c.status === "D") {
           if (existsSync3(dest)) {
@@ -27842,7 +27751,7 @@ async function runClaudeApply(input, runId) {
           copied.push(c.file);
         } else {
           const content = await import("node:fs/promises").then((m) => m.readFile(src));
-          await mkdir5(path6.dirname(dest), { recursive: true });
+          await mkdir5(path7.dirname(dest), { recursive: true });
           await writeFile4(dest, content);
           copied.push(c.file);
         }
@@ -27892,7 +27801,7 @@ async function runClaudeCleanup(input, runId) {
     };
   }
   try {
-    const worktreeDir = path6.join(input.cwd, ".claude", "worktrees");
+    const worktreeDir = path7.join(input.cwd, ".claude", "worktrees");
     const entries = [];
     let removedCount = 0;
     let failedCount = 0;
@@ -27905,8 +27814,8 @@ async function runClaudeCleanup(input, runId) {
       const dirs = readdirSync(worktreeDir, { withFileTypes: true }).filter((d) => d.isDirectory() && d.name.startsWith("codex-delegated-")).map((d) => d.name);
       const cutoff = olderThanHours > 0 ? Date.now() - olderThanHours * 60 * 60 * 1e3 : 0;
       for (const name of dirs) {
-        const dirPath = path6.join(worktreeDir, name);
-        const wtRelPath = path6.join(".claude", "worktrees", name);
+        const dirPath = path7.join(worktreeDir, name);
+        const wtRelPath = path7.join(".claude", "worktrees", name);
         if (olderThanHours > 0) {
           try {
             if (statSync(dirPath).mtimeMs > cutoff) {
@@ -28550,7 +28459,7 @@ async function handleToolCall(name, args, runId = randomUUID3()) {
         if (!check2.ok) return errorResult(check2.error);
         const fileCheck = await validateFilesWithinCwd(check2.resolved, instruction_files);
         if (!fileCheck.ok) return errorResult(fileCheck.error);
-        return jsonResult(await startBackgroundQuery(
+        return jsonResult(await startBackgroundQuery2(
           {
             task,
             cwd: check2.resolved,
@@ -28571,7 +28480,7 @@ async function handleToolCall(name, args, runId = randomUUID3()) {
         const mergedFiles = [...files ?? [], ...instruction_files ?? []];
         const fileCheck = await validateFilesWithinCwd(check2.resolved, mergedFiles.length > 0 ? mergedFiles : void 0);
         if (!fileCheck.ok) return errorResult(fileCheck.error);
-        return jsonResult(await startBackgroundReview(
+        return jsonResult(await startBackgroundReview2(
           { task, cwd: check2.resolved, diff, instruction_files, files, timeout_sec, max_turns }
         ));
       }
@@ -28588,7 +28497,7 @@ async function handleToolCall(name, args, runId = randomUUID3()) {
         if (!wtCapable) {
           return errorResult("claude_implement requires a git repository with worktree support");
         }
-        return jsonResult(await startBackgroundImplement({
+        return jsonResult(await startBackgroundImplement2({
           task,
           cwd: check2.resolved,
           files,
@@ -28610,14 +28519,14 @@ async function handleToolCall(name, args, runId = randomUUID3()) {
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
         const check2 = await validateCwd(parsed.data.cwd);
         if (!check2.ok) return errorResult(check2.error);
-        return jsonResult(await listBackgroundJobs({ ...parsed.data, cwd: check2.resolved }));
+        return jsonResult(await listBackgroundJobs2({ ...parsed.data, cwd: check2.resolved }));
       }
       case "claude_job_result": {
         const parsed = claudeJobResultInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
         const check2 = await validateCwd(parsed.data.cwd);
         if (!check2.ok) return errorResult(check2.error);
-        const result = await getBackgroundJobResult({ ...parsed.data, cwd: check2.resolved });
+        const result = await getBackgroundJobResult2({ ...parsed.data, cwd: check2.resolved });
         if (!result) return errorResult(`Job not found: ${parsed.data.job_id}`);
         return jsonResult(result);
       }
@@ -28626,7 +28535,7 @@ async function handleToolCall(name, args, runId = randomUUID3()) {
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
         const check2 = await validateCwd(parsed.data.cwd);
         if (!check2.ok) return errorResult(check2.error);
-        const result = await cancelBackgroundJob({ ...parsed.data, cwd: check2.resolved });
+        const result = await cancelBackgroundJob2({ ...parsed.data, cwd: check2.resolved });
         if (!result.cancelled && result.error) {
           return errorResult(result.error);
         }
@@ -28637,7 +28546,7 @@ async function handleToolCall(name, args, runId = randomUUID3()) {
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
         const check2 = await validateCwd(parsed.data.cwd);
         if (!check2.ok) return errorResult(check2.error);
-        const waitResult = await waitForBackgroundJob({ ...parsed.data, cwd: check2.resolved });
+        const waitResult = await waitForBackgroundJob2({ ...parsed.data, cwd: check2.resolved });
         let interaction;
         if (waitResult.stale_state === "stale") {
           interaction = { headline: "Claude job appears stale.", state: "needs_attention", next_step: "Inspect this job result before starting a replacement." };
@@ -28653,7 +28562,7 @@ async function handleToolCall(name, args, runId = randomUUID3()) {
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
         const check2 = await validateCwd(parsed.data.cwd);
         if (!check2.ok) return errorResult(check2.error);
-        return jsonResult(await cleanupBackgroundJobs({ ...parsed.data, cwd: check2.resolved }));
+        return jsonResult(await cleanupBackgroundJobs2({ ...parsed.data, cwd: check2.resolved }));
       }
       case "claude_apply": {
         const startTime = Date.now();
@@ -28663,7 +28572,7 @@ async function handleToolCall(name, args, runId = randomUUID3()) {
         const check2 = await validateCwd(cwd);
         if (!check2.ok) return errorResult(check2.error);
         if (background === true) {
-          return jsonResult(await startBackgroundApply(
+          return jsonResult(await startBackgroundApply2(
             { cwd: check2.resolved, worktree_path, cleanup, preview, background, confirmed_by_user }
           ));
         }
@@ -28696,7 +28605,7 @@ async function handleToolCall(name, args, runId = randomUUID3()) {
         const check2 = await validateCwd(cwd);
         if (!check2.ok) return errorResult(check2.error);
         if (background === true) {
-          return jsonResult(await startBackgroundCleanup(
+          return jsonResult(await startBackgroundCleanup2(
             { cwd: check2.resolved, older_than_hours, dry_run, background }
           ));
         }
@@ -28762,7 +28671,7 @@ async function main() {
 }
 function isMainModule() {
   if (!process.argv[1]) return false;
-  return fileURLToPath3(import.meta.url) === resolve2(process.argv[1]);
+  return fileURLToPath4(import.meta.url) === resolve2(process.argv[1]);
 }
 if (isMainModule()) {
   await main();

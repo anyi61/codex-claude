@@ -3,18 +3,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { JobStore } from "./jobs.js";
 import { abortActiveClaudeRun, executeBackgroundJob } from "./claude-cli.js";
-
-const JOB_STATE_DIR_ENV = "CODEX_CLAUDE_BACKGROUND_STATE_DIR";
-
-function getBackgroundStateDir(): string {
-  if (process.env[JOB_STATE_DIR_ENV]) {
-    return path.resolve(process.env[JOB_STATE_DIR_ENV]!);
-  }
-  if (process.env.CODEX_CLAUDE_RUN_LOG_DIR) {
-    return path.dirname(path.resolve(process.env.CODEX_CLAUDE_RUN_LOG_DIR));
-  }
-  return path.join(process.cwd(), ".codex-claude-delegate");
-}
+import { getBackgroundStateDir } from "./background-jobs.js";
 
 export interface JobRunnerDependencies {
   createStore?: () => JobStore;
