@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { cp, rm, writeFile, mkdir, readFile, readdir, stat, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
@@ -100,6 +100,7 @@ const REVIEW_GATE_RELATIVE_PATH = path.join(".codex-claude-delegate", "review-ga
 const REVIEW_GATE_HOOK_COMMAND = "node '${CLAUDE_PLUGIN_ROOT}/hooks/review-gate-stop.mjs'";
 
 const JOB_HEARTBEAT_INTERVAL_MS = 15000;
+const JOB_RUNNER_STARTUP_GRACE_MS = 100;
 const STALE_CANDIDATE_HEARTBEAT_MS = 90_000;
 const STALE_HEARTBEAT_MS = 300_000;
 
@@ -648,6 +649,39 @@ function getJobRunnerArgs(jobId: string): string[] {
     return [process.argv[1], path.join(currentDir, "job-runner.ts"), jobId];
   }
   return [path.join(currentDir, "job-runner.js"), jobId];
+}
+
+function formatJobRunnerCommand(args: string[]): string {
+  return [process.execPath, ...args].join(" ");
+}
+
+function waitForJobRunnerStartup(
+  child: ChildProcess,
+  args: string[],
+  timeoutMs = JOB_RUNNER_STARTUP_GRACE_MS
+): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (error?: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.off("error", onError);
+      child.off("exit", onExit);
+      resolve(error);
+    };
+    const onError = (err: Error) => {
+      finish(`Background job runner failed to start: ${err.message}`);
+    };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      const reason = signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
+      finish(`Background job runner exited during startup (${reason}). Command: ${formatJobRunnerCommand(args)}`);
+    };
+    const timer = setTimeout(() => finish(), timeoutMs);
+    timer.unref?.();
+    child.once("error", onError);
+    child.once("exit", onExit);
+  });
 }
 
 // ---- Logging (stderr only, never stdout) ----
@@ -2005,16 +2039,52 @@ export async function enqueueBackgroundJob(input: {
 
   await jobStore.create(record);
 
-  const child = spawn(process.execPath, getJobRunnerArgs(jobId), {
-    cwd: input.cwd,
-    detached: true,
-    stdio: "ignore",
-    env: {
-      ...sanitizeEnv(),
-      [JOB_STATE_DIR_ENV]: getBackgroundStateDir(),
-    },
-  });
+  const runnerArgs = getJobRunnerArgs(jobId);
+  let child: ChildProcess;
+  try {
+    child = spawn(process.execPath, runnerArgs, {
+      cwd: input.cwd,
+      detached: true,
+      stdio: "ignore",
+      env: {
+        ...sanitizeEnv(),
+        [JOB_STATE_DIR_ENV]: getBackgroundStateDir(),
+      },
+    });
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    const updated = await jobStore.update(jobId, {
+      status: "failed",
+      updated_at: new Date().toISOString(),
+      summary: "Background job runner failed to start",
+      error,
+    });
+    return buildBackgroundJobResponse({
+      cwd: input.cwd,
+      job: toJobSummary(updated ?? { ...record, status: "failed", error }),
+    });
+  }
   child.unref();
+
+  const launchError = await waitForJobRunnerStartup(child, runnerArgs);
+  if (launchError) {
+    const updated = await jobStore.update(jobId, {
+      status: "failed",
+      pid: child.pid ?? undefined,
+      updated_at: new Date().toISOString(),
+      summary: "Background job runner failed to start",
+      error: launchError,
+    });
+    return buildBackgroundJobResponse({
+      cwd: input.cwd,
+      job: toJobSummary(updated ?? {
+        ...record,
+        status: "failed",
+        pid: child.pid ?? undefined,
+        error: launchError,
+      }),
+    });
+  }
 
   const updated = await jobStore.update(jobId, {
     pid: child.pid ?? undefined,

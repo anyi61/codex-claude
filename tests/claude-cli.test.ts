@@ -1199,6 +1199,45 @@ describe("claude cli argument construction", () => {
     vi.resetModules();
   });
 
+  it("marks a background job failed when the detached runner exits during launch", async () => {
+    const { repo, stateDir } = await createJobFixture();
+    const spawned = createDetachedSpawnResult(8765);
+    const spawnMock = vi.fn(() => {
+      setImmediate(() => spawned.emit("exit", 1, null));
+      return spawned;
+    });
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: spawnMock };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const created = await reloaded.enqueueBackgroundJob({
+      cwd: repo,
+      type: "review",
+      payload: { cwd: repo, task: "review this" },
+    });
+
+    expect(created.job.status).toBe("failed");
+    expect(created.job.pid).toBe(8765);
+    expect(created.job.error).toContain("exited during startup");
+    expect(created.do_not_start_duplicate_job).toBe(false);
+
+    const jobs = await import("../src/jobs.js");
+    const store = new jobs.JobStore(stateDir);
+    const persisted = await store.get(created.job.job_id);
+    expect(persisted).toMatchObject({
+      status: "failed",
+      pid: 8765,
+      error: expect.stringContaining("exited during startup"),
+    });
+
+    vi.doUnmock("node:child_process");
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
   it("routes background query, review, implement, apply, and cleanup requests through the job queue", async () => {
     const { repo } = await createJobFixture();
     const spawned = createDetachedSpawnResult(5555);
