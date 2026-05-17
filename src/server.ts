@@ -241,6 +241,7 @@ const BASE_TOOL_DEFINITIONS = [
       properties: {
         task: { type: "string", description: "Implementation task description" },
         cwd: { type: "string", description: "Working directory (must be within allowed roots and a git repo)" },
+        instruction_files: { type: "array", items: { type: "string" }, description: "Task instruction/context files for the implementation" },
         files: { type: "array", items: { type: "string" }, description: "Relevant files for context" },
         constraints: { type: "array", items: { type: "string" }, description: "Constraints (e.g. 'do not modify tests')" },
         timeout_sec: { type: "number", description: "Timeout in seconds (default 600)" },

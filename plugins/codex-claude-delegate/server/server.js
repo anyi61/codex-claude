@@ -25429,6 +25429,7 @@ var claudeReviewInputSchema = external_exports.object({
 var claudeImplementInputSchema = external_exports.object({
   task: taskSchema,
   cwd: cwdSchema,
+  instruction_files: filesSchema,
   files: filesSchema,
   constraints: constraintsSchema,
   timeout_sec: timeoutSchema.default(600),
@@ -25930,7 +25931,7 @@ function buildWaitMetadata(input) {
     timeout_sec: input.timeoutSec ?? 540,
     completed_inline: input.completedInline === true,
     waiting: input.waiting === true,
-    timed_out: input.waiting === true,
+    timed_out: input.timedOut === true,
     do_not_start_duplicate_job: input.doNotStartDuplicateJob === true,
     continuation_tool: "claude_task",
     progress_notifications: "not_available",
@@ -26893,6 +26894,7 @@ async function runClaudeTask(input, _runId) {
         timeoutSec: input.wait_timeout_sec ?? 540,
         completedInline: false,
         waiting: true,
+        timedOut: true,
         doNotStartDuplicateJob: true
       }),
       warnings: [],
@@ -27066,6 +27068,7 @@ async function runClaudeTask(input, _runId) {
         timeoutSec: input.wait_timeout_sec ?? 540,
         completedInline: false,
         waiting: true,
+        timedOut: true,
         doNotStartDuplicateJob: true
       }),
       warnings,
@@ -28145,6 +28148,7 @@ var BASE_TOOL_DEFINITIONS = [
       properties: {
         task: { type: "string", description: "Implementation task description" },
         cwd: { type: "string", description: "Working directory (must be within allowed roots and a git repo)" },
+        instruction_files: { type: "array", items: { type: "string" }, description: "Task instruction/context files for the implementation" },
         files: { type: "array", items: { type: "string" }, description: "Relevant files for context" },
         constraints: { type: "array", items: { type: "string" }, description: "Constraints (e.g. 'do not modify tests')" },
         timeout_sec: { type: "number", description: "Timeout in seconds (default 600)" },

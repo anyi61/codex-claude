@@ -66,6 +66,11 @@ import {
   QUERY_SCHEMA,
   REVIEW_SCHEMA,
   IMPLEMENT_SCHEMA,
+  claudeApplyInputSchema,
+  claudeCleanupInputSchema,
+  claudeImplementInputSchema,
+  claudeQueryInputSchema,
+  claudeReviewInputSchema,
   buildImplementPrompt,
   buildQueryPrompt,
   buildReviewPrompt,
@@ -415,6 +420,7 @@ function buildWaitMetadata(input: {
   timeoutSec?: number;
   completedInline?: boolean;
   waiting?: boolean;
+  timedOut?: boolean;
   doNotStartDuplicateJob?: boolean;
 }): ClaudeWaitMetadata {
   return {
@@ -422,7 +428,7 @@ function buildWaitMetadata(input: {
     timeout_sec: input.timeoutSec ?? 540,
     completed_inline: input.completedInline === true,
     waiting: input.waiting === true,
-    timed_out: input.waiting === true,
+    timed_out: input.timedOut === true,
     do_not_start_duplicate_job: input.doNotStartDuplicateJob === true,
     continuation_tool: "claude_task",
     progress_notifications: "not_available",
@@ -1768,6 +1774,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         timeoutSec: input.wait_timeout_sec ?? 540,
         completedInline: false,
         waiting: true,
+        timedOut: true,
         doNotStartDuplicateJob: true,
       }),
       warnings: [],
@@ -1955,6 +1962,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         timeoutSec: input.wait_timeout_sec ?? 540,
         completedInline: false,
         waiting: true,
+        timedOut: true,
         doNotStartDuplicateJob: true,
       }),
       warnings,
@@ -3242,17 +3250,44 @@ export async function executeBackgroundJob(jobId: string): Promise<void> {
   const stopHeartbeat = startJobHeartbeat(jobStore, jobId);
 
   try {
+    const parsePayloadOrThrow = (): ClaudeQueryInput | ClaudeReviewInput | ClaudeImplementInput | ClaudeApplyInput | ClaudeCleanupInput => {
+      if (running.type === "query") {
+        const parsed = claudeQueryInputSchema.safeParse(running.payload);
+        if (!parsed.success) throw new Error(`Background payload schema validation failed for query: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`);
+        return parsed.data;
+      }
+      if (running.type === "review") {
+        const parsed = claudeReviewInputSchema.safeParse(running.payload);
+        if (!parsed.success) throw new Error(`Background payload schema validation failed for review: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`);
+        return parsed.data;
+      }
+      if (running.type === "implement") {
+        const parsed = claudeImplementInputSchema.safeParse(running.payload);
+        if (!parsed.success) throw new Error(`Background payload schema validation failed for implement: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`);
+        return parsed.data;
+      }
+      if (running.type === "apply") {
+        const parsed = claudeApplyInputSchema.safeParse(running.payload);
+        if (!parsed.success) throw new Error(`Background payload schema validation failed for apply: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`);
+        return parsed.data;
+      }
+      const parsed = claudeCleanupInputSchema.safeParse(running.payload);
+      if (!parsed.success) throw new Error(`Background payload schema validation failed for cleanup: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`);
+      return parsed.data;
+    };
+
+    const payload = parsePayloadOrThrow();
     let result: Record<string, unknown>;
     if (running.type === "query") {
-      result = await runClaudeQuery(running.payload as unknown as ClaudeQueryInput, runId) as unknown as Record<string, unknown>;
+      result = await runClaudeQuery(payload as ClaudeQueryInput, runId) as unknown as Record<string, unknown>;
     } else if (running.type === "review") {
-      result = await runClaudeReview(running.payload as unknown as ClaudeReviewInput, runId) as unknown as Record<string, unknown>;
+      result = await runClaudeReview(payload as ClaudeReviewInput, runId) as unknown as Record<string, unknown>;
     } else if (running.type === "implement") {
-      result = await runClaudeImplement(running.payload as unknown as ClaudeImplementInput, runId) as unknown as Record<string, unknown>;
+      result = await runClaudeImplement(payload as ClaudeImplementInput, runId) as unknown as Record<string, unknown>;
     } else if (running.type === "apply") {
-      result = await runClaudeApply(running.payload as unknown as ClaudeApplyInput, runId) as unknown as Record<string, unknown>;
+      result = await runClaudeApply(payload as ClaudeApplyInput, runId) as unknown as Record<string, unknown>;
     } else {
-      result = await runClaudeCleanup(running.payload as unknown as ClaudeCleanupInput, runId) as unknown as Record<string, unknown>;
+      result = await runClaudeCleanup(payload as ClaudeCleanupInput, runId) as unknown as Record<string, unknown>;
     }
 
     await jobStore.update(jobId, {

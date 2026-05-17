@@ -14990,6 +14990,7 @@ var claudeReviewInputSchema = external_exports.object({
 var claudeImplementInputSchema = external_exports.object({
   task: taskSchema,
   cwd: cwdSchema,
+  instruction_files: filesSchema,
   files: filesSchema,
   constraints: constraintsSchema,
   timeout_sec: timeoutSchema.default(600),
@@ -15304,7 +15305,7 @@ function log(msg) {
 `);
 }
 var CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
-var activeClaudeChild = null;
+var activeClaudeChildren = /* @__PURE__ */ new Set();
 function redactSensitive(input) {
   return input.replace(/(ANTHROPIC_AUTH_TOKEN=)[^\s]+/gi, "$1***").replace(/(ANTHROPIC_API_KEY=)[^\s]+/gi, "$1***").replace(/(Authorization:\s*Bearer\s+)[^\s]+/gi, "$1***").replace(/\b(sk-ant-[a-zA-Z0-9]{20,})\b/g, "sk-ant-***").replace(/\b(sk-[a-zA-Z0-9]{20,})\b/g, "sk-***");
 }
@@ -15312,13 +15313,17 @@ function truncateTail(input, maxChars = 4e3) {
   return input.length <= maxChars ? input : input.slice(-maxChars);
 }
 function abortActiveClaudeRun(signal = "SIGTERM") {
-  if (!activeClaudeChild?.pid) return false;
-  try {
-    process.kill(activeClaudeChild.pid, signal);
-    return true;
-  } catch {
-    return false;
+  let sent = false;
+  for (const child of activeClaudeChildren) {
+    if (!child.pid) continue;
+    try {
+      process.kill(child.pid, signal);
+      sent = true;
+    } catch {
+      continue;
+    }
   }
+  return sent;
 }
 function buildClaudeArgs(opts) {
   const args = ["-p"];
@@ -15419,7 +15424,7 @@ function spawnClaude(opts) {
       timeout: opts.timeoutSec * 1e3,
       stdio: ["ignore", "pipe", "pipe"]
     });
-    activeClaudeChild = child;
+    activeClaudeChildren.add(child);
     let stdout = "";
     let stderr = "";
     child.stdout?.on("data", (chunk) => {
@@ -15429,7 +15434,7 @@ function spawnClaude(opts) {
       stderr += chunk.toString();
     });
     child.on("error", (err) => {
-      activeClaudeChild = null;
+      activeClaudeChildren.delete(child);
       if (err.code === "ENOENT") {
         reject(new Error(`Claude CLI not found. Ensure "claude" is in PATH or set CLAUDE_BIN env var.`));
       } else {
@@ -15437,7 +15442,7 @@ function spawnClaude(opts) {
       }
     });
     child.on("close", async (code, signal) => {
-      activeClaudeChild = null;
+      activeClaudeChildren.delete(child);
       if (stderr) log(`claude stderr: ${redactSensitive(stderr.slice(0, 2e3))}`);
       try {
         const trimmed = stdout.trim();
@@ -16525,17 +16530,43 @@ async function executeBackgroundJob(jobId) {
   const runId = randomUUID2();
   const stopHeartbeat = startJobHeartbeat(jobStore, jobId);
   try {
+    const parsePayloadOrThrow = () => {
+      if (running.type === "query") {
+        const parsed2 = claudeQueryInputSchema.safeParse(running.payload);
+        if (!parsed2.success) throw new Error(`Background payload schema validation failed for query: ${parsed2.error.issues.map((issue2) => issue2.message).join("; ")}`);
+        return parsed2.data;
+      }
+      if (running.type === "review") {
+        const parsed2 = claudeReviewInputSchema.safeParse(running.payload);
+        if (!parsed2.success) throw new Error(`Background payload schema validation failed for review: ${parsed2.error.issues.map((issue2) => issue2.message).join("; ")}`);
+        return parsed2.data;
+      }
+      if (running.type === "implement") {
+        const parsed2 = claudeImplementInputSchema.safeParse(running.payload);
+        if (!parsed2.success) throw new Error(`Background payload schema validation failed for implement: ${parsed2.error.issues.map((issue2) => issue2.message).join("; ")}`);
+        return parsed2.data;
+      }
+      if (running.type === "apply") {
+        const parsed2 = claudeApplyInputSchema.safeParse(running.payload);
+        if (!parsed2.success) throw new Error(`Background payload schema validation failed for apply: ${parsed2.error.issues.map((issue2) => issue2.message).join("; ")}`);
+        return parsed2.data;
+      }
+      const parsed = claudeCleanupInputSchema.safeParse(running.payload);
+      if (!parsed.success) throw new Error(`Background payload schema validation failed for cleanup: ${parsed.error.issues.map((issue2) => issue2.message).join("; ")}`);
+      return parsed.data;
+    };
+    const payload = parsePayloadOrThrow();
     let result;
     if (running.type === "query") {
-      result = await runClaudeQuery(running.payload, runId);
+      result = await runClaudeQuery(payload, runId);
     } else if (running.type === "review") {
-      result = await runClaudeReview(running.payload, runId);
+      result = await runClaudeReview(payload, runId);
     } else if (running.type === "implement") {
-      result = await runClaudeImplement(running.payload, runId);
+      result = await runClaudeImplement(payload, runId);
     } else if (running.type === "apply") {
-      result = await runClaudeApply(running.payload, runId);
+      result = await runClaudeApply(payload, runId);
     } else {
-      result = await runClaudeCleanup(running.payload, runId);
+      result = await runClaudeCleanup(payload, runId);
     }
     await jobStore.update(jobId, {
       status: "succeeded",

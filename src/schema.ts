@@ -598,6 +598,7 @@ export const claudeReviewInputSchema = z.object({
 export const claudeImplementInputSchema = z.object({
   task: taskSchema,
   cwd: cwdSchema,
+  instruction_files: filesSchema,
   files: filesSchema,
   constraints: constraintsSchema,
   timeout_sec: timeoutSchema.default(600),

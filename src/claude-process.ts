@@ -16,7 +16,7 @@ function log(msg: string): void {
 }
 export const CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
 
-let activeClaudeChild: ChildProcess | null = null;
+const activeClaudeChildren = new Set<ChildProcess>();
 
 // ---- Sensitive data redaction for stderr ----
 
@@ -61,13 +61,17 @@ export function buildSafeEnv(): Record<string, string> {
 }
 
 export function abortActiveClaudeRun(signal: NodeJS.Signals = "SIGTERM"): boolean {
-  if (!activeClaudeChild?.pid) return false;
-  try {
-    process.kill(activeClaudeChild.pid, signal);
-    return true;
-  } catch {
-    return false;
+  let sent = false;
+  for (const child of activeClaudeChildren) {
+    if (!child.pid) continue;
+    try {
+      process.kill(child.pid, signal);
+      sent = true;
+    } catch {
+      continue;
+    }
   }
+  return sent;
 }
 
 export function buildClaudeArgs(opts: ClaudeRunOptions): string[] {
@@ -216,7 +220,7 @@ export function spawnClaude(opts: ClaudeRunOptions): Promise<ClaudeSpawnResult> 
       timeout: opts.timeoutSec * 1000,
       stdio: ["ignore", "pipe", "pipe"],
     });
-    activeClaudeChild = child;
+    activeClaudeChildren.add(child);
 
     let stdout = "";
     let stderr = "";
@@ -229,7 +233,7 @@ export function spawnClaude(opts: ClaudeRunOptions): Promise<ClaudeSpawnResult> 
     });
 
     child.on("error", (err: NodeJS.ErrnoException) => {
-      activeClaudeChild = null;
+      activeClaudeChildren.delete(child);
       if (err.code === "ENOENT") {
         reject(new Error(`Claude CLI not found. Ensure "claude" is in PATH or set CLAUDE_BIN env var.`));
       } else {
@@ -238,7 +242,7 @@ export function spawnClaude(opts: ClaudeRunOptions): Promise<ClaudeSpawnResult> 
     });
 
     child.on("close", async (code, signal) => {
-      activeClaudeChild = null;
+      activeClaudeChildren.delete(child);
       if (stderr) log(`claude stderr: ${redactSensitive(stderr.slice(0, 2000))}`);
 
       // Try to parse stdout even when exit code is non-zero.

@@ -1425,6 +1425,89 @@ describe("claude cli argument construction", () => {
     vi.resetModules();
   });
 
+  it("marks background job failed when persisted payload fails schema validation", async () => {
+    const { repo, stateDir } = await createGitRepoFixture("codex-bg-invalid-payload-");
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+
+    const spawnMock = vi.fn();
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: spawnMock };
+    });
+
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const jobs = await import("../src/jobs.js");
+    const store = new jobs.JobStore(stateDir);
+    await store.init();
+    await store.create({
+      job_id: "job-invalid-query-payload",
+      status: "queued",
+      cwd: repo,
+      type: "query",
+      created_at: "2026-05-05T00:00:00.000Z",
+      updated_at: "2026-05-05T00:00:00.000Z",
+      payload: { cwd: repo },
+    });
+
+    await expect(reloaded.executeBackgroundJob("job-invalid-query-payload")).rejects.toThrow(/payload|schema|validation/i);
+    const record = await store.get("job-invalid-query-payload");
+    expect(record?.status).toBe("failed");
+    expect(record?.error).toMatch(/payload|schema|validation/i);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("accepts implement background payload with instruction_files during schema validation", async () => {
+    const { repo, stateDir } = await createGitRepoFixture("codex-bg-implement-instruction-files-");
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+    const stdout = JSON.stringify({
+      session_id: "sess-bg-impl-instruction",
+      structured_output: {
+        status: "success",
+        summary: "Implemented with instruction files.",
+      },
+    });
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return {
+        ...actual,
+        spawn: vi.fn((bin: string, args: string[], options: { cwd?: string }) => {
+          if (bin !== "claude") return actual.spawn(bin, args, options as never);
+          writeFileSync(path.join(options.cwd!, "README.md"), "# implemented with instructions\n");
+          return createClaudeSpawnResult(stdout, "", 0);
+        }),
+      };
+    });
+
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const jobs = await import("../src/jobs.js");
+    const store = new jobs.JobStore(stateDir);
+    await store.init();
+    await store.create({
+      job_id: "job-implement-with-instruction-files",
+      status: "queued",
+      cwd: repo,
+      type: "implement",
+      created_at: "2026-05-05T00:00:00.000Z",
+      updated_at: "2026-05-05T00:00:00.000Z",
+      payload: {
+        cwd: repo,
+        task: "Update README with architecture notes.",
+        instruction_files: ["PROJECT_EXPANSION_PLAN.md"],
+        worktreeName: "codex-delegated-instruction-files",
+      },
+    });
+
+    await reloaded.executeBackgroundJob("job-implement-with-instruction-files");
+    const result = await reloaded.getBackgroundJobResult({ cwd: repo, job_id: "job-implement-with-instruction-files" });
+
+    expect(result?.job.status).toBe("succeeded");
+    expect(result?.job.error).toBeUndefined();
+    expect(result?.result?.status).toBe("success");
+  });
+
   it("dry-runs and removes old terminal background jobs without touching running jobs", async () => {
     const { repo, store } = await createJobFixture();
 
@@ -2485,6 +2568,7 @@ describe("claude cli argument construction", () => {
       timeout_sec: 1,
       completed_inline: false,
       waiting: true,
+      timed_out: true,
       do_not_start_duplicate_job: true,
       continuation_tool: "claude_task",
     });
@@ -2496,6 +2580,36 @@ describe("claude cli argument construction", () => {
       job_id: "job-fresh-hb",
     });
     expect(result.summary).toContain("job-fresh-hb");
+  });
+
+  it("runClaudeTask(wait_strategy=background) is non-waiting and not timed out", async () => {
+    const { repo } = await createWorkflowFixture();
+    const detached = createDetachedSpawnResult(42111);
+    const spawnMock = vi.fn(() => detached);
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: spawnMock };
+    });
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      task: "review this",
+      mode: "review",
+      wait_strategy: "background",
+      wait_timeout_sec: 3,
+    }, "run-bg-wait-meta");
+
+    expect(result.status).toBe("running");
+    expect(result.wait).toMatchObject({
+      mode: "background",
+      timeout_sec: 3,
+      waiting: false,
+      timed_out: false,
+      completed_inline: false,
+    });
+    expect(detached.unref).toHaveBeenCalled();
   });
 
   it("runClaudeTask(job_id=...) returns needs_attention for a stale heartbeat job", async () => {
