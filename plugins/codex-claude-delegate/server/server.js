@@ -3224,8 +3224,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path8) {
-      let input = path8;
+    function removeDotSegments(path9) {
+      let input = path9;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3424,8 +3424,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path8, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path8 && path8 !== "/" ? path8 : void 0;
+        const [path9, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path9 && path9 !== "/" ? path9 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -7554,10 +7554,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path8) {
-  if (!path8)
+function getElementAtPath(obj, path9) {
+  if (!path9)
     return obj;
-  return path8.reduce((acc, key) => acc?.[key], obj);
+  return path9.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -7966,11 +7966,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path8, issues) {
+function prefixIssues(path9, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path8);
+    iss.path.unshift(path9);
     return iss;
   });
 }
@@ -8117,16 +8117,16 @@ function flattenError(error51, mapper = (issue2) => issue2.message) {
 }
 function formatError(error51, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error52, path8 = []) => {
+  const processError = (error52, path9 = []) => {
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path8, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path9, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path8, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path8, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
       } else {
-        const fullpath = [...path8, ...issue2.path];
+        const fullpath = [...path9, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -8153,17 +8153,17 @@ function formatError(error51, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error51, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error52, path8 = []) => {
+  const processError = (error52, path9 = []) => {
     var _a3, _b;
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path8, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path9, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path8, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path8, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
       } else {
-        const fullpath = [...path8, ...issue2.path];
+        const fullpath = [...path9, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -8195,8 +8195,8 @@ function treeifyError(error51, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path8 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path8) {
+  const path9 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path9) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -21188,13 +21188,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path8 = ref.slice(1).split("/").filter(Boolean);
-  if (path8.length === 0) {
+  const path9 = ref.slice(1).split("/").filter(Boolean);
+  if (path9.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path8[0] === defsKey) {
-    const key = path8[1];
+  if (path9[0] === defsKey) {
+    const key = path9[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -25036,11 +25036,11 @@ async function configureCodexAllowRoot(rawCwd) {
 }
 
 // src/claude-cli.ts
-import { cp as cp2, rm as rm2, writeFile as writeFile4, mkdir as mkdir5, readFile as readFile5, readdir as readdir2, stat as stat3, unlink as unlink2 } from "node:fs/promises";
+import { cp as cp2, rm as rm2, writeFile as writeFile5, mkdir as mkdir6, readFile as readFile6, readdir as readdir3, stat as stat4, unlink as unlink2 } from "node:fs/promises";
 import { existsSync as existsSync3 } from "node:fs";
 init_guard();
 import { fileURLToPath as fileURLToPath3 } from "node:url";
-import path7 from "node:path";
+import path8 from "node:path";
 
 // src/lock.ts
 import { mkdir as mkdir2, readFile as readFile3, rm, stat as stat2, writeFile as writeFile2 } from "node:fs/promises";
@@ -25396,8 +25396,8 @@ var claudeReviewGateInputSchema = external_exports.object({
 function validationErrorMessage(err) {
   if (err instanceof external_exports.ZodError) {
     return err.issues.map((issue2) => {
-      const path8 = issue2.path.length ? issue2.path.join(".") : "input";
-      return `${path8}: ${issue2.message}`;
+      const path9 = issue2.path.length ? issue2.path.join(".") : "input";
+      return `${path9}: ${issue2.message}`;
     }).join("; ");
   }
   return err instanceof Error ? err.message : String(err);
@@ -25416,8 +25416,34 @@ var StructuredToolError = class extends Error {
     this.payload = payload;
   }
 };
+function safeErrorMessage(message) {
+  return message.replace(/"\/[^"]+"/g, '"[path]"').replace(/(^|[\s:,(])\/(?!\/)([\w.-]+(?:\/[\w.-]+)+)([\s,:;)]|$)/g, "$1[path]$3");
+}
+function safeErrorPayload(payload) {
+  const out = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (typeof value === "string") {
+      out[key] = safeErrorMessage(value);
+    } else if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+      out[key] = safeErrorPayload(value);
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
 function errorResult(error51) {
-  const payload = typeof error51 === "string" ? { error: error51 } : error51;
+  if (typeof error51 === "string") {
+    process.stderr.write(`[claude-delegate] ERROR: ${error51}
+`);
+    const payload2 = { error: safeErrorMessage(error51) };
+    return {
+      content: [{ type: "text", text: JSON.stringify(payload2) }],
+      structuredContent: payload2,
+      isError: true
+    };
+  }
+  const payload = safeErrorPayload(error51);
   return {
     content: [{ type: "text", text: JSON.stringify(payload) }],
     structuredContent: payload,
@@ -25506,27 +25532,287 @@ async function getEnvironmentDiagnostics(safeEnv = sanitizeEnv()) {
   };
 }
 
+// src/run-logs.ts
+import { mkdir as mkdir4, writeFile as writeFile3, readFile as readFile4, readdir, stat as stat3 } from "node:fs/promises";
+import path5 from "node:path";
+function getRunLogDir(cwd) {
+  if (process.env.CODEX_CLAUDE_RUN_LOG_DIR) {
+    return path5.resolve(process.env.CODEX_CLAUDE_RUN_LOG_DIR);
+  }
+  const base = cwd ?? process.cwd();
+  return path5.join(base, ".codex-claude-delegate", "runs");
+}
+function normalizeRepoPath(cwd, file2) {
+  const repoRelative = path5.isAbsolute(file2) ? path5.relative(cwd, file2) : file2;
+  return repoRelative.replaceAll(path5.sep, "/").replace(/^\.\//, "");
+}
+function isUnderRequestedFile(file2, requested) {
+  return file2 === requested || file2.startsWith(`${requested.replace(/\/$/, "")}/`);
+}
+function normalizeRequestedFiles(cwd, files) {
+  if (!files?.length) return [];
+  const normalized = /* @__PURE__ */ new Set();
+  for (const file2 of files) {
+    const repoPath = normalizeRepoPath(cwd, file2).replace(/\/+$/g, "");
+    if (repoPath) normalized.add(repoPath);
+  }
+  return [...normalized].sort();
+}
+async function logRun(runId, data, cwd) {
+  const logDir = getRunLogDir(cwd);
+  try {
+    await mkdir4(logDir, { recursive: true });
+    const timestamp = (/* @__PURE__ */ new Date()).toISOString();
+    await writeFile3(
+      path5.join(logDir, `${runId}.json`),
+      JSON.stringify({ started_at: timestamp, updated_at: timestamp, ...data }, null, 2)
+    );
+  } catch {
+  }
+}
+async function findImplementLogForWorktree(worktreePath, cwd) {
+  const logDir = getRunLogDir(cwd);
+  try {
+    const entries = await readdir(logDir);
+    const candidates = await Promise.all(
+      entries.filter((name) => name.endsWith(".json")).map(async (name) => {
+        const file2 = path5.join(logDir, name);
+        try {
+          return { file: file2, mtimeMs: (await stat3(file2)).mtimeMs };
+        } catch {
+          return null;
+        }
+      })
+    );
+    for (const entry of candidates.filter((item) => item !== null).sort((a, b) => b.mtimeMs - a.mtimeMs)) {
+      try {
+        const parsed = JSON.parse(await readFile4(entry.file, "utf8"));
+        if (parsed.type === "implement" && parsed.observed?.worktree_path === worktreePath) {
+          return parsed;
+        }
+      } catch {
+      }
+    }
+  } catch {
+  }
+  return null;
+}
+async function findImplementLogRecordForWorktree(worktreePath, cwd) {
+  const logDir = getRunLogDir(cwd);
+  try {
+    const entries = await readdir(logDir);
+    const candidates = await Promise.all(
+      entries.filter((name) => name.endsWith(".json")).map(async (name) => {
+        const file2 = path5.join(logDir, name);
+        try {
+          return { file: file2, mtimeMs: (await stat3(file2)).mtimeMs };
+        } catch {
+          return null;
+        }
+      })
+    );
+    for (const entry of candidates.filter((item) => item !== null).sort((a, b) => b.mtimeMs - a.mtimeMs)) {
+      try {
+        const parsed = JSON.parse(await readFile4(entry.file, "utf8"));
+        if (parsed.type === "implement" && parsed.observed?.worktree_path === worktreePath) {
+          return { file: entry.file, parsed };
+        }
+      } catch {
+        continue;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+async function updateImplementLifecycleForWorktree(worktreePath, update, cwd) {
+  const record2 = await findImplementLogRecordForWorktree(worktreePath, cwd);
+  if (!record2) return;
+  const parsed = record2.parsed;
+  const timestamp = (/* @__PURE__ */ new Date()).toISOString();
+  const next = {
+    ...parsed,
+    updated_at: timestamp,
+    downstream: {
+      ...parsed.downstream ?? {},
+      ...update
+    }
+  };
+  await writeFile3(record2.file, JSON.stringify(next, null, 2));
+}
+function parseRunStatus(raw) {
+  if (typeof raw.error === "string" && raw.error.length > 0) return "failed";
+  const exitCode = raw.execution?.exit_code;
+  const timedOut = raw.execution?.timed_out === true;
+  if (timedOut || typeof exitCode === "number" && exitCode !== 0) {
+    const changedFiles = Array.isArray(raw.observed?.changed_files) ? raw.observed.changed_files.length : 0;
+    return changedFiles > 0 ? "partial" : "failed";
+  }
+  const status = raw.report?.status;
+  if (status === "success" || status === "failed" || status === "partial" || status === "needs_user") {
+    return status;
+  }
+  return "unknown";
+}
+function parseRunLifecycle(raw) {
+  const downstreamLifecycle = raw.downstream?.current_lifecycle;
+  if (downstreamLifecycle === "queued" || downstreamLifecycle === "running" || downstreamLifecycle === "success" || downstreamLifecycle === "partial" || downstreamLifecycle === "failed" || downstreamLifecycle === "apply_blocked" || downstreamLifecycle === "applied" || downstreamLifecycle === "cleaned" || downstreamLifecycle === "unknown") {
+    return downstreamLifecycle;
+  }
+  const type = typeof raw.type === "string" ? raw.type : "unknown";
+  const status = parseRunStatus(raw);
+  if (type === "apply") {
+    if (typeof raw.error === "string" && raw.error.length > 0) return "apply_blocked";
+    const appliedCount = Array.isArray(raw.applied_files) ? raw.applied_files.length : 0;
+    if (appliedCount > 0) return "applied";
+    if (raw.preview === true) return "success";
+  }
+  if (type === "cleanup") {
+    const removedCount = typeof raw.removed_count === "number" ? raw.removed_count : 0;
+    const failedCount = typeof raw.failed_count === "number" ? raw.failed_count : 0;
+    if (removedCount > 0 && failedCount === 0) return "cleaned";
+    if (failedCount > 0) return "partial";
+    return "success";
+  }
+  if (status === "needs_user") {
+    return "partial";
+  }
+  if (status === "success" || status === "partial" || status === "failed") {
+    return status;
+  }
+  return "unknown";
+}
+function summarizeRunLog(runId, raw, updatedAt) {
+  const worktreePath = typeof raw.observed?.worktree_path === "string" ? raw.observed.worktree_path : typeof raw.input?.worktree_path === "string" ? raw.input.worktree_path : void 0;
+  return {
+    run_id: runId,
+    type: typeof raw.type === "string" ? raw.type : "unknown",
+    status: parseRunStatus(raw),
+    lifecycle: parseRunLifecycle(raw),
+    cwd: typeof raw.input?.cwd === "string" ? raw.input.cwd : void 0,
+    summary: typeof raw.report?.summary === "string" ? raw.report.summary : void 0,
+    error: typeof raw.error === "string" ? raw.error : void 0,
+    worktree_path: worktreePath,
+    worktree_name: typeof raw.observed?.worktree_name === "string" ? raw.observed.worktree_name : worktreePath ? path5.basename(worktreePath) : void 0,
+    requested_session_id: typeof raw.session?.requested_session_id === "string" || raw.session?.requested_session_id === null ? raw.session.requested_session_id : void 0,
+    returned_session_id: typeof raw.session?.returned_session_id === "string" || raw.session?.returned_session_id === null ? raw.session.returned_session_id : void 0,
+    retried_after_session_expired: raw.retried_after_session_expired === true,
+    started_at: typeof raw.started_at === "string" ? raw.started_at : updatedAt,
+    updated_at: typeof raw.updated_at === "string" ? raw.updated_at : updatedAt
+  };
+}
+function summarizeRecentRuns(entries) {
+  const lifecycleCounts = {};
+  for (const entry of entries) {
+    lifecycleCounts[entry.lifecycle] = (lifecycleCounts[entry.lifecycle] ?? 0) + 1;
+  }
+  return { entries, lifecycle_counts: lifecycleCounts };
+}
+async function readRunLogFile(runId, cwd) {
+  const logDir = getRunLogDir(cwd);
+  const file2 = path5.join(logDir, `${runId}.json`);
+  try {
+    return JSON.parse(await readFile4(file2, "utf8"));
+  } catch {
+    return null;
+  }
+}
+async function listRunLogs(input) {
+  const limit = input.limit ?? 20;
+  const logDir = getRunLogDir(input.cwd);
+  try {
+    const entries = await readdir(logDir);
+    const candidates = await Promise.all(
+      entries.filter((name) => name.endsWith(".json")).map(async (name) => {
+        const file2 = path5.join(logDir, name);
+        try {
+          const stats = await stat3(file2);
+          return { file: file2, runId: name.replace(/\.json$/, ""), mtimeMs: stats.mtimeMs, updatedAt: new Date(stats.mtimeMs).toISOString() };
+        } catch {
+          return null;
+        }
+      })
+    );
+    const summaries = [];
+    for (const candidate of candidates.filter((item) => item !== null).sort((a, b) => b.mtimeMs - a.mtimeMs)) {
+      try {
+        const raw = JSON.parse(await readFile4(candidate.file, "utf8"));
+        const summary = summarizeRunLog(candidate.runId, raw, candidate.updatedAt);
+        if (summary.cwd && summary.cwd !== input.cwd) continue;
+        if (input.type && summary.type !== input.type) continue;
+        if (input.status && summary.status !== input.status) continue;
+        if (input.worktree_name && summary.worktree_name !== input.worktree_name) continue;
+        summaries.push(summary);
+        if (summaries.length >= limit) break;
+      } catch {
+        continue;
+      }
+    }
+    return { entries: summaries, total_entries: summaries.length };
+  } catch {
+    return { entries: [], total_entries: 0 };
+  }
+}
+async function getRecentRunsSummary(cwd, limit = 5) {
+  const runs = await listRunLogs({ cwd, limit });
+  return summarizeRecentRuns(runs.entries);
+}
+async function getRunLogById(input) {
+  const raw = await readRunLogFile(input.run_id, input.cwd);
+  if (!raw) return null;
+  const summary = summarizeRunLog(input.run_id, raw);
+  if (summary.cwd && summary.cwd !== input.cwd) return null;
+  return {
+    entry: summary,
+    raw,
+    related_runs: {
+      apply_run_id: typeof raw.downstream?.last_apply_run_id === "string" ? raw.downstream.last_apply_run_id : void 0,
+      cleanup_run_id: typeof raw.downstream?.last_cleanup_run_id === "string" ? raw.downstream.last_cleanup_run_id : void 0
+    }
+  };
+}
+function buildRunResultPayload(raw) {
+  const payload = {
+    type: typeof raw.type === "string" ? raw.type : "unknown"
+  };
+  if (raw.report && typeof raw.report === "object") payload.report = raw.report;
+  if (typeof raw.error === "string" && raw.error.length > 0) payload.error = raw.error;
+  if (typeof raw.preview === "boolean") payload.preview = raw.preview;
+  if (Array.isArray(raw.applied_files)) payload.applied_files = raw.applied_files;
+  if (typeof raw.removed_count === "number") payload.removed_count = raw.removed_count;
+  if (typeof raw.failed_count === "number") payload.failed_count = raw.failed_count;
+  if (raw.observed && typeof raw.observed === "object") payload.observed = raw.observed;
+  if (raw.downstream && typeof raw.downstream === "object") payload.downstream = raw.downstream;
+  return payload;
+}
+function buildResultSummaryFromRun(entry) {
+  if (entry.summary) return entry.summary;
+  if (entry.error) return `${entry.type} failed: ${entry.error}`;
+  return `${entry.type} ${entry.lifecycle}`;
+}
+
 // src/background-jobs.ts
 init_guard();
 import { spawn as spawn2 } from "node:child_process";
 import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
-import path6 from "node:path";
+import path7 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/jobs.ts
 import { existsSync as existsSync2 } from "node:fs";
-import { mkdir as mkdir4, readFile as readFile4, readdir, rename, unlink, writeFile as writeFile3 } from "node:fs/promises";
-import path5 from "node:path";
+import { mkdir as mkdir5, readFile as readFile5, readdir as readdir2, rename, unlink, writeFile as writeFile4 } from "node:fs/promises";
+import path6 from "node:path";
 var TERMINAL_JOB_STATUSES = /* @__PURE__ */ new Set(["succeeded", "failed", "cancelled"]);
 var ACTIVE_JOB_STATUSES = /* @__PURE__ */ new Set(["queued", "running"]);
 var JobStore = class {
   constructor(baseDir) {
     this.baseDir = baseDir;
-    this.jobsDir = path5.join(baseDir, "jobs");
+    this.jobsDir = path6.join(baseDir, "jobs");
   }
   jobsDir;
   async init() {
-    await mkdir4(this.jobsDir, { recursive: true });
+    await mkdir5(this.jobsDir, { recursive: true });
   }
   async create(record2) {
     await this.init();
@@ -25536,7 +25822,7 @@ var JobStore = class {
     const filePath = this.getJobPath(jobId);
     if (!existsSync2(filePath)) return null;
     try {
-      return JSON.parse(await readFile4(filePath, "utf8"));
+      return JSON.parse(await readFile5(filePath, "utf8"));
     } catch {
       return null;
     }
@@ -25636,15 +25922,15 @@ var JobStore = class {
     });
   }
   getJobPath(jobId) {
-    return path5.join(this.jobsDir, `${jobId}.json`);
+    return path6.join(this.jobsDir, `${jobId}.json`);
   }
   async readAllRecords() {
     await this.init();
-    const entries = await readdir(this.jobsDir).catch(() => []);
+    const entries = await readdir2(this.jobsDir).catch(() => []);
     return Promise.all(
       entries.filter((entry) => entry.endsWith(".json")).map(async (entry) => {
         try {
-          const raw = await readFile4(path5.join(this.jobsDir, entry), "utf8");
+          const raw = await readFile5(path6.join(this.jobsDir, entry), "utf8");
           return JSON.parse(raw);
         } catch {
           return null;
@@ -25655,7 +25941,7 @@ var JobStore = class {
   async writeRecord(record2) {
     const filePath = this.getJobPath(record2.job_id);
     const tmpPath = `${filePath}.tmp`;
-    await writeFile3(tmpPath, JSON.stringify(record2, null, 2), "utf8");
+    await writeFile4(tmpPath, JSON.stringify(record2, null, 2), "utf8");
     await rename(tmpPath, filePath);
   }
 };
@@ -25671,12 +25957,12 @@ var __test = {
 };
 function getBackgroundStateDir() {
   if (process.env[JOB_STATE_DIR_ENV]) {
-    return path6.resolve(process.env[JOB_STATE_DIR_ENV]);
+    return path7.resolve(process.env[JOB_STATE_DIR_ENV]);
   }
   if (process.env.CODEX_CLAUDE_RUN_LOG_DIR) {
-    return path6.dirname(path6.resolve(process.env.CODEX_CLAUDE_RUN_LOG_DIR));
+    return path7.dirname(path7.resolve(process.env.CODEX_CLAUDE_RUN_LOG_DIR));
   }
-  return path6.join(process.cwd(), ".codex-claude-delegate");
+  return path7.join(process.cwd(), ".codex-claude-delegate");
 }
 async function getJobStore() {
   const store = new JobStore(getBackgroundStateDir());
@@ -25732,7 +26018,7 @@ function normalizeStringArray(value) {
 }
 function buildFingerprintPayload(input) {
   return {
-    cwd: path6.resolve(input.cwd),
+    cwd: path7.resolve(input.cwd),
     tool: input.type,
     mode: input.payload.mode,
     task: typeof input.payload.task === "string" ? input.payload.task.trim() : void 0,
@@ -25852,11 +26138,11 @@ function buildJobNextActions(cwd, job) {
 }
 function getJobRunnerArgs(jobId) {
   const currentFile = fileURLToPath2(import.meta.url);
-  const currentDir = path6.dirname(currentFile);
+  const currentDir = path7.dirname(currentFile);
   if (currentFile.endsWith(".ts") && process.argv[1]?.includes("tsx")) {
-    return [process.argv[1], path6.join(currentDir, "job-runner.ts"), jobId];
+    return [process.argv[1], path7.join(currentDir, "job-runner.ts"), jobId];
   }
-  return [path6.join(currentDir, "job-runner.js"), jobId];
+  return [path7.join(currentDir, "job-runner.js"), jobId];
 }
 function formatJobRunnerCommand(args) {
   return [process.execPath, ...args].join(" ");
@@ -26047,20 +26333,13 @@ async function cleanupBackgroundJobs(input) {
 }
 
 // src/claude-cli.ts
-function getRunLogDir(cwd) {
-  if (process.env.CODEX_CLAUDE_RUN_LOG_DIR) {
-    return path7.resolve(process.env.CODEX_CLAUDE_RUN_LOG_DIR);
-  }
-  const base = cwd ?? process.cwd();
-  return path7.join(base, ".codex-claude-delegate", "runs");
-}
-var REVIEW_GATE_RELATIVE_PATH = path7.join(".codex-claude-delegate", "review-gate.json");
+var REVIEW_GATE_RELATIVE_PATH = path8.join(".codex-claude-delegate", "review-gate.json");
 var REVIEW_GATE_HOOK_COMMAND = "node '${CLAUDE_PLUGIN_ROOT}/hooks/review-gate-stop.mjs'";
 var stores = /* @__PURE__ */ new Map();
 async function getStore(cwd) {
   let sessionStore = stores.get(cwd);
   if (!sessionStore) {
-    const sessionDir = path7.join(cwd, ".codex-claude-delegate");
+    const sessionDir = path8.join(cwd, ".codex-claude-delegate");
     sessionStore = new SessionStore(sessionDir);
     await sessionStore.init();
     stores.set(cwd, sessionStore);
@@ -26072,38 +26351,38 @@ var toJobSummary2 = toJobSummary;
 var extractBackgroundResultStatus2 = extractBackgroundResultStatus;
 var waitForJobCompletionInline2 = waitForJobCompletionInline;
 function getRepoRootFromModule() {
-  return path7.resolve(path7.dirname(fileURLToPath3(import.meta.url)), "..");
+  return path8.resolve(path8.dirname(fileURLToPath3(import.meta.url)), "..");
 }
 function resolvePluginRootFromModule() {
-  const moduleDir = path7.dirname(fileURLToPath3(import.meta.url));
-  const envPluginRoot = process.env.CLAUDE_PLUGIN_ROOT ? path7.resolve(process.env.CLAUDE_PLUGIN_ROOT) : null;
+  const moduleDir = path8.dirname(fileURLToPath3(import.meta.url));
+  const envPluginRoot = process.env.CLAUDE_PLUGIN_ROOT ? path8.resolve(process.env.CLAUDE_PLUGIN_ROOT) : null;
   const candidates = [
     envPluginRoot,
-    path7.resolve(moduleDir, ".."),
-    path7.join(getRepoRootFromModule(), "plugins", "codex-claude-delegate")
+    path8.resolve(moduleDir, ".."),
+    path8.join(getRepoRootFromModule(), "plugins", "codex-claude-delegate")
   ].filter((candidate) => typeof candidate === "string");
   for (const candidate of candidates) {
-    const hooksDir = path7.join(candidate, "hooks");
-    if (existsSync3(path7.join(hooksDir, "hooks.json")) || existsSync3(path7.join(hooksDir, "review-gate-stop.mjs"))) {
+    const hooksDir = path8.join(candidate, "hooks");
+    if (existsSync3(path8.join(hooksDir, "hooks.json")) || existsSync3(path8.join(hooksDir, "review-gate-stop.mjs"))) {
       return candidate;
     }
   }
-  return path7.join(getRepoRootFromModule(), "plugins", "codex-claude-delegate");
+  return path8.join(getRepoRootFromModule(), "plugins", "codex-claude-delegate");
 }
 function getHookManifestPath() {
-  return path7.join(resolvePluginRootFromModule(), "hooks", "hooks.json");
+  return path8.join(resolvePluginRootFromModule(), "hooks", "hooks.json");
 }
 function getHookScriptPath() {
-  return path7.join(resolvePluginRootFromModule(), "hooks", "review-gate-stop.mjs");
+  return path8.join(resolvePluginRootFromModule(), "hooks", "review-gate-stop.mjs");
 }
 function getReviewGateStatePath(cwd) {
-  return path7.join(cwd, REVIEW_GATE_RELATIVE_PATH);
+  return path8.join(cwd, REVIEW_GATE_RELATIVE_PATH);
 }
 async function readReviewGateState(cwd) {
   const filePath = getReviewGateStatePath(cwd);
   if (!existsSync3(filePath)) return null;
   try {
-    return JSON.parse(await readFile5(filePath, "utf8"));
+    return JSON.parse(await readFile6(filePath, "utf8"));
   } catch {
     return null;
   }
@@ -26113,7 +26392,7 @@ async function writeReviewGateState(cwd, enabled) {
   if (!pathCheck.ok) {
     throw new Error(pathCheck.error);
   }
-  await mkdir5(path7.dirname(pathCheck.resolved), { recursive: true });
+  await mkdir6(path8.dirname(pathCheck.resolved), { recursive: true });
   const next = {
     workspace_root: cwd,
     config_path: pathCheck.resolved,
@@ -26125,7 +26404,7 @@ async function writeReviewGateState(cwd, enabled) {
     pending_review: false,
     updated_at: (/* @__PURE__ */ new Date()).toISOString()
   };
-  await writeFile4(pathCheck.resolved, JSON.stringify(next, null, 2), "utf8");
+  await writeFile5(pathCheck.resolved, JSON.stringify(next, null, 2), "utf8");
   return next;
 }
 async function markReviewGatePending(cwd, pending, activity) {
@@ -26147,13 +26426,13 @@ async function markReviewGatePending(cwd, pending, activity) {
     last_write_at: activity === "write" ? now : current.last_write_at,
     last_review_at: activity === "review" ? now : current.last_review_at
   };
-  await mkdir5(path7.dirname(pathCheck.resolved), { recursive: true });
-  await writeFile4(pathCheck.resolved, JSON.stringify(next, null, 2), "utf8");
+  await mkdir6(path8.dirname(pathCheck.resolved), { recursive: true });
+  await writeFile5(pathCheck.resolved, JSON.stringify(next, null, 2), "utf8");
 }
 async function ensureReviewGateHookManifest() {
   const manifestPath = getHookManifestPath();
-  await mkdir5(path7.dirname(manifestPath), { recursive: true });
-  const existingRaw = existsSync3(manifestPath) ? await readFile5(manifestPath, "utf8").catch(() => "") : "";
+  await mkdir6(path8.dirname(manifestPath), { recursive: true });
+  const existingRaw = existsSync3(manifestPath) ? await readFile6(manifestPath, "utf8").catch(() => "") : "";
   let parsed = {};
   if (existingRaw.trim()) {
     try {
@@ -26181,7 +26460,7 @@ async function ensureReviewGateHookManifest() {
     });
   }
   hooksRoot.Stop = stopEntries;
-  await writeFile4(manifestPath, JSON.stringify({ hooks: hooksRoot }, null, 2), "utf8");
+  await writeFile5(manifestPath, JSON.stringify({ hooks: hooksRoot }, null, 2), "utf8");
 }
 function getReviewGateNextSteps(enabled, hookInstallable, pendingReview = false) {
   if (!hookInstallable) {
@@ -26233,36 +26512,8 @@ function log(msg) {
   process.stderr.write(`[claude-delegate] ${msg}
 `);
 }
-async function logRun(runId, data, cwd) {
-  const logDir = getRunLogDir(cwd);
-  try {
-    await mkdir5(logDir, { recursive: true });
-    const timestamp = (/* @__PURE__ */ new Date()).toISOString();
-    await writeFile4(
-      path7.join(logDir, `${runId}.json`),
-      JSON.stringify({ started_at: timestamp, updated_at: timestamp, ...data }, null, 2)
-    );
-  } catch {
-  }
-}
-function normalizeRepoPath(cwd, file2) {
-  const repoRelative = path7.isAbsolute(file2) ? path7.relative(cwd, file2) : file2;
-  return repoRelative.replaceAll(path7.sep, "/").replace(/^\.\//, "");
-}
-function isUnderRequestedFile(file2, requested) {
-  return file2 === requested || file2.startsWith(`${requested.replace(/\/$/, "")}/`);
-}
-function normalizeRequestedFiles(cwd, files) {
-  if (!files?.length) return [];
-  const normalized = /* @__PURE__ */ new Set();
-  for (const file2 of files) {
-    const repoPath = normalizeRepoPath(cwd, file2).replace(/\/+$/g, "");
-    if (repoPath) normalized.add(repoPath);
-  }
-  return [...normalized].sort();
-}
 async function findImplementJobForWorktree(worktreePath, cwd) {
-  const wtName = path7.basename(worktreePath);
+  const wtName = path8.basename(worktreePath);
   const jobStore = await getJobStore2();
   const jobs = await jobStore.list({
     cwd,
@@ -26271,227 +26522,6 @@ async function findImplementJobForWorktree(worktreePath, cwd) {
   });
   const terminalStatuses = /* @__PURE__ */ new Set(["succeeded", "failed", "cancelled"]);
   return jobs.find((job) => job.worktree_name === wtName && terminalStatuses.has(job.status)) ?? null;
-}
-async function findImplementLogForWorktree(worktreePath, cwd) {
-  const logDir = getRunLogDir(cwd);
-  try {
-    const entries = await readdir2(logDir);
-    const candidates = await Promise.all(
-      entries.filter((name) => name.endsWith(".json")).map(async (name) => {
-        const file2 = path7.join(logDir, name);
-        try {
-          return { file: file2, mtimeMs: (await stat3(file2)).mtimeMs };
-        } catch {
-          return null;
-        }
-      })
-    );
-    for (const entry of candidates.filter((item) => item !== null).sort((a, b) => b.mtimeMs - a.mtimeMs)) {
-      try {
-        const parsed = JSON.parse(await readFile5(entry.file, "utf8"));
-        if (parsed.type === "implement" && parsed.observed?.worktree_path === worktreePath) {
-          return parsed;
-        }
-      } catch {
-      }
-    }
-  } catch {
-  }
-  return null;
-}
-async function findImplementLogRecordForWorktree(worktreePath, cwd) {
-  const logDir = getRunLogDir(cwd);
-  try {
-    const entries = await readdir2(logDir);
-    const candidates = await Promise.all(
-      entries.filter((name) => name.endsWith(".json")).map(async (name) => {
-        const file2 = path7.join(logDir, name);
-        try {
-          return { file: file2, mtimeMs: (await stat3(file2)).mtimeMs };
-        } catch {
-          return null;
-        }
-      })
-    );
-    for (const entry of candidates.filter((item) => item !== null).sort((a, b) => b.mtimeMs - a.mtimeMs)) {
-      try {
-        const parsed = JSON.parse(await readFile5(entry.file, "utf8"));
-        if (parsed.type === "implement" && parsed.observed?.worktree_path === worktreePath) {
-          return { file: entry.file, parsed };
-        }
-      } catch {
-        continue;
-      }
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-async function updateImplementLifecycleForWorktree(worktreePath, update, cwd) {
-  const record2 = await findImplementLogRecordForWorktree(worktreePath, cwd);
-  if (!record2) return;
-  const parsed = record2.parsed;
-  const timestamp = (/* @__PURE__ */ new Date()).toISOString();
-  const next = {
-    ...parsed,
-    updated_at: timestamp,
-    downstream: {
-      ...parsed.downstream ?? {},
-      ...update
-    }
-  };
-  await writeFile4(record2.file, JSON.stringify(next, null, 2));
-}
-function parseRunStatus(raw) {
-  if (typeof raw.error === "string" && raw.error.length > 0) return "failed";
-  const exitCode = raw.execution?.exit_code;
-  const timedOut = raw.execution?.timed_out === true;
-  if (timedOut || typeof exitCode === "number" && exitCode !== 0) {
-    const changedFiles = Array.isArray(raw.observed?.changed_files) ? raw.observed.changed_files.length : 0;
-    return changedFiles > 0 ? "partial" : "failed";
-  }
-  const status = raw.report?.status;
-  if (status === "success" || status === "failed" || status === "partial" || status === "needs_user") {
-    return status;
-  }
-  return "unknown";
-}
-function parseRunLifecycle(raw) {
-  const downstreamLifecycle = raw.downstream?.current_lifecycle;
-  if (downstreamLifecycle === "queued" || downstreamLifecycle === "running" || downstreamLifecycle === "success" || downstreamLifecycle === "partial" || downstreamLifecycle === "failed" || downstreamLifecycle === "apply_blocked" || downstreamLifecycle === "applied" || downstreamLifecycle === "cleaned" || downstreamLifecycle === "unknown") {
-    return downstreamLifecycle;
-  }
-  const type = typeof raw.type === "string" ? raw.type : "unknown";
-  const status = parseRunStatus(raw);
-  if (type === "apply") {
-    if (typeof raw.error === "string" && raw.error.length > 0) return "apply_blocked";
-    const appliedCount = Array.isArray(raw.applied_files) ? raw.applied_files.length : 0;
-    if (appliedCount > 0) return "applied";
-    if (raw.preview === true) return "success";
-  }
-  if (type === "cleanup") {
-    const removedCount = typeof raw.removed_count === "number" ? raw.removed_count : 0;
-    const failedCount = typeof raw.failed_count === "number" ? raw.failed_count : 0;
-    if (removedCount > 0 && failedCount === 0) return "cleaned";
-    if (failedCount > 0) return "partial";
-    return "success";
-  }
-  if (status === "needs_user") {
-    return "partial";
-  }
-  if (status === "success" || status === "partial" || status === "failed") {
-    return status;
-  }
-  return "unknown";
-}
-function summarizeRunLog(runId, raw, updatedAt) {
-  const worktreePath = typeof raw.observed?.worktree_path === "string" ? raw.observed.worktree_path : typeof raw.input?.worktree_path === "string" ? raw.input.worktree_path : void 0;
-  return {
-    run_id: runId,
-    type: typeof raw.type === "string" ? raw.type : "unknown",
-    status: parseRunStatus(raw),
-    lifecycle: parseRunLifecycle(raw),
-    cwd: typeof raw.input?.cwd === "string" ? raw.input.cwd : void 0,
-    summary: typeof raw.report?.summary === "string" ? raw.report.summary : void 0,
-    error: typeof raw.error === "string" ? raw.error : void 0,
-    worktree_path: worktreePath,
-    worktree_name: typeof raw.observed?.worktree_name === "string" ? raw.observed.worktree_name : worktreePath ? path7.basename(worktreePath) : void 0,
-    requested_session_id: typeof raw.session?.requested_session_id === "string" || raw.session?.requested_session_id === null ? raw.session.requested_session_id : void 0,
-    returned_session_id: typeof raw.session?.returned_session_id === "string" || raw.session?.returned_session_id === null ? raw.session.returned_session_id : void 0,
-    retried_after_session_expired: raw.retried_after_session_expired === true,
-    started_at: typeof raw.started_at === "string" ? raw.started_at : updatedAt,
-    updated_at: typeof raw.updated_at === "string" ? raw.updated_at : updatedAt
-  };
-}
-function summarizeRecentRuns(entries) {
-  const lifecycleCounts = {};
-  for (const entry of entries) {
-    lifecycleCounts[entry.lifecycle] = (lifecycleCounts[entry.lifecycle] ?? 0) + 1;
-  }
-  return { entries, lifecycle_counts: lifecycleCounts };
-}
-async function readRunLogFile(runId, cwd) {
-  const logDir = getRunLogDir(cwd);
-  const file2 = path7.join(logDir, `${runId}.json`);
-  try {
-    return JSON.parse(await readFile5(file2, "utf8"));
-  } catch {
-    return null;
-  }
-}
-async function listRunLogs(input) {
-  const limit = input.limit ?? 20;
-  const logDir = getRunLogDir(input.cwd);
-  try {
-    const entries = await readdir2(logDir);
-    const candidates = await Promise.all(
-      entries.filter((name) => name.endsWith(".json")).map(async (name) => {
-        const file2 = path7.join(logDir, name);
-        try {
-          const stats = await stat3(file2);
-          return { file: file2, runId: name.replace(/\.json$/, ""), mtimeMs: stats.mtimeMs, updatedAt: new Date(stats.mtimeMs).toISOString() };
-        } catch {
-          return null;
-        }
-      })
-    );
-    const summaries = [];
-    for (const candidate of candidates.filter((item) => item !== null).sort((a, b) => b.mtimeMs - a.mtimeMs)) {
-      try {
-        const raw = JSON.parse(await readFile5(candidate.file, "utf8"));
-        const summary = summarizeRunLog(candidate.runId, raw, candidate.updatedAt);
-        if (summary.cwd && summary.cwd !== input.cwd) continue;
-        if (input.type && summary.type !== input.type) continue;
-        if (input.status && summary.status !== input.status) continue;
-        if (input.worktree_name && summary.worktree_name !== input.worktree_name) continue;
-        summaries.push(summary);
-        if (summaries.length >= limit) break;
-      } catch {
-        continue;
-      }
-    }
-    return { entries: summaries, total_entries: summaries.length };
-  } catch {
-    return { entries: [], total_entries: 0 };
-  }
-}
-async function getRecentRunsSummary(cwd, limit = 5) {
-  const runs = await listRunLogs({ cwd, limit });
-  return summarizeRecentRuns(runs.entries);
-}
-async function getRunLogById(input) {
-  const raw = await readRunLogFile(input.run_id, input.cwd);
-  if (!raw) return null;
-  const summary = summarizeRunLog(input.run_id, raw);
-  if (summary.cwd && summary.cwd !== input.cwd) return null;
-  return {
-    entry: summary,
-    raw,
-    related_runs: {
-      apply_run_id: typeof raw.downstream?.last_apply_run_id === "string" ? raw.downstream.last_apply_run_id : void 0,
-      cleanup_run_id: typeof raw.downstream?.last_cleanup_run_id === "string" ? raw.downstream.last_cleanup_run_id : void 0
-    }
-  };
-}
-function buildRunResultPayload(raw) {
-  const payload = {
-    type: typeof raw.type === "string" ? raw.type : "unknown"
-  };
-  if (raw.report && typeof raw.report === "object") payload.report = raw.report;
-  if (typeof raw.error === "string" && raw.error.length > 0) payload.error = raw.error;
-  if (typeof raw.preview === "boolean") payload.preview = raw.preview;
-  if (Array.isArray(raw.applied_files)) payload.applied_files = raw.applied_files;
-  if (typeof raw.removed_count === "number") payload.removed_count = raw.removed_count;
-  if (typeof raw.failed_count === "number") payload.failed_count = raw.failed_count;
-  if (raw.observed && typeof raw.observed === "object") payload.observed = raw.observed;
-  if (raw.downstream && typeof raw.downstream === "object") payload.downstream = raw.downstream;
-  return payload;
-}
-function buildResultSummaryFromRun(entry) {
-  if (entry.summary) return entry.summary;
-  if (entry.error) return `${entry.type} failed: ${entry.error}`;
-  return `${entry.type} ${entry.lifecycle}`;
 }
 async function resolveWorkflowSessionSummary(input) {
   const store = await getStore(input.cwd);
@@ -26593,14 +26623,14 @@ function compareRecency(a, b) {
   return aTime - bTime;
 }
 async function listDelegatedWorktrees(cwd) {
-  const worktreeDir = path7.join(cwd, ".claude", "worktrees");
+  const worktreeDir = path8.join(cwd, ".claude", "worktrees");
   const cutoff = Date.now() - 24 * 60 * 60 * 1e3;
   try {
-    const entries = await readdir2(worktreeDir, { withFileTypes: true });
+    const entries = await readdir3(worktreeDir, { withFileTypes: true });
     const summarized = await Promise.all(entries.filter((entry) => entry.isDirectory() && entry.name.startsWith("codex-delegated-")).map(async (entry) => {
-      const worktreePath = path7.join(worktreeDir, entry.name);
+      const worktreePath = path8.join(worktreeDir, entry.name);
       try {
-        const details = await stat3(worktreePath);
+        const details = await stat4(worktreePath);
         return {
           worktree_name: entry.name,
           worktree_path: worktreePath,
@@ -27443,20 +27473,20 @@ function parseNameStatusPorcelainZ(output) {
 }
 async function expandDirectoryChange(change, worktreeRoot) {
   if (change.status === "D") return [change];
-  const sourcePath = path7.join(worktreeRoot, change.file);
+  const sourcePath = path8.join(worktreeRoot, change.file);
   let sourceStat;
   try {
-    sourceStat = await stat3(sourcePath);
+    sourceStat = await stat4(sourcePath);
   } catch {
     return [change];
   }
   if (!sourceStat.isDirectory()) return [change];
   const expanded = [];
   const walk = async (relativeDir) => {
-    const dirPath = path7.join(worktreeRoot, relativeDir);
-    const entries = await readdir2(dirPath, { withFileTypes: true });
+    const dirPath = path8.join(worktreeRoot, relativeDir);
+    const entries = await readdir3(dirPath, { withFileTypes: true });
     for (const entry of entries) {
-      const childRelative = path7.join(relativeDir, entry.name);
+      const childRelative = path8.join(relativeDir, entry.name);
       if (entry.isDirectory()) {
         await walk(childRelative);
       } else if (entry.isFile()) {
@@ -27526,7 +27556,7 @@ async function checkClaudeStatus(cwd) {
     }
   }
   result.cwd_valid = result.git_available && result.cwd_is_git_repo;
-  const worktreeDir = path7.join(cwd, ".claude", "worktrees");
+  const worktreeDir = path8.join(cwd, ".claude", "worktrees");
   try {
     const { readdirSync, statSync } = await import("node:fs");
     if (existsSync3(worktreeDir)) {
@@ -27536,7 +27566,7 @@ async function checkClaudeStatus(cwd) {
       const cutoff = Date.now() - 24 * 60 * 60 * 1e3;
       result.stale_worktrees_count = result.delegated_worktrees.filter((n) => {
         try {
-          return statSync(path7.join(worktreeDir, n)).mtimeMs < cutoff;
+          return statSync(path8.join(worktreeDir, n)).mtimeMs < cutoff;
         } catch {
           return false;
         }
@@ -27564,7 +27594,7 @@ async function runClaudeApply(input, runId) {
       error: result.error,
       duration_ms: Date.now() - startTime
     }, input.cwd);
-    const wtRelPath = path7.join(".claude", "worktrees", path7.basename(path7.resolve(input.cwd, input.worktree_path)));
+    const wtRelPath = path8.join(".claude", "worktrees", path8.basename(path8.resolve(input.cwd, input.worktree_path)));
     if (input.preview === true) {
       await updateImplementLifecycleForWorktree(wtRelPath, {
         current_lifecycle: result.error ? "apply_blocked" : "success",
@@ -27586,12 +27616,12 @@ async function runClaudeApply(input, runId) {
     }
     return result;
   };
-  const wtReal = path7.resolve(input.cwd, input.worktree_path);
-  const wtDir = path7.join(input.cwd, ".claude", "worktrees");
-  if (!wtReal.startsWith(wtDir + path7.sep)) {
+  const wtReal = path8.resolve(input.cwd, input.worktree_path);
+  const wtDir = path8.join(input.cwd, ".claude", "worktrees");
+  if (!wtReal.startsWith(wtDir + path8.sep)) {
     return finish({ applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: `worktree_path must be under ${wtDir}` });
   }
-  if (!wtReal.startsWith(wtDir + path7.sep + "codex-delegated-")) {
+  if (!wtReal.startsWith(wtDir + path8.sep + "codex-delegated-")) {
     return finish({ applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: "worktree_path must be a delegated worktree (codex-delegated-*)" });
   }
   if (!existsSync3(wtReal)) {
@@ -27599,7 +27629,7 @@ async function runClaudeApply(input, runId) {
   }
   const worktreeLock = await acquireFileLock({
     cwd: input.cwd,
-    resource: `worktree:${path7.basename(wtReal)}`
+    resource: `worktree:${path8.basename(wtReal)}`
   }).catch((err) => {
     if (err instanceof LockBusyError) return err;
     throw err;
@@ -27610,7 +27640,7 @@ async function runClaudeApply(input, runId) {
       diff_stat: "",
       cleanup_performed: false,
       conflicts: [],
-      error: `Another operation is already using delegated worktree ${path7.basename(wtReal)}. Retry after the current apply or cleanup finishes.`,
+      error: `Another operation is already using delegated worktree ${path8.basename(wtReal)}. Retry after the current apply or cleanup finishes.`,
       preview: input.preview === true,
       planned_changes: []
     });
@@ -27634,7 +27664,7 @@ async function runClaudeApply(input, runId) {
         planned_changes: []
       });
     }
-    const wtRelPath = path7.join(".claude", "worktrees", path7.basename(wtReal));
+    const wtRelPath = path8.join(".claude", "worktrees", path8.basename(wtReal));
     const jobMatch = await findImplementJobForWorktree(wtRelPath, input.cwd);
     let implementLog = null;
     if (jobMatch?.run_id) {
@@ -27652,7 +27682,7 @@ async function runClaudeApply(input, runId) {
     const hasObservedScope = baseCommit !== void 0 && observedChangedFiles.length > 0;
     const pathspecs = hasObservedScope ? observedChangedFiles : [];
     if (!baseCommit) {
-      const wtName = path7.basename(wtReal);
+      const wtName = path8.basename(wtReal);
       return finish({
         applied_files: [],
         diff_stat: "",
@@ -27740,8 +27770,8 @@ async function runClaudeApply(input, runId) {
     }
     const copied = [];
     for (const c of changes) {
-      const dest = path7.join(input.cwd, c.file);
-      const src = path7.join(wtReal, c.file);
+      const dest = path8.join(input.cwd, c.file);
+      const src = path8.join(wtReal, c.file);
       try {
         if (c.status === "D") {
           if (existsSync3(dest)) {
@@ -27751,8 +27781,8 @@ async function runClaudeApply(input, runId) {
           copied.push(c.file);
         } else {
           const content = await import("node:fs/promises").then((m) => m.readFile(src));
-          await mkdir5(path7.dirname(dest), { recursive: true });
-          await writeFile4(dest, content);
+          await mkdir6(path8.dirname(dest), { recursive: true });
+          await writeFile5(dest, content);
           copied.push(c.file);
         }
       } catch (err) {
@@ -27801,7 +27831,7 @@ async function runClaudeCleanup(input, runId) {
     };
   }
   try {
-    const worktreeDir = path7.join(input.cwd, ".claude", "worktrees");
+    const worktreeDir = path8.join(input.cwd, ".claude", "worktrees");
     const entries = [];
     let removedCount = 0;
     let failedCount = 0;
@@ -27814,8 +27844,8 @@ async function runClaudeCleanup(input, runId) {
       const dirs = readdirSync(worktreeDir, { withFileTypes: true }).filter((d) => d.isDirectory() && d.name.startsWith("codex-delegated-")).map((d) => d.name);
       const cutoff = olderThanHours > 0 ? Date.now() - olderThanHours * 60 * 60 * 1e3 : 0;
       for (const name of dirs) {
-        const dirPath = path7.join(worktreeDir, name);
-        const wtRelPath = path7.join(".claude", "worktrees", name);
+        const dirPath = path8.join(worktreeDir, name);
+        const wtRelPath = path8.join(".claude", "worktrees", name);
         if (olderThanHours > 0) {
           try {
             if (statSync(dirPath).mtimeMs > cutoff) {
@@ -28172,19 +28202,84 @@ var BASE_TOOL_DEFINITIONS = [
   }
 ];
 var DEFAULT_TOOL_METADATA = {
-  claude_setup: {
-    title: "Check Claude Delegation Setup",
-    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  claude_status: {
+    title: "Check Claude Code Status",
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     outputSchema: { type: "object", additionalProperties: true }
   },
-  claude_task: {
-    title: "Delegate Task To Claude",
-    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  claude_setup: {
+    title: "Check Claude Delegation Setup",
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true }
+  },
+  claude_runs: {
+    title: "List Recent Run Logs",
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true }
+  },
+  claude_run_inspect: {
+    title: "Inspect Run Log",
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     outputSchema: { type: "object", additionalProperties: true }
   },
   claude_result: {
     title: "Resolve Claude Result",
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+    outputSchema: { type: "object", additionalProperties: true }
+  },
+  claude_workspace_status: {
+    title: "View Workspace Status",
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true }
+  },
+  claude_task: {
+    title: "Delegate Task To Claude",
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true }
+  },
+  claude_review_gate: {
+    title: "Manage Review Gate",
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true }
+  },
+  claude_query: {
+    title: "Query Claude (Background)",
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true }
+  },
+  claude_review: {
+    title: "Review Code (Background)",
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true }
+  },
+  claude_implement: {
+    title: "Implement Task (Background)",
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true }
+  },
+  claude_jobs: {
+    title: "List Background Jobs",
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true }
+  },
+  claude_job_result: {
+    title: "Get Job Result",
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true }
+  },
+  claude_job_cancel: {
+    title: "Cancel Background Job",
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true }
+  },
+  claude_job_wait: {
+    title: "Wait For Background Job",
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true }
+  },
+  claude_job_cleanup: {
+    title: "Clean Old Jobs",
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     outputSchema: { type: "object", additionalProperties: true }
   },
   claude_apply: {

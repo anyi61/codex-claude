@@ -916,6 +916,20 @@ export function safeErrorMessage(message: string): string {
     .replace(/(^|[\s:,(])\/(?!\/)([\w.-]+(?:\/[\w.-]+)+)([\s,:;)]|$)/g, "$1[path]$3");
 }
 
+export function safeErrorPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (typeof value === "string") {
+      out[key] = safeErrorMessage(value);
+    } else if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+      out[key] = safeErrorPayload(value as Record<string, unknown>);
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 export function errorResult(error: string | Record<string, unknown>): CallToolResult {
   if (typeof error === "string") {
     process.stderr.write(`[claude-delegate] ERROR: ${error}\n`);
@@ -926,8 +940,7 @@ export function errorResult(error: string | Record<string, unknown>): CallToolRe
       isError: true,
     } as CallToolResult;
   }
-  // Structured error payload (from StructuredToolError) is trusted — pass through.
-  const payload = error;
+  const payload = safeErrorPayload(error);
   return {
     content: [{ type: "text", text: JSON.stringify(payload) }],
     structuredContent: payload,

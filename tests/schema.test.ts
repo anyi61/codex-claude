@@ -24,6 +24,8 @@ import {
   buildImplementPrompt,
   errorResult,
   jsonResult,
+  safeErrorMessage,
+  safeErrorPayload,
 } from "../src/schema.js";
 import { TOOL_DEFINITIONS } from "../src/server.js";
 
@@ -42,6 +44,34 @@ describe("schema definitions", () => {
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content[0]!.text)).toEqual({ error: "bad input" });
     expect(result.structuredContent).toEqual({ error: "bad input" });
+  });
+
+  it("safeErrorMessage strips quoted absolute paths", () => {
+    expect(safeErrorMessage(`Path "/Users/anyi/codex-claude/src/cli.ts" is outside allowed roots`))
+      .toBe(`Path "[path]" is outside allowed roots`);
+  });
+
+  it("safeErrorMessage strips standalone absolute paths", () => {
+    expect(safeErrorMessage("EACCES: /Users/anyi/projects"))
+      .toMatch(/\[path\]/);
+    expect(safeErrorMessage("EACCES: /Users/anyi/projects")).not.toMatch(/\/Users\/anyi/);
+  });
+
+  it("safeErrorPayload recursively sanitizes string values in nested object", () => {
+    const input = {
+      error: "No output from: /usr/local/bin/claude",
+      diagnostics: {
+        stderr_tail: "ENOENT: /home/user/.claude/config",
+        env_path: "/usr/bin:/bin",
+      },
+      exit_code: 1,
+    };
+    const result = safeErrorPayload(input);
+    expect(result.error).toMatch(/\[path\]/);
+    expect(result.error).not.toMatch(/\/usr\/local/);
+    expect((result.diagnostics as Record<string, unknown>).stderr_tail).toMatch(/\[path\]/);
+    expect((result.diagnostics as Record<string, unknown>).stderr_tail).not.toMatch(/\/home\/user/);
+    expect(result.exit_code).toBe(1);
   });
 
   it("defines implement structured output fields", () => {
