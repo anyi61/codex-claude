@@ -976,4 +976,36 @@ export function withInteraction<T extends object>(
   return { ...result, interaction };
 }
 
+// ---- Type helpers ----
+
+export function toResultRecord<T>(value: T): Record<string, unknown> {
+  return value as unknown as Record<string, unknown>;
+}
+
+// ---- Run log schemas ----
+
+export const ImplementRunLogSchema = z.object({
+  type: z.unknown().optional(),
+  downstream: z.object({
+    current_lifecycle: z.unknown().optional(),
+  }).optional(),
+  input: z.object({
+    cwd: z.unknown().optional(),
+    files: z.unknown().optional(),
+  }).optional(),
+  observed: z.object({
+    worktree_path: z.unknown().optional(),
+    base_commit: z.unknown().optional(),
+    changed_files: z.unknown().optional(),
+    resource_limits: z.object({
+      changed_files_exceeded: z.unknown().optional(),
+      warnings: z.unknown().optional(),
+    }).optional(),
+    scope: z.object({
+      scope_exceeded: z.unknown().optional(),
+      warnings: z.unknown().optional(),
+    }).optional(),
+  }).optional(),
+});
+
 // end of file

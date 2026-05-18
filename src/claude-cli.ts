@@ -63,6 +63,7 @@ import {
   QUERY_SCHEMA,
   REVIEW_SCHEMA,
   IMPLEMENT_SCHEMA,
+  ImplementRunLogSchema,
   claudeApplyInputSchema,
   claudeCleanupInputSchema,
   claudeImplementInputSchema,
@@ -71,6 +72,7 @@ import {
   buildImplementPrompt,
   buildQueryPrompt,
   buildReviewPrompt,
+  toResultRecord,
 } from "./schema.js";
 import {
   CLAUDE_BIN,
@@ -1108,7 +1110,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
           delegated_mode: delegatedMode,
           status: "needs_user",
           summary: "Write task needs a dirty-workspace decision before it can be delegated.",
-          result: implementResult as unknown as Record<string, unknown>,
+          result: toResultRecord(implementResult),
           wait: buildWaitMetadata({
             timeoutSec: input.wait_timeout_sec ?? 540,
             completedInline: false,
@@ -2275,15 +2277,15 @@ export async function executeBackgroundJob(jobId: string): Promise<void> {
     const payload = parsePayloadOrThrow();
     let result: Record<string, unknown>;
     if (running.type === "query") {
-      result = await runClaudeQuery(payload as ClaudeQueryInput, runId) as unknown as Record<string, unknown>;
+      result = toResultRecord(await runClaudeQuery(payload as ClaudeQueryInput, runId));
     } else if (running.type === "review") {
-      result = await runClaudeReview(payload as ClaudeReviewInput, runId) as unknown as Record<string, unknown>;
+      result = toResultRecord(await runClaudeReview(payload as ClaudeReviewInput, runId));
     } else if (running.type === "implement") {
-      result = await runClaudeImplement(payload as ClaudeImplementInput, runId) as unknown as Record<string, unknown>;
+      result = toResultRecord(await runClaudeImplement(payload as ClaudeImplementInput, runId));
     } else if (running.type === "apply") {
-      result = await runClaudeApply(payload as ClaudeApplyInput, runId) as unknown as Record<string, unknown>;
+      result = toResultRecord(await runClaudeApply(payload as ClaudeApplyInput, runId));
     } else {
-      result = await runClaudeCleanup(payload as ClaudeCleanupInput, runId) as unknown as Record<string, unknown>;
+      result = toResultRecord(await runClaudeCleanup(payload as ClaudeCleanupInput, runId));
     }
 
     await jobStore.update(jobId, {
@@ -2637,7 +2639,7 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   if (jobMatch?.run_id) {
     const raw = await readRunLogFile(jobMatch.run_id, input.cwd);
     if (raw) {
-      implementLog = raw as unknown as ImplementRunLog;
+      implementLog = ImplementRunLogSchema.parse(raw);
     }
   }
 
