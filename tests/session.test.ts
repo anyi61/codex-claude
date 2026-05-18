@@ -132,7 +132,7 @@ describe("SessionStore", () => {
   describe("init", () => {
     it("creates the directory and an empty sessions.json", async () => {
       await store.init();
-      const sessions = store.getAll();
+      const sessions = await store.getAll();
       expect(sessions).toEqual([]);
 
       // Verify the file was created.
@@ -145,7 +145,7 @@ describe("SessionStore", () => {
     it("is idempotent — calling init twice does not break", async () => {
       await store.init();
       await store.init();
-      const sessions = store.getAll();
+      const sessions = await store.getAll();
       expect(sessions).toEqual([]);
     });
   });
@@ -153,7 +153,7 @@ describe("SessionStore", () => {
   // ---- getRecent ----
 
   describe("getRecent", () => {
-    it("returns the most recent matching session within the default window", () => {
+    it("returns the most recent matching session within the default window", async () => {
       writeSessionsFile(root, [
         makeSession({
           session_id: "s1",
@@ -178,17 +178,17 @@ describe("SessionStore", () => {
         }),
       ]);
 
-      const result = store.getRecent("key1", "review");
+      const result = await store.getRecent("key1", "review");
       expect(result).toBeTruthy();
       expect(result!.session_id).toBe("s2");
     });
 
-    it("returns null when no sessions exist", () => {
-      const result = store.getRecent("key1", "review");
+    it("returns null when no sessions exist", async () => {
+      const result = await store.getRecent("key1", "review");
       expect(result).toBeNull();
     });
 
-    it("filters by repo_key and type", () => {
+    it("filters by repo_key and type", async () => {
       writeSessionsFile(root, [
         makeSession({
           session_id: "s-match",
@@ -213,12 +213,12 @@ describe("SessionStore", () => {
         }),
       ]);
 
-      const result = store.getRecent("key1", "review");
+      const result = await store.getRecent("key1", "review");
       expect(result).toBeTruthy();
       expect(result!.session_id).toBe("s-match");
     });
 
-    it("ignores expired sessions", () => {
+    it("ignores expired sessions", async () => {
       writeSessionsFile(root, [
         makeSession({
           session_id: "s-expired",
@@ -238,12 +238,12 @@ describe("SessionStore", () => {
         }),
       ]);
 
-      const result = store.getRecent("key1", "review");
+      const result = await store.getRecent("key1", "review");
       expect(result).toBeTruthy();
       expect(result!.session_id).toBe("s-active");
     });
 
-    it("respects the withinMinutes parameter", () => {
+    it("respects the withinMinutes parameter", async () => {
       writeSessionsFile(root, [
         makeSession({
           session_id: "s-old",
@@ -255,15 +255,15 @@ describe("SessionStore", () => {
       ]);
 
       // Default window is 20 min: cutoff = 11:40, s-old at 11:50 fits.
-      const withDefault = store.getRecent("key1", "review");
+      const withDefault = await store.getRecent("key1", "review");
       expect(withDefault).toBeTruthy();
 
       // withinMinutes=5: cutoff = 11:55, s-old at 11:50 is too old.
-      const withTightWindow = store.getRecent("key1", "review", 5);
+      const withTightWindow = await store.getRecent("key1", "review", 5);
       expect(withTightWindow).toBeNull();
     });
 
-    it("sorts by last_used descending and returns the most recent", () => {
+    it("sorts by last_used descending and returns the most recent", async () => {
       writeSessionsFile(root, [
         makeSession({
           session_id: "s-older",
@@ -281,7 +281,7 @@ describe("SessionStore", () => {
         }),
       ]);
 
-      const result = store.getRecent("key1", "review");
+      const result = await store.getRecent("key1", "review");
       expect(result).toBeTruthy();
       expect(result!.session_id).toBe("s-newer");
     });
@@ -290,7 +290,7 @@ describe("SessionStore", () => {
   // ---- getById ----
 
   describe("getById", () => {
-    it("returns the session with the matching id", () => {
+    it("returns the session with the matching id", async () => {
       writeSessionsFile(root, [
         makeSession({
           session_id: "abc",
@@ -306,13 +306,13 @@ describe("SessionStore", () => {
         }),
       ]);
 
-      const result = store.getById("xyz");
+      const result = await store.getById("xyz");
       expect(result).toBeTruthy();
       expect(result!.session_id).toBe("xyz");
       expect(result!.type).toBe("implement");
     });
 
-    it("returns null when no session has the given id", () => {
+    it("returns null when no session has the given id", async () => {
       writeSessionsFile(root, [
         makeSession({
           session_id: "abc",
@@ -322,7 +322,7 @@ describe("SessionStore", () => {
         }),
       ]);
 
-      const result = store.getById("nonexistent");
+      const result = await store.getById("nonexistent");
       expect(result).toBeNull();
     });
   });
@@ -330,7 +330,7 @@ describe("SessionStore", () => {
   // ---- listByRepo ----
 
   describe("listByRepo", () => {
-    it("returns sessions filtered by repo_key", () => {
+    it("returns sessions filtered by repo_key", async () => {
       writeSessionsFile(root, [
         makeSession({
           session_id: "s1",
@@ -352,12 +352,12 @@ describe("SessionStore", () => {
         }),
       ]);
 
-      const results = store.listByRepo("key1");
+      const results = await store.listByRepo("key1");
       expect(results).toHaveLength(2);
       expect(results.map((s) => s.session_id).sort()).toEqual(["s1", "s2"]);
     });
 
-    it("sorts results by last_used descending", () => {
+    it("sorts results by last_used descending", async () => {
       writeSessionsFile(root, [
         makeSession({
           session_id: "s1",
@@ -382,11 +382,11 @@ describe("SessionStore", () => {
         }),
       ]);
 
-      const results = store.listByRepo("key1");
+      const results = await store.listByRepo("key1");
       expect(results.map((s) => s.session_id)).toEqual(["s2", "s1", "s3"]);
     });
 
-    it("respects the limit parameter", () => {
+    it("respects the limit parameter", async () => {
       writeSessionsFile(root, [
         makeSession({
           session_id: "s1",
@@ -411,12 +411,12 @@ describe("SessionStore", () => {
         }),
       ]);
 
-      const results = store.listByRepo("key1", 2);
+      const results = await store.listByRepo("key1", 2);
       expect(results).toHaveLength(2);
       expect(results.map((s) => s.session_id)).toEqual(["s2", "s1"]);
     });
 
-    it("returns an empty array when no sessions match the repo_key", () => {
+    it("returns an empty array when no sessions match the repo_key", async () => {
       writeSessionsFile(root, [
         makeSession({
           session_id: "s1",
@@ -426,7 +426,7 @@ describe("SessionStore", () => {
         }),
       ]);
 
-      const results = store.listByRepo("nonexistent-key");
+      const results = await store.listByRepo("nonexistent-key");
       expect(results).toEqual([]);
     });
   });
@@ -434,10 +434,10 @@ describe("SessionStore", () => {
   // ---- upsert ----
 
   describe("upsert", () => {
-    it("creates a new session with correct fields on first upsert", () => {
-      store.upsert("s1", "review", "key1", "/a", "test summary");
+    it("creates a new session with correct fields on first upsert", async () => {
+      await store.upsert("s1", "review", "key1", "/a", "test summary");
 
-      const session = store.getById("s1");
+      const session = await store.getById("s1");
       expect(session).toBeTruthy();
       expect(session!.session_id).toBe("s1");
       expect(session!.type).toBe("review");
@@ -450,17 +450,17 @@ describe("SessionStore", () => {
       expect(session!.expired).toBe(false);
     });
 
-    it("updates an existing session: preserves created_at, increments use_count, updates last_used", () => {
+    it("updates an existing session: preserves created_at, increments use_count, updates last_used", async () => {
       // First upsert at T=12:00.
-      store.upsert("s1", "review", "key1", "/a");
+      await store.upsert("s1", "review", "key1", "/a");
 
       // Advance time by 1 hour.
       vi.setSystemTime(new Date("2026-05-18T13:00:00Z"));
 
       // Second upsert same id.
-      store.upsert("s1", "review", "key1", "/a", "updated");
+      await store.upsert("s1", "review", "key1", "/a", "updated");
 
-      const session = store.getById("s1");
+      const session = await store.getById("s1");
       expect(session).toBeTruthy();
       expect(session!.created_at).toBe("2026-05-18T12:00:00.000Z"); // preserved
       expect(session!.last_used).toBe("2026-05-18T13:00:00.000Z"); // updated
@@ -468,11 +468,11 @@ describe("SessionStore", () => {
       expect(session!.summary).toBe("updated");
 
       // Only one entry should exist.
-      const all = store.getAll();
+      const all = await store.getAll();
       expect(all).toHaveLength(1);
     });
 
-    it("creates a fresh entry when the session_id is not found (new, not update)", () => {
+    it("creates a fresh entry when the session_id is not found (new, not update)", async () => {
       writeSessionsFile(root, [
         makeSession({
           session_id: "existing",
@@ -482,24 +482,24 @@ describe("SessionStore", () => {
         }),
       ]);
 
-      store.upsert("new-one", "implement", "key2", "/b");
+      await store.upsert("new-one", "implement", "key2", "/b");
 
-      const created = store.getById("new-one");
+      const created = await store.getById("new-one");
       expect(created).toBeTruthy();
       expect(created!.session_id).toBe("new-one");
 
       // The pre-existing session should be untouched.
-      const existing = store.getById("existing");
+      const existing = await store.getById("existing");
       expect(existing).toBeTruthy();
 
-      expect(store.getAll()).toHaveLength(2);
+      expect(await store.getAll()).toHaveLength(2);
     });
   });
 
   // ---- markExpired ----
 
   describe("markExpired", () => {
-    it("sets expired=true on a matching session", () => {
+    it("sets expired=true on a matching session", async () => {
       writeSessionsFile(root, [
         makeSession({
           session_id: "s1",
@@ -509,14 +509,14 @@ describe("SessionStore", () => {
         }),
       ]);
 
-      store.markExpired("s1");
+      await store.markExpired("s1");
 
-      const session = store.getById("s1");
+      const session = await store.getById("s1");
       expect(session).toBeTruthy();
       expect(session!.expired).toBe(true);
     });
 
-    it("is a no-op when the session_id is not found", () => {
+    it("is a no-op when the session_id is not found", async () => {
       writeSessionsFile(root, [
         makeSession({
           session_id: "s1",
@@ -527,9 +527,9 @@ describe("SessionStore", () => {
       ]);
 
       // Should not throw.
-      store.markExpired("nonexistent");
+      await store.markExpired("nonexistent");
 
-      const all = store.getAll();
+      const all = await store.getAll();
       expect(all).toHaveLength(1);
       expect(all[0].expired).toBe(false);
     });
@@ -538,7 +538,7 @@ describe("SessionStore", () => {
   // ---- prune ----
 
   describe("prune", () => {
-    it("removes sessions expired more than 24 hours ago", () => {
+    it("removes sessions expired more than 24 hours ago", async () => {
       writeSessionsFile(root, [
         makeSession({
           session_id: "old-expired",
@@ -550,12 +550,12 @@ describe("SessionStore", () => {
         }),
       ]);
 
-      store.prune();
+      await store.prune();
 
-      expect(store.getAll()).toHaveLength(0);
+      expect(await store.getAll()).toHaveLength(0);
     });
 
-    it("keeps non-expired sessions regardless of age", () => {
+    it("keeps non-expired sessions regardless of age", async () => {
       writeSessionsFile(root, [
         makeSession({
           session_id: "old-active",
@@ -567,14 +567,14 @@ describe("SessionStore", () => {
         }),
       ]);
 
-      store.prune();
+      await store.prune();
 
-      const all = store.getAll();
+      const all = await store.getAll();
       expect(all).toHaveLength(1);
       expect(all[0].session_id).toBe("old-active");
     });
 
-    it("keeps sessions that expired less than 24 hours ago", () => {
+    it("keeps sessions that expired less than 24 hours ago", async () => {
       writeSessionsFile(root, [
         makeSession({
           session_id: "recent-expired",
@@ -594,9 +594,9 @@ describe("SessionStore", () => {
         }),
       ]);
 
-      store.prune();
+      await store.prune();
 
-      const all = store.getAll();
+      const all = await store.getAll();
       expect(all).toHaveLength(1);
       expect(all[0].session_id).toBe("recent-expired");
     });
@@ -605,7 +605,7 @@ describe("SessionStore", () => {
   // ---- getAll ----
 
   describe("getAll", () => {
-    it("returns all sessions in the store", () => {
+    it("returns all sessions in the store", async () => {
       writeSessionsFile(root, [
         makeSession({
           session_id: "s1",
@@ -622,7 +622,7 @@ describe("SessionStore", () => {
         }),
       ]);
 
-      const all = store.getAll();
+      const all = await store.getAll();
       expect(all).toHaveLength(2);
       const ids = all.map((s) => s.session_id).sort();
       expect(ids).toEqual(["s1", "s2"]);
@@ -632,29 +632,29 @@ describe("SessionStore", () => {
   // ---- Corrupted / missing state file ----
 
   describe("corrupted state handling", () => {
-    it("read() returns an empty store on invalid JSON", () => {
+    it("read() returns an empty store on invalid JSON", async () => {
       const filePath = path.join(root, "sessions.json");
       writeFileSync(filePath, "not valid {{{ json", "utf-8");
 
-      const sessions = store.getAll();
+      const sessions = await store.getAll();
       expect(sessions).toEqual([]);
     });
 
-    it("read() returns an empty store when the file is missing", () => {
+    it("read() returns an empty store when the file is missing", async () => {
       // No init call, no sessions.json written yet.
-      const sessions = store.getAll();
+      const sessions = await store.getAll();
       expect(sessions).toEqual([]);
     });
 
-    it("upsert works after a corrupted read — writes a fresh store", () => {
+    it("upsert works after a corrupted read — writes a fresh store", async () => {
       const filePath = path.join(root, "sessions.json");
       writeFileSync(filePath, "garbage {{{", "utf-8");
 
       // This should succeed despite the corrupted file: read() returns empty,
       // upsert adds the session, and atomicWrite creates a valid file.
-      store.upsert("s1", "review", "key1", "/a");
+      await store.upsert("s1", "review", "key1", "/a");
 
-      const session = store.getById("s1");
+      const session = await store.getById("s1");
       expect(session).toBeTruthy();
       expect(session!.session_id).toBe("s1");
       expect(session!.repo_key).toBe("key1");

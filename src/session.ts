@@ -1,5 +1,4 @@
-import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
-import { mkdir, realpath } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 
@@ -54,14 +53,18 @@ export class SessionStore {
 
   async init(): Promise<void> {
     await mkdir(path.dirname(this.filePath), { recursive: true });
-    if (!existsSync(this.filePath)) {
-      this.atomicWrite({ version: STORE_VERSION, sessions: [] });
+    try {
+      await readFile(this.filePath, "utf-8");
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        await this.atomicWrite({ version: STORE_VERSION, sessions: [] });
+      }
     }
   }
 
   // Find the most recent unexpired session matching type + repo, within the time window.
-  getRecent(repoKey: string, type: SessionType, withinMinutes: number = RECENT_WINDOW_MINUTES): Session | null {
-    const store = this.read();
+  async getRecent(repoKey: string, type: SessionType, withinMinutes: number = RECENT_WINDOW_MINUTES): Promise<Session | null> {
+    const store = await this.read();
     const cutoff = Date.now() - withinMinutes * 60 * 1000;
 
     const candidates = store.sessions
@@ -72,13 +75,13 @@ export class SessionStore {
     return candidates[0] ?? null;
   }
 
-  getById(sessionId: string): Session | null {
-    const store = this.read();
+  async getById(sessionId: string): Promise<Session | null> {
+    const store = await this.read();
     return store.sessions.find((session) => session.session_id === sessionId) ?? null;
   }
 
-  listByRepo(repoKey: string, limit = 10): Session[] {
-    const store = this.read();
+  async listByRepo(repoKey: string, limit = 10): Promise<Session[]> {
+    const store = await this.read();
     return store.sessions
       .filter((session) => session.repo_key === repoKey)
       .sort((a, b) => new Date(b.last_used).getTime() - new Date(a.last_used).getTime())
@@ -86,8 +89,8 @@ export class SessionStore {
   }
 
   // Create or update a session record.
-  upsert(sessionId: string, type: SessionType, repoKey: string, repoPath: string, summary?: string): void {
-    const store = this.read();
+  async upsert(sessionId: string, type: SessionType, repoKey: string, repoPath: string, summary?: string): Promise<void> {
+    const store = await this.read();
     const idx = store.sessions.findIndex((s) => s.session_id === sessionId);
 
     const now = new Date().toISOString();
@@ -109,47 +112,47 @@ export class SessionStore {
       store.sessions.push(entry);
     }
 
-    this.atomicWrite(store);
+    await this.atomicWrite(store);
   }
 
-  markExpired(sessionId: string): void {
-    const store = this.read();
+  async markExpired(sessionId: string): Promise<void> {
+    const store = await this.read();
     const session = store.sessions.find((s) => s.session_id === sessionId);
     if (session) {
       session.expired = true;
-      this.atomicWrite(store);
+      await this.atomicWrite(store);
     }
   }
 
   // Remove sessions expired longer than MAX_AGE_HOURS ago.
-  prune(): void {
-    const store = this.read();
+  async prune(): Promise<void> {
+    const store = await this.read();
     const cutoff = Date.now() - MAX_AGE_HOURS * 60 * 60 * 1000;
     store.sessions = store.sessions.filter((s) => {
       if (!s.expired) return true;
       return new Date(s.last_used).getTime() > cutoff;
     });
-    this.atomicWrite(store);
+    await this.atomicWrite(store);
   }
 
-  getAll(): Session[] {
-    return this.read().sessions;
+  async getAll(): Promise<Session[]> {
+    return (await this.read()).sessions;
   }
 
   // ---- Internals ----
 
-  private read(): SessionFile {
+  private async read(): Promise<SessionFile> {
     try {
-      const raw = readFileSync(this.filePath, "utf-8");
+      const raw = await readFile(this.filePath, "utf-8");
       return JSON.parse(raw) as SessionFile;
     } catch {
       return { version: STORE_VERSION, sessions: [] };
     }
   }
 
-  private atomicWrite(data: SessionFile): void {
+  private async atomicWrite(data: SessionFile): Promise<void> {
     const tmp = this.filePath + ".tmp";
-    writeFileSync(tmp, JSON.stringify(data, null, 2), "utf-8");
-    renameSync(tmp, this.filePath);
+    await writeFile(tmp, JSON.stringify(data, null, 2), "utf-8");
+    await rename(tmp, this.filePath);
   }
 }

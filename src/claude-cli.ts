@@ -380,7 +380,7 @@ async function resolveWorkflowSessionSummary(input: {
   const run = input.run;
 
   if (run?.returned_session_id) {
-    const stored = store.getById(run.returned_session_id);
+    const stored = await store.getById(run.returned_session_id);
     if (stored) {
       return {
         ...toWorkflowSessionSummaryFromStore(stored),
@@ -653,7 +653,7 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
 
   const store = await getStore(input.cwd);
   const repoKey = await computeRepoKey(input.cwd);
-  const latestSessions = store.listByRepo(repoKey, limit)
+  const latestSessions = (await store.listByRepo(repoKey, limit))
     .filter((session) => !session.expired)
     .map(toWorkflowSessionSummaryFromStore);
 
@@ -2118,7 +2118,7 @@ export async function runClaudeQuery(
 
   // Auto-resume: find recent query session for the same repo
   const shouldResume = input.resume ?? !input.fast;
-  const recent = shouldResume ? store.getRecent(repoKey, "query", RECENT_WINDOW_MINUTES) : null;
+  const recent = shouldResume ? await store.getRecent(repoKey, "query", RECENT_WINDOW_MINUTES) : null;
   const requestedSessionId = shouldResume ? (recent?.session_id ?? null) : null;
   const sessionLookupMs = Date.now() - sessionLookupStart;
   let resumed = false;
@@ -2140,7 +2140,7 @@ export async function runClaudeQuery(
 
     // Persist session
     if (session_id) {
-      store.upsert(session_id, "query", repoKey, input.cwd, String((report.answer as string) ?? "").slice(0, 200));
+      await store.upsert(session_id, "query", repoKey, input.cwd, String((report.answer as string) ?? "").slice(0, 200));
     }
 
     const sessionLog: SessionLog = { requested_session_id: requestedSessionId, resumed, forked, returned_session_id: session_id };
@@ -2148,7 +2148,7 @@ export async function runClaudeQuery(
     await logRun(runId, { type: "query", input, report, session: sessionLog }, input.cwd);
     const logWriteMs = Date.now() - logWriteStart;
     const pruneStart = Date.now();
-    store.prune();
+    await store.prune();
     const pruneMs = Date.now() - pruneStart;
     return makeEnvelope(
       "success",
@@ -2171,7 +2171,7 @@ export async function runClaudeQuery(
 
     // If resume failed (session not found / expired), mark expired and retry without resume
     if (requestedSessionId && isSessionNotFoundError(errorMsg)) {
-      store.markExpired(requestedSessionId);
+      await store.markExpired(requestedSessionId);
       log(`Session ${requestedSessionId} not found, falling back to new session`);
 
       // Retry without resume
@@ -2182,7 +2182,7 @@ export async function runClaudeQuery(
         const claudeRunMs = Date.now() - claudeRunStart;
         returnedSessionId = session_id;
         if (session_id) {
-          store.upsert(session_id, "query", repoKey, input.cwd, String((report.answer as string) ?? "").slice(0, 200));
+          await store.upsert(session_id, "query", repoKey, input.cwd, String((report.answer as string) ?? "").slice(0, 200));
         }
         const sessionLog: SessionLog = { requested_session_id: requestedSessionId, resumed: false, forked: false, returned_session_id: session_id };
         const logWriteStart = Date.now();
@@ -2419,7 +2419,7 @@ export async function runClaudeImplement(
     const errorMsg = (err as Error).message;
 
     if (resumeSessionId && isSessionNotFoundError(errorMsg)) {
-      store.markExpired(resumeSessionId);
+      await store.markExpired(resumeSessionId);
       log(`Session ${resumeSessionId} not found, marked expired`);
       const durationMs = Date.now() - startTime;
       const failedExecution: ExecutionMetadata = {
@@ -2474,7 +2474,7 @@ export async function runClaudeImplement(
 
   // Persist session (record only, never auto-resume implement)
   if (returnedSessionId) {
-    store.upsert(returnedSessionId, "implement", repoKey, implementInput.cwd, (report.summary as string) ?? "");
+    await store.upsert(returnedSessionId, "implement", repoKey, implementInput.cwd, (report.summary as string) ?? "");
   }
 
   // Observe actual changes (don't trust Claude's self-report alone)
@@ -2522,7 +2522,7 @@ export async function runClaudeImplement(
     duration_ms: Date.now() - startTime,
   }, implementInput.cwd);
 
-  store.prune();
+  await store.prune();
   const status = implementEnvelopeStatus(report, execution, observed);
   const recoveryWarnings = status === "partial"
     ? [
