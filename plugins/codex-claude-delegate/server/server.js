@@ -25419,16 +25419,18 @@ var StructuredToolError = class extends Error {
 function safeErrorMessage(message) {
   return message.replace(/"\/[^"]+"/g, '"[path]"').replace(/(^|[\s:,(])\/(?!\/)([\w.-]+(?:\/[\w.-]+)+)([\s,:;)]|$)/g, "$1[path]$3");
 }
+function sanitizeValue(value) {
+  if (typeof value === "string") return safeErrorMessage(value);
+  if (Array.isArray(value)) return value.map(sanitizeValue);
+  if (value !== null && typeof value === "object") {
+    return safeErrorPayload(value);
+  }
+  return value;
+}
 function safeErrorPayload(payload) {
   const out = {};
   for (const [key, value] of Object.entries(payload)) {
-    if (typeof value === "string") {
-      out[key] = safeErrorMessage(value);
-    } else if (value !== null && typeof value === "object" && !Array.isArray(value)) {
-      out[key] = safeErrorPayload(value);
-    } else {
-      out[key] = value;
-    }
+    out[key] = sanitizeValue(value);
   }
   return out;
 }

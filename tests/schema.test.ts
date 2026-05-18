@@ -74,6 +74,21 @@ describe("schema definitions", () => {
     expect(result.exit_code).toBe(1);
   });
 
+  it("safeErrorPayload sanitizes strings inside arrays and nested arrays", () => {
+    const input = {
+      errors: ["ENOENT: /home/user/file.ts", "OK"],
+      nested: {
+        warnings: ["Path not found: /usr/local/bin", "Retrying"],
+      },
+    };
+    const result = safeErrorPayload(input);
+    expect((result.errors as string[])[0]).toMatch(/\[path\]/);
+    expect((result.errors as string[])[0]).not.toMatch(/\/home\/user/);
+    expect((result.errors as string[])[1]).toBe("OK");
+    const nested = result.nested as Record<string, unknown>;
+    expect((nested.warnings as string[])[0]).toMatch(/\[path\]/);
+  });
+
   it("defines implement structured output fields", () => {
     expect(IMPLEMENT_SCHEMA.required).toEqual([
       "status",

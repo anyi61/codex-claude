@@ -916,16 +916,19 @@ export function safeErrorMessage(message: string): string {
     .replace(/(^|[\s:,(])\/(?!\/)([\w.-]+(?:\/[\w.-]+)+)([\s,:;)]|$)/g, "$1[path]$3");
 }
 
+function sanitizeValue(value: unknown): unknown {
+  if (typeof value === "string") return safeErrorMessage(value);
+  if (Array.isArray(value)) return value.map(sanitizeValue);
+  if (value !== null && typeof value === "object") {
+    return safeErrorPayload(value as Record<string, unknown>);
+  }
+  return value;
+}
+
 export function safeErrorPayload(payload: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(payload)) {
-    if (typeof value === "string") {
-      out[key] = safeErrorMessage(value);
-    } else if (value !== null && typeof value === "object" && !Array.isArray(value)) {
-      out[key] = safeErrorPayload(value as Record<string, unknown>);
-    } else {
-      out[key] = value;
-    }
+    out[key] = sanitizeValue(value);
   }
   return out;
 }
