@@ -3,12 +3,49 @@ import { realpathSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 
+// Dangerous system directories that tools must never operate within.
+// Subdirectories of these roots are also blocked (e.g. /var/log, /usr/local/bin).
+const DANGEROUS_ROOTS: ReadonlySet<string> = new Set([
+  "/",
+  "/bin",
+  "/boot",
+  "/dev",
+  "/etc",
+  "/lib",
+  "/lib64",
+  "/opt",
+  "/proc",
+  "/root",
+  "/sbin",
+  "/sys",
+  "/tmp",
+  "/usr",
+  "/var",
+]);
+
 // Allowlist of directories that MCP tools may operate within.
 // Override via CODEX_CLAUDE_ALLOW_ROOTS (colon-separated paths on macOS/Linux).
 export function dangerousRoot(raw: string): boolean {
   const resolved = path.resolve(raw);
   const home = process.env.HOME ? path.resolve(process.env.HOME) : "";
-  return resolved === "/" || resolved === "/etc" || resolved === "/tmp" || (!!home && resolved === home);
+
+  // Home directory itself is dangerous (operating on the entire home).
+  if (!!home && resolved === home) return true;
+
+  // If the path is inside HOME, it is safe — the user's own data is not
+  // a system dangerous root, even if HOME happens to live under /var, /tmp, etc.
+  if (!!home && resolved.startsWith(home + path.sep)) return false;
+
+  // Exact match against dangerous system roots
+  if (DANGEROUS_ROOTS.has(resolved)) return true;
+
+  // Subdirectory of any dangerous system directory
+  for (const root of DANGEROUS_ROOTS) {
+    if (root === "/") continue; // "/" prefix-matches everything, handle exactly only
+    if (resolved.startsWith(root + path.sep)) return true;
+  }
+
+  return false;
 }
 
 function splitAllowRootsEnv(raw: string): string[] {
@@ -46,10 +83,6 @@ export interface CwdCheck {
 }
 
 export async function validateCwd(raw: string): Promise<CwdCheck> {
-  if (dangerousRoot(raw)) {
-    return { ok: false, resolved: path.resolve(raw), error: `Refusing dangerous root path: ${path.resolve(raw)}` };
-  }
-
   // Resolve symlinks and relative paths
   let resolved: string;
   try {
@@ -57,16 +90,20 @@ export async function validateCwd(raw: string): Promise<CwdCheck> {
   } catch {
     return { ok: false, resolved: raw, error: `Path does not exist: ${raw}` };
   }
-  if (dangerousRoot(resolved)) {
-    return { ok: false, resolved, error: `Refusing dangerous root path: ${resolved}` };
-  }
 
-  // Must be within an allowed root
   const allowRoots = getAllowRoots();
-  const allowed = allowRoots.some(
+  const isWithinAllowed = allowRoots.some(
     (root) => resolved === root || resolved.startsWith(root + path.sep)
   );
-  if (!allowed) {
+
+  // Allow-roots override: if path is within an allowed root, skip dangerous-root checks.
+  if (!isWithinAllowed) {
+    if (dangerousRoot(raw)) {
+      return { ok: false, resolved: path.resolve(raw), error: `Refusing dangerous root path: ${path.resolve(raw)}` };
+    }
+    if (dangerousRoot(resolved)) {
+      return { ok: false, resolved, error: `Refusing dangerous root path: ${resolved}` };
+    }
     return {
       ok: false,
       resolved,

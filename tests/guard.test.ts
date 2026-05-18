@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   assertCanDelegate,
+  dangerousRoot,
   sanitizeEnv,
   validateCwd,
   validateFilesWithinCwd,
@@ -95,5 +96,54 @@ describe("guard safety checks", () => {
 
     process.env.BRIDGE_DEPTH = "1";
     expect(sanitizeEnv().BRIDGE_DEPTH).toBe("2");
+  });
+
+  it("blocks all dangerous system directories and their subdirectories", () => {
+    const blocked = [
+      "/", "/etc", "/tmp",
+      "/bin", "/sbin", "/lib", "/lib64",
+      "/var", "/usr", "/root", "/opt",
+      "/boot", "/sys", "/dev", "/proc",
+    ];
+    for (const target of blocked) {
+      expect(dangerousRoot(target)).toBe(true);
+    }
+
+    // Subdirectories of dangerous roots are also blocked
+    expect(dangerousRoot("/var/log")).toBe(true);
+    expect(dangerousRoot("/usr/local/bin")).toBe(true);
+    expect(dangerousRoot("/opt/homebrew")).toBe(true);
+    expect(dangerousRoot("/tmp/my-app")).toBe(true);
+    expect(dangerousRoot("/etc/ssl")).toBe(true);
+  });
+
+  it("blocks home directory but not subdirectories (which go through allow-roots)", () => {
+    const home = process.env.HOME;
+    if (home) {
+      expect(dangerousRoot(home)).toBe(true);
+      expect(dangerousRoot(`${home}/projects`)).toBe(false);
+      expect(dangerousRoot(`${home}/work`)).toBe(false);
+    }
+  });
+
+  it("allows non-dangerous paths", () => {
+    expect(dangerousRoot("/Users/anyi/projects")).toBe(false);
+    expect(dangerousRoot("/home/user/work")).toBe(false);
+    expect(dangerousRoot("/srv/app")).toBe(false);
+    expect(dangerousRoot("/mnt/data")).toBe(false);
+  });
+
+  it("CODEX_CLAUDE_ALLOW_ROOTS overrides dangerous root blocking", async () => {
+    // Create a temp directory which may reside under /var/ or /tmp/ (both dangerous roots)
+    const overrideRoot = await mkdtemp(path.join(os.tmpdir(), "codex-guard-override-"));
+    const overrideRepo = path.join(overrideRoot, "repo");
+    await import("node:fs/promises").then((fs) => fs.mkdir(overrideRepo));
+
+    process.env.CODEX_CLAUDE_ALLOW_ROOTS = overrideRoot;
+
+    // Should be allowed even though parent directories are dangerous roots
+    await expect(validateCwd(overrideRepo)).resolves.toMatchObject({ ok: true });
+
+    await rm(overrideRoot, { recursive: true, force: true });
   });
 });
