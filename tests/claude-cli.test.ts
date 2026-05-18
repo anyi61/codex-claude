@@ -1723,7 +1723,7 @@ describe("claude cli argument construction", () => {
       result: { status: "success", summary: "Changed README" },
       worktree_name: "codex-delegated-123",
     });
-    sessionStore.upsert("sess-impl", "implement", repoKey, repo, "Changed README");
+    await sessionStore.upsert("sess-impl", "implement", repoKey, repo, "Changed README");
 
     const reloaded = await import("../src/claude-cli.js");
     const result = await reloaded.getClaudeResult({ cwd: repo, job_id: "job-implement" });
@@ -1829,7 +1829,7 @@ describe("claude cli argument construction", () => {
       summary: "Newest implement",
       result: { status: "success" },
     });
-    sessionStore.upsert("sess-new", "implement", repoKey, repo, "Newest implement");
+    await sessionStore.upsert("sess-new", "implement", repoKey, repo, "Newest implement");
 
     const reloaded = await import("../src/claude-cli.js");
     const result = await reloaded.getClaudeResult({ cwd: repo, prefer: "latest-implement" });
@@ -1866,7 +1866,7 @@ describe("claude cli argument construction", () => {
     }));
 
     // Put an unrelated session in the store to verify fallback does NOT happen
-    sessionStore.upsert("sess-other", "implement", repoKey, repo, "Some other session");
+    await sessionStore.upsert("sess-other", "implement", repoKey, repo, "Some other session");
 
     const reloaded = await import("../src/claude-cli.js");
     const result = await reloaded.getClaudeResult({ cwd: repo, run_id: "run-impl-phantom" });
@@ -1897,7 +1897,7 @@ describe("claude cli argument construction", () => {
     }));
 
     // Add a recent implement session to the store — must NOT be used as fallback
-    sessionStore.upsert("sess-recent", "implement", repoKey, repo, "Recent unrelated session");
+    await sessionStore.upsert("sess-recent", "implement", repoKey, repo, "Recent unrelated session");
 
     const reloaded = await import("../src/claude-cli.js");
     const result = await reloaded.getClaudeResult({ cwd: repo, run_id: "run-no-session" });
@@ -1926,7 +1926,7 @@ describe("claude cli argument construction", () => {
         changed_files: ["src/query-store.ts"],
       },
     }));
-    sessionStore.upsert("sess-query-only", "query", repoKey, repo, "Recent query session");
+    await sessionStore.upsert("sess-query-only", "query", repoKey, repo, "Recent query session");
 
     const reloaded = await import("../src/claude-cli.js");
     const result = await reloaded.getClaudeResult({ cwd: repo, run_id: "run-implement-no-session-query-store" });
@@ -2003,7 +2003,7 @@ describe("claude cli argument construction", () => {
       session: { returned_session_id: "sess-partial-resume" },
     }));
 
-    sessionStore.upsert("sess-partial-resume", "implement", repoKey, repo, "Partial implement session");
+    await sessionStore.upsert("sess-partial-resume", "implement", repoKey, repo, "Partial implement session");
 
     const reloaded = await import("../src/claude-cli.js");
     const result = await reloaded.getClaudeResult({ cwd: repo, run_id: "run-partial-resumable" });
@@ -2051,7 +2051,7 @@ describe("claude cli argument construction", () => {
       session: { returned_session_id: "sess-failed-resume" },
     }));
 
-    sessionStore.upsert("sess-failed-resume", "implement", repoKey, repo, "Failed implement session");
+    await sessionStore.upsert("sess-failed-resume", "implement", repoKey, repo, "Failed implement session");
 
     const reloaded = await import("../src/claude-cli.js");
     const result = await reloaded.getClaudeResult({ cwd: repo, run_id: "run-failed-resumable" });
@@ -2121,7 +2121,7 @@ describe("claude cli argument construction", () => {
       payload: { cwd: repo, task: "implement" },
       summary: "done",
     });
-    sessionStore.upsert("sess-query", "query", repoKey, repo, "Explained workspace");
+    await sessionStore.upsert("sess-query", "query", repoKey, repo, "Explained workspace");
 
     const reloaded = await import("../src/claude-cli.js");
     const result = await reloaded.getWorkspaceStatus({ cwd: repo, limit: 10, include_terminal: true });
@@ -2386,7 +2386,7 @@ describe("claude cli argument construction", () => {
       result: { status: "success", summary: "Fixed bug", server_observed: { worktree_path: ".claude/worktrees/codex-delegated-abc", worktree_name: "codex-delegated-abc" } },
       worktree_name: "codex-delegated-abc",
     });
-    sessionStore.upsert("sess-impl-1", "implement", repoKey, repo, "Fixed bug");
+    await sessionStore.upsert("sess-impl-1", "implement", repoKey, repo, "Fixed bug");
 
     const reloaded = await import("../src/claude-cli.js");
     const result = await reloaded.runClaudeTask({

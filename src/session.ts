@@ -46,20 +46,25 @@ const MAX_AGE_HOURS = 24;
 
 export class SessionStore {
   private filePath: string;
+  #writeLock: Promise<void> = Promise.resolve();
 
   constructor(baseDir: string) {
     this.filePath = path.join(baseDir, "sessions.json");
   }
 
   async init(): Promise<void> {
-    await mkdir(path.dirname(this.filePath), { recursive: true });
-    try {
-      await readFile(this.filePath, "utf-8");
-    } catch (err: unknown) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-        await this.atomicWrite({ version: STORE_VERSION, sessions: [] });
+    await this.withWriteLock(async () => {
+      await mkdir(path.dirname(this.filePath), { recursive: true });
+      try {
+        await readFile(this.filePath, "utf-8");
+      } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+          await this.atomicWrite({ version: STORE_VERSION, sessions: [] });
+          return;
+        }
+        throw err;
       }
-    }
+    });
   }
 
   // Find the most recent unexpired session matching type + repo, within the time window.
@@ -90,49 +95,55 @@ export class SessionStore {
 
   // Create or update a session record.
   async upsert(sessionId: string, type: SessionType, repoKey: string, repoPath: string, summary?: string): Promise<void> {
-    const store = await this.read();
-    const idx = store.sessions.findIndex((s) => s.session_id === sessionId);
+    await this.withWriteLock(async () => {
+      const store = await this.read();
+      const idx = store.sessions.findIndex((s) => s.session_id === sessionId);
 
-    const now = new Date().toISOString();
-    const entry: Session = {
-      session_id: sessionId,
-      type,
-      repo_key: repoKey,
-      repo_path: repoPath,
-      created_at: idx >= 0 ? store.sessions[idx].created_at : now,
-      last_used: now,
-      use_count: idx >= 0 ? store.sessions[idx].use_count + 1 : 1,
-      summary: summary ?? "",
-      expired: false,
-    };
+      const now = new Date().toISOString();
+      const entry: Session = {
+        session_id: sessionId,
+        type,
+        repo_key: repoKey,
+        repo_path: repoPath,
+        created_at: idx >= 0 ? store.sessions[idx].created_at : now,
+        last_used: now,
+        use_count: idx >= 0 ? store.sessions[idx].use_count + 1 : 1,
+        summary: summary ?? "",
+        expired: false,
+      };
 
-    if (idx >= 0) {
-      store.sessions[idx] = entry;
-    } else {
-      store.sessions.push(entry);
-    }
+      if (idx >= 0) {
+        store.sessions[idx] = entry;
+      } else {
+        store.sessions.push(entry);
+      }
 
-    await this.atomicWrite(store);
+      await this.atomicWrite(store);
+    });
   }
 
   async markExpired(sessionId: string): Promise<void> {
-    const store = await this.read();
-    const session = store.sessions.find((s) => s.session_id === sessionId);
-    if (session) {
-      session.expired = true;
-      await this.atomicWrite(store);
-    }
+    await this.withWriteLock(async () => {
+      const store = await this.read();
+      const session = store.sessions.find((s) => s.session_id === sessionId);
+      if (session) {
+        session.expired = true;
+        await this.atomicWrite(store);
+      }
+    });
   }
 
   // Remove sessions expired longer than MAX_AGE_HOURS ago.
   async prune(): Promise<void> {
-    const store = await this.read();
-    const cutoff = Date.now() - MAX_AGE_HOURS * 60 * 60 * 1000;
-    store.sessions = store.sessions.filter((s) => {
-      if (!s.expired) return true;
-      return new Date(s.last_used).getTime() > cutoff;
+    await this.withWriteLock(async () => {
+      const store = await this.read();
+      const cutoff = Date.now() - MAX_AGE_HOURS * 60 * 60 * 1000;
+      store.sessions = store.sessions.filter((s) => {
+        if (!s.expired) return true;
+        return new Date(s.last_used).getTime() > cutoff;
+      });
+      await this.atomicWrite(store);
     });
-    await this.atomicWrite(store);
   }
 
   async getAll(): Promise<Session[]> {
@@ -140,6 +151,18 @@ export class SessionStore {
   }
 
   // ---- Internals ----
+
+  private async withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
+    const prev = this.#writeLock;
+    let resolve: () => void;
+    this.#writeLock = new Promise<void>((r) => { resolve = r; });
+    await prev;
+    try {
+      return await fn();
+    } finally {
+      resolve!();
+    }
+  }
 
   private async read(): Promise<SessionFile> {
     try {

@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -658,6 +658,50 @@ describe("SessionStore", () => {
       expect(session).toBeTruthy();
       expect(session!.session_id).toBe("s1");
       expect(session!.repo_key).toBe("key1");
+    });
+  });
+
+  describe("concurrent mutation safety", () => {
+    it("does not lose records under concurrent upsert", async () => {
+      // Upsert 10 different sessions concurrently; all 10 must persist.
+      const ids = Array.from({ length: 10 }, (_, i) => `s${i}`);
+      await Promise.all(ids.map((id, i) =>
+        store.upsert(id, "query", "key1", "/a", `summary-${i}`),
+      ));
+
+      const all = await store.getAll();
+      expect(all).toHaveLength(10);
+      ids.forEach((id) => {
+        expect(all.find((s) => s.session_id === id)).toBeTruthy();
+      });
+    });
+
+    it("serializes concurrent updates to the same session", async () => {
+      await store.upsert("s1", "query", "key1", "/a", "first");
+
+      // Two concurrent upserts on same session; last one must win.
+      await Promise.all([
+        store.upsert("s1", "query", "key1", "/a", "update-a"),
+        store.upsert("s1", "query", "key1", "/a", "update-b"),
+      ]);
+
+      const session = await store.getById("s1");
+      expect(session).toBeTruthy();
+      // Both updates should have been applied sequentially, final one wins.
+      expect(session!.summary).toMatch(/^update-/);
+      // use_count should reflect exactly 3 total upserts (initial + 2)
+      expect(session!.use_count).toBe(3);
+    });
+  });
+
+  describe("init error handling", () => {
+    it("throws on non-ENOENT read errors", async () => {
+      // Create sessions.json as a directory — readFile will fail with EISDIR
+      const filePath = path.join(root, "sessions.json");
+      mkdirSync(filePath);
+
+      const badStore = new SessionStore(root);
+      await expect(badStore.init()).rejects.toThrow();
     });
   });
 });
