@@ -3224,8 +3224,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path9) {
-      let input = path9;
+    function removeDotSegments(path11) {
+      let input = path11;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3424,8 +3424,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path9, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path9 && path9 !== "/" ? path9 : void 0;
+        const [path11, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path11 && path11 !== "/" ? path11 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -7554,10 +7554,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path9) {
-  if (!path9)
+function getElementAtPath(obj, path11) {
+  if (!path11)
     return obj;
-  return path9.reduce((acc, key) => acc?.[key], obj);
+  return path11.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -7966,11 +7966,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path9, issues) {
+function prefixIssues(path11, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path9);
+    iss.path.unshift(path11);
     return iss;
   });
 }
@@ -8117,16 +8117,16 @@ function flattenError(error51, mapper = (issue2) => issue2.message) {
 }
 function formatError(error51, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error52, path9 = []) => {
+  const processError = (error52, path11 = []) => {
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path9, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path11, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path11, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path11, ...issue2.path]);
       } else {
-        const fullpath = [...path9, ...issue2.path];
+        const fullpath = [...path11, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -8153,17 +8153,17 @@ function formatError(error51, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error51, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error52, path9 = []) => {
+  const processError = (error52, path11 = []) => {
     var _a3, _b;
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path9, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path11, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path11, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path11, ...issue2.path]);
       } else {
-        const fullpath = [...path9, ...issue2.path];
+        const fullpath = [...path11, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -8195,8 +8195,8 @@ function treeifyError(error51, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path9 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path9) {
+  const path11 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path11) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -21188,13 +21188,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path9 = ref.slice(1).split("/").filter(Boolean);
-  if (path9.length === 0) {
+  const path11 = ref.slice(1).split("/").filter(Boolean);
+  if (path11.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path9[0] === defsKey) {
-    const key = path9[1];
+  if (path11[0] === defsKey) {
+    const key = path11[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -25036,15 +25036,378 @@ async function configureCodexAllowRoot(rawCwd) {
 }
 
 // src/claude-cli.ts
-import { cp as cp2, rm as rm2, writeFile as writeFile5, mkdir as mkdir6, readFile as readFile6, readdir as readdir3, stat as stat4, unlink as unlink2 } from "node:fs/promises";
+import { writeFile as writeFile7, mkdir as mkdir7, readdir as readdir4, stat as stat5, unlink as unlink2 } from "node:fs/promises";
 import { existsSync as existsSync3 } from "node:fs";
 init_guard();
-import { fileURLToPath as fileURLToPath3 } from "node:url";
-import path8 from "node:path";
+import path10 from "node:path";
+
+// src/worktree-observer.ts
+init_guard();
+
+// src/run-logs.ts
+import { mkdir as mkdir2, writeFile as writeFile2, readFile as readFile3, readdir, stat as stat2 } from "node:fs/promises";
+import path3 from "node:path";
+function getRunLogDir(cwd) {
+  if (process.env.CODEX_CLAUDE_RUN_LOG_DIR) {
+    return path3.resolve(process.env.CODEX_CLAUDE_RUN_LOG_DIR);
+  }
+  const base = cwd ?? process.cwd();
+  return path3.join(base, ".codex-claude-delegate", "runs");
+}
+function normalizeRepoPath(cwd, file2) {
+  const repoRelative = path3.isAbsolute(file2) ? path3.relative(cwd, file2) : file2;
+  return repoRelative.replaceAll(path3.sep, "/").replace(/^\.\//, "");
+}
+function isUnderRequestedFile(file2, requested) {
+  return file2 === requested || file2.startsWith(`${requested.replace(/\/$/, "")}/`);
+}
+function normalizeRequestedFiles(cwd, files) {
+  if (!files?.length) return [];
+  const normalized = /* @__PURE__ */ new Set();
+  for (const file2 of files) {
+    const repoPath = normalizeRepoPath(cwd, file2).replace(/\/+$/g, "");
+    if (repoPath) normalized.add(repoPath);
+  }
+  return [...normalized].sort();
+}
+async function logRun(runId, data, cwd) {
+  const logDir = getRunLogDir(cwd);
+  try {
+    await mkdir2(logDir, { recursive: true });
+    const timestamp = (/* @__PURE__ */ new Date()).toISOString();
+    await writeFile2(
+      path3.join(logDir, `${runId}.json`),
+      JSON.stringify({ started_at: timestamp, updated_at: timestamp, ...data }, null, 2)
+    );
+  } catch {
+  }
+}
+async function findImplementLogForWorktree(worktreePath, cwd) {
+  const logDir = getRunLogDir(cwd);
+  try {
+    const entries = await readdir(logDir);
+    const candidates = await Promise.all(
+      entries.filter((name) => name.endsWith(".json")).map(async (name) => {
+        const file2 = path3.join(logDir, name);
+        try {
+          return { file: file2, mtimeMs: (await stat2(file2)).mtimeMs };
+        } catch {
+          return null;
+        }
+      })
+    );
+    for (const entry of candidates.filter((item) => item !== null).sort((a, b) => b.mtimeMs - a.mtimeMs)) {
+      try {
+        const parsed = JSON.parse(await readFile3(entry.file, "utf8"));
+        if (parsed.type === "implement" && parsed.observed?.worktree_path === worktreePath) {
+          return parsed;
+        }
+      } catch {
+      }
+    }
+  } catch {
+  }
+  return null;
+}
+async function findImplementLogRecordForWorktree(worktreePath, cwd) {
+  const logDir = getRunLogDir(cwd);
+  try {
+    const entries = await readdir(logDir);
+    const candidates = await Promise.all(
+      entries.filter((name) => name.endsWith(".json")).map(async (name) => {
+        const file2 = path3.join(logDir, name);
+        try {
+          return { file: file2, mtimeMs: (await stat2(file2)).mtimeMs };
+        } catch {
+          return null;
+        }
+      })
+    );
+    for (const entry of candidates.filter((item) => item !== null).sort((a, b) => b.mtimeMs - a.mtimeMs)) {
+      try {
+        const parsed = JSON.parse(await readFile3(entry.file, "utf8"));
+        if (parsed.type === "implement" && parsed.observed?.worktree_path === worktreePath) {
+          return { file: entry.file, parsed };
+        }
+      } catch {
+        continue;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+async function updateImplementLifecycleForWorktree(worktreePath, update, cwd) {
+  const record2 = await findImplementLogRecordForWorktree(worktreePath, cwd);
+  if (!record2) return;
+  const parsed = record2.parsed;
+  const timestamp = (/* @__PURE__ */ new Date()).toISOString();
+  const next = {
+    ...parsed,
+    updated_at: timestamp,
+    downstream: {
+      ...parsed.downstream ?? {},
+      ...update
+    }
+  };
+  await writeFile2(record2.file, JSON.stringify(next, null, 2));
+}
+function parseRunStatus(raw) {
+  if (typeof raw.error === "string" && raw.error.length > 0) return "failed";
+  const exitCode = raw.execution?.exit_code;
+  const timedOut = raw.execution?.timed_out === true;
+  if (timedOut || typeof exitCode === "number" && exitCode !== 0) {
+    const changedFiles = Array.isArray(raw.observed?.changed_files) ? raw.observed.changed_files.length : 0;
+    return changedFiles > 0 ? "partial" : "failed";
+  }
+  const status = raw.report?.status;
+  if (status === "success" || status === "failed" || status === "partial" || status === "needs_user") {
+    return status;
+  }
+  return "unknown";
+}
+function parseRunLifecycle(raw) {
+  const downstreamLifecycle = raw.downstream?.current_lifecycle;
+  if (downstreamLifecycle === "queued" || downstreamLifecycle === "running" || downstreamLifecycle === "success" || downstreamLifecycle === "partial" || downstreamLifecycle === "failed" || downstreamLifecycle === "apply_blocked" || downstreamLifecycle === "applied" || downstreamLifecycle === "cleaned" || downstreamLifecycle === "unknown") {
+    return downstreamLifecycle;
+  }
+  const type = typeof raw.type === "string" ? raw.type : "unknown";
+  const status = parseRunStatus(raw);
+  if (type === "apply") {
+    if (typeof raw.error === "string" && raw.error.length > 0) return "apply_blocked";
+    const appliedCount = Array.isArray(raw.applied_files) ? raw.applied_files.length : 0;
+    if (appliedCount > 0) return "applied";
+    if (raw.preview === true) return "success";
+  }
+  if (type === "cleanup") {
+    const removedCount = typeof raw.removed_count === "number" ? raw.removed_count : 0;
+    const failedCount = typeof raw.failed_count === "number" ? raw.failed_count : 0;
+    if (removedCount > 0 && failedCount === 0) return "cleaned";
+    if (failedCount > 0) return "partial";
+    return "success";
+  }
+  if (status === "needs_user") {
+    return "partial";
+  }
+  if (status === "success" || status === "partial" || status === "failed") {
+    return status;
+  }
+  return "unknown";
+}
+function summarizeRunLog(runId, raw, updatedAt) {
+  const worktreePath = typeof raw.observed?.worktree_path === "string" ? raw.observed.worktree_path : typeof raw.input?.worktree_path === "string" ? raw.input.worktree_path : void 0;
+  return {
+    run_id: runId,
+    type: typeof raw.type === "string" ? raw.type : "unknown",
+    status: parseRunStatus(raw),
+    lifecycle: parseRunLifecycle(raw),
+    cwd: typeof raw.input?.cwd === "string" ? raw.input.cwd : void 0,
+    summary: typeof raw.report?.summary === "string" ? raw.report.summary : void 0,
+    error: typeof raw.error === "string" ? raw.error : void 0,
+    worktree_path: worktreePath,
+    worktree_name: typeof raw.observed?.worktree_name === "string" ? raw.observed.worktree_name : worktreePath ? path3.basename(worktreePath) : void 0,
+    requested_session_id: typeof raw.session?.requested_session_id === "string" || raw.session?.requested_session_id === null ? raw.session.requested_session_id : void 0,
+    returned_session_id: typeof raw.session?.returned_session_id === "string" || raw.session?.returned_session_id === null ? raw.session.returned_session_id : void 0,
+    retried_after_session_expired: raw.retried_after_session_expired === true,
+    started_at: typeof raw.started_at === "string" ? raw.started_at : updatedAt,
+    updated_at: typeof raw.updated_at === "string" ? raw.updated_at : updatedAt
+  };
+}
+function summarizeRecentRuns(entries) {
+  const lifecycleCounts = {};
+  for (const entry of entries) {
+    lifecycleCounts[entry.lifecycle] = (lifecycleCounts[entry.lifecycle] ?? 0) + 1;
+  }
+  return { entries, lifecycle_counts: lifecycleCounts };
+}
+async function readRunLogFile(runId, cwd) {
+  const logDir = getRunLogDir(cwd);
+  const file2 = path3.join(logDir, `${runId}.json`);
+  try {
+    return JSON.parse(await readFile3(file2, "utf8"));
+  } catch {
+    return null;
+  }
+}
+async function listRunLogs(input) {
+  const limit = input.limit ?? 20;
+  const logDir = getRunLogDir(input.cwd);
+  try {
+    const entries = await readdir(logDir);
+    const candidates = await Promise.all(
+      entries.filter((name) => name.endsWith(".json")).map(async (name) => {
+        const file2 = path3.join(logDir, name);
+        try {
+          const stats = await stat2(file2);
+          return { file: file2, runId: name.replace(/\.json$/, ""), mtimeMs: stats.mtimeMs, updatedAt: new Date(stats.mtimeMs).toISOString() };
+        } catch {
+          return null;
+        }
+      })
+    );
+    const summaries = [];
+    for (const candidate of candidates.filter((item) => item !== null).sort((a, b) => b.mtimeMs - a.mtimeMs)) {
+      try {
+        const raw = JSON.parse(await readFile3(candidate.file, "utf8"));
+        const summary = summarizeRunLog(candidate.runId, raw, candidate.updatedAt);
+        if (summary.cwd && summary.cwd !== input.cwd) continue;
+        if (input.type && summary.type !== input.type) continue;
+        if (input.status && summary.status !== input.status) continue;
+        if (input.worktree_name && summary.worktree_name !== input.worktree_name) continue;
+        summaries.push(summary);
+        if (summaries.length >= limit) break;
+      } catch {
+        continue;
+      }
+    }
+    return { entries: summaries, total_entries: summaries.length };
+  } catch {
+    return { entries: [], total_entries: 0 };
+  }
+}
+async function getRecentRunsSummary(cwd, limit = 5) {
+  const runs = await listRunLogs({ cwd, limit });
+  return summarizeRecentRuns(runs.entries);
+}
+async function getRunLogById(input) {
+  const raw = await readRunLogFile(input.run_id, input.cwd);
+  if (!raw) return null;
+  const summary = summarizeRunLog(input.run_id, raw);
+  if (summary.cwd && summary.cwd !== input.cwd) return null;
+  return {
+    entry: summary,
+    raw,
+    related_runs: {
+      apply_run_id: typeof raw.downstream?.last_apply_run_id === "string" ? raw.downstream.last_apply_run_id : void 0,
+      cleanup_run_id: typeof raw.downstream?.last_cleanup_run_id === "string" ? raw.downstream.last_cleanup_run_id : void 0
+    }
+  };
+}
+function buildRunResultPayload(raw) {
+  const payload = {
+    type: typeof raw.type === "string" ? raw.type : "unknown"
+  };
+  if (raw.report && typeof raw.report === "object") payload.report = raw.report;
+  if (typeof raw.error === "string" && raw.error.length > 0) payload.error = raw.error;
+  if (typeof raw.preview === "boolean") payload.preview = raw.preview;
+  if (Array.isArray(raw.applied_files)) payload.applied_files = raw.applied_files;
+  if (typeof raw.removed_count === "number") payload.removed_count = raw.removed_count;
+  if (typeof raw.failed_count === "number") payload.failed_count = raw.failed_count;
+  if (raw.observed && typeof raw.observed === "object") payload.observed = raw.observed;
+  if (raw.downstream && typeof raw.downstream === "object") payload.downstream = raw.downstream;
+  return payload;
+}
+function buildResultSummaryFromRun(entry) {
+  if (entry.summary) return entry.summary;
+  if (entry.error) return `${entry.type} failed: ${entry.error}`;
+  return `${entry.type} ${entry.lifecycle}`;
+}
+
+// src/worktree-observer.ts
+async function findDirtyFiles(cwd, requestedFiles) {
+  if (requestedFiles.length === 0) return [];
+  const output = await execCapture("git", ["status", "--porcelain=v1", "-z", "--", ...requestedFiles], { cwd }).catch(() => "");
+  const dirty = /* @__PURE__ */ new Set();
+  for (const entry of parseStatusPorcelainZ(output)) {
+    if (entry.file) dirty.add(entry.file);
+  }
+  return [...dirty].sort();
+}
+function isIgnoredMainWorkspaceDirtyFile(file2) {
+  return file2 === ".claude" || file2.startsWith(".claude/") || file2 === ".codex-claude-delegate" || file2.startsWith(".codex-claude-delegate/");
+}
+async function findDirtyMainWorkspaceFiles(cwd) {
+  const output = await execCapture("git", ["status", "--porcelain=v1", "-z"], { cwd }).catch(() => "");
+  const dirty = /* @__PURE__ */ new Set();
+  for (const entry of parseStatusPorcelainZ(output)) {
+    const file2 = normalizeRepoPath(cwd, entry.file);
+    if (!file2 || isIgnoredMainWorkspaceDirtyFile(file2)) continue;
+    dirty.add(file2);
+  }
+  return [...dirty].sort();
+}
+async function findDirtyImplementFiles(cwd, requestedFiles) {
+  return requestedFiles.length > 0 ? findDirtyFiles(cwd, requestedFiles) : findDirtyMainWorkspaceFiles(cwd);
+}
+function parseStatusPorcelainZ(output) {
+  const entries = output.split("\0");
+  const parsed = [];
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (!entry) continue;
+    const match = entry.match(/^(.{2}) (.+)$/s) ?? entry.match(/^([ MADRCU?!]) (.+)$/s);
+    if (!match) continue;
+    const xy = match[1].length === 1 ? `${match[1]} ` : match[1];
+    const firstPath = match[2];
+    if (!firstPath) continue;
+    let status = "?";
+    if (xy === "??") {
+      status = "A";
+    } else if (xy.includes("R") || xy.includes("C")) {
+      status = "unsupported";
+      const nextPath = entries[i + 1];
+      const file2 = nextPath || firstPath;
+      if (nextPath) i++;
+      parsed.push({ status, file: file2 });
+      continue;
+    } else if (xy.includes("D")) {
+      status = "D";
+    } else if (xy.includes("A")) {
+      status = "A";
+    } else if (xy.includes("M")) {
+      status = "M";
+    } else {
+      status = xy.trim() || "?";
+    }
+    parsed.push({ status, file: firstPath });
+  }
+  return parsed;
+}
+function parseNameStatusPorcelainZ(output) {
+  const entries = output.split("\0");
+  const parsed = [];
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (!entry) continue;
+    let rawStatus = "";
+    let firstPath = "";
+    let consumedExtraPath = false;
+    const tabIndex = entry.indexOf("	");
+    if (tabIndex > 0) {
+      rawStatus = entry.slice(0, tabIndex);
+      firstPath = entry.slice(tabIndex + 1);
+    } else if (/^[A-Z?][0-9]*$/.test(entry)) {
+      rawStatus = entry;
+      firstPath = entries[i + 1] ?? "";
+      consumedExtraPath = true;
+    } else {
+      continue;
+    }
+    if (!firstPath) continue;
+    const statusCode = rawStatus[0] ?? "?";
+    if (statusCode === "R" || statusCode === "C") {
+      const nextPath = entries[i + (consumedExtraPath ? 2 : 1)];
+      const file2 = nextPath || firstPath;
+      i += consumedExtraPath ? 1 : 0;
+      if (nextPath) i++;
+      parsed.push({ status: "unsupported", file: file2 });
+      continue;
+    }
+    if (statusCode === "A" || statusCode === "M" || statusCode === "D") {
+      if (consumedExtraPath) i++;
+      parsed.push({ status: statusCode, file: firstPath });
+      continue;
+    }
+    if (consumedExtraPath) i++;
+    parsed.push({ status: statusCode, file: firstPath });
+  }
+  return parsed;
+}
 
 // src/lock.ts
-import { mkdir as mkdir2, readFile as readFile3, rm, stat as stat2, writeFile as writeFile2 } from "node:fs/promises";
-import path3 from "node:path";
+import { mkdir as mkdir3, readFile as readFile4, rm, stat as stat3, writeFile as writeFile3 } from "node:fs/promises";
+import path4 from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 var LockBusyError = class extends Error {
   constructor(message, lockPath) {
@@ -25055,14 +25418,14 @@ var LockBusyError = class extends Error {
 };
 var DEFAULT_STALE_MS = 10 * 60 * 1e3;
 function lockDir(cwd) {
-  return path3.join(cwd, ".codex-claude-delegate", "locks");
+  return path4.join(cwd, ".codex-claude-delegate", "locks");
 }
 function lockName(resource) {
   const digest = createHash("sha256").update(resource).digest("hex").slice(0, 24);
   return `${digest}.lock`;
 }
 function getLockPath(cwd, resource) {
-  return path3.join(lockDir(cwd), lockName(resource));
+  return path4.join(lockDir(cwd), lockName(resource));
 }
 function pidAlive(pid) {
   if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
@@ -25075,14 +25438,14 @@ function pidAlive(pid) {
 }
 async function lockIsStale(lockPath, staleMs) {
   try {
-    const raw = await readFile3(path3.join(lockPath, "owner.json"), "utf8");
+    const raw = await readFile4(path4.join(lockPath, "owner.json"), "utf8");
     const owner = JSON.parse(raw);
     const acquiredAt = typeof owner.acquired_at === "string" ? Date.parse(owner.acquired_at) : NaN;
     const tooOld = Number.isFinite(acquiredAt) && Date.now() - acquiredAt > staleMs;
     return tooOld && !pidAlive(owner.pid);
   } catch {
     try {
-      const st = await stat2(lockPath);
+      const st = await stat3(lockPath);
       return Date.now() - st.mtimeMs > staleMs;
     } catch {
       return true;
@@ -25094,11 +25457,11 @@ async function acquireFileLock(input) {
   const targetPath = getLockPath(input.cwd, input.resource);
   const token = randomUUID();
   const deadline = Date.now() + (input.waitMs ?? 0);
-  await mkdir2(path3.dirname(targetPath), { recursive: true });
+  await mkdir3(path4.dirname(targetPath), { recursive: true });
   for (; ; ) {
     try {
-      await mkdir2(targetPath);
-      await writeFile2(path3.join(targetPath, "owner.json"), JSON.stringify({
+      await mkdir3(targetPath);
+      await writeFile3(path4.join(targetPath, "owner.json"), JSON.stringify({
         pid: process.pid,
         resource: input.resource,
         token,
@@ -25134,10 +25497,9 @@ async function withFileLock(input, fn) {
 }
 
 // src/session.ts
-import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
-import { mkdir as mkdir3, realpath as realpath3 } from "node:fs/promises";
+import { mkdir as mkdir4, readFile as readFile5, realpath as realpath3, rename, writeFile as writeFile4 } from "node:fs/promises";
 import { createHash as createHash2 } from "node:crypto";
-import path4 from "node:path";
+import path5 from "node:path";
 async function computeRepoKey(cwd) {
   const resolved = await realpath3(cwd);
   return createHash2("sha256").update(resolved).digest("hex");
@@ -25147,87 +25509,115 @@ var RECENT_WINDOW_MINUTES = 20;
 var MAX_AGE_HOURS = 24;
 var SessionStore = class {
   filePath;
+  #writeLock = Promise.resolve();
   constructor(baseDir) {
-    this.filePath = path4.join(baseDir, "sessions.json");
+    this.filePath = path5.join(baseDir, "sessions.json");
   }
   async init() {
-    await mkdir3(path4.dirname(this.filePath), { recursive: true });
-    if (!existsSync(this.filePath)) {
-      this.atomicWrite({ version: STORE_VERSION, sessions: [] });
-    }
+    await this.withWriteLock(async () => {
+      await mkdir4(path5.dirname(this.filePath), { recursive: true });
+      try {
+        await readFile5(this.filePath, "utf-8");
+      } catch (err) {
+        if (err.code === "ENOENT") {
+          await this.atomicWrite({ version: STORE_VERSION, sessions: [] });
+          return;
+        }
+        throw err;
+      }
+    });
   }
   // Find the most recent unexpired session matching type + repo, within the time window.
-  getRecent(repoKey, type, withinMinutes = RECENT_WINDOW_MINUTES) {
-    const store = this.read();
+  async getRecent(repoKey, type, withinMinutes = RECENT_WINDOW_MINUTES) {
+    const store = await this.read();
     const cutoff = Date.now() - withinMinutes * 60 * 1e3;
     const candidates = store.sessions.filter((s) => s.repo_key === repoKey && s.type === type && !s.expired).filter((s) => new Date(s.last_used).getTime() > cutoff).sort((a, b) => new Date(b.last_used).getTime() - new Date(a.last_used).getTime());
     return candidates[0] ?? null;
   }
-  getById(sessionId) {
-    const store = this.read();
+  async getById(sessionId) {
+    const store = await this.read();
     return store.sessions.find((session) => session.session_id === sessionId) ?? null;
   }
-  listByRepo(repoKey, limit = 10) {
-    const store = this.read();
+  async listByRepo(repoKey, limit = 10) {
+    const store = await this.read();
     return store.sessions.filter((session) => session.repo_key === repoKey).sort((a, b) => new Date(b.last_used).getTime() - new Date(a.last_used).getTime()).slice(0, limit);
   }
   // Create or update a session record.
-  upsert(sessionId, type, repoKey, repoPath, summary) {
-    const store = this.read();
-    const idx = store.sessions.findIndex((s) => s.session_id === sessionId);
-    const now = (/* @__PURE__ */ new Date()).toISOString();
-    const entry = {
-      session_id: sessionId,
-      type,
-      repo_key: repoKey,
-      repo_path: repoPath,
-      created_at: idx >= 0 ? store.sessions[idx].created_at : now,
-      last_used: now,
-      use_count: idx >= 0 ? store.sessions[idx].use_count + 1 : 1,
-      summary: summary ?? "",
-      expired: false
-    };
-    if (idx >= 0) {
-      store.sessions[idx] = entry;
-    } else {
-      store.sessions.push(entry);
-    }
-    this.atomicWrite(store);
+  async upsert(sessionId, type, repoKey, repoPath, summary) {
+    await this.withWriteLock(async () => {
+      const store = await this.read();
+      const idx = store.sessions.findIndex((s) => s.session_id === sessionId);
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const entry = {
+        session_id: sessionId,
+        type,
+        repo_key: repoKey,
+        repo_path: repoPath,
+        created_at: idx >= 0 ? store.sessions[idx].created_at : now,
+        last_used: now,
+        use_count: idx >= 0 ? store.sessions[idx].use_count + 1 : 1,
+        summary: summary ?? "",
+        expired: false
+      };
+      if (idx >= 0) {
+        store.sessions[idx] = entry;
+      } else {
+        store.sessions.push(entry);
+      }
+      await this.atomicWrite(store);
+    });
   }
-  markExpired(sessionId) {
-    const store = this.read();
-    const session = store.sessions.find((s) => s.session_id === sessionId);
-    if (session) {
-      session.expired = true;
-      this.atomicWrite(store);
-    }
+  async markExpired(sessionId) {
+    await this.withWriteLock(async () => {
+      const store = await this.read();
+      const session = store.sessions.find((s) => s.session_id === sessionId);
+      if (session) {
+        session.expired = true;
+        await this.atomicWrite(store);
+      }
+    });
   }
   // Remove sessions expired longer than MAX_AGE_HOURS ago.
-  prune() {
-    const store = this.read();
-    const cutoff = Date.now() - MAX_AGE_HOURS * 60 * 60 * 1e3;
-    store.sessions = store.sessions.filter((s) => {
-      if (!s.expired) return true;
-      return new Date(s.last_used).getTime() > cutoff;
+  async prune() {
+    await this.withWriteLock(async () => {
+      const store = await this.read();
+      const cutoff = Date.now() - MAX_AGE_HOURS * 60 * 60 * 1e3;
+      store.sessions = store.sessions.filter((s) => {
+        if (!s.expired) return true;
+        return new Date(s.last_used).getTime() > cutoff;
+      });
+      await this.atomicWrite(store);
     });
-    this.atomicWrite(store);
   }
-  getAll() {
-    return this.read().sessions;
+  async getAll() {
+    return (await this.read()).sessions;
   }
   // ---- Internals ----
-  read() {
+  async withWriteLock(fn) {
+    const prev = this.#writeLock;
+    let resolve3;
+    this.#writeLock = new Promise((r) => {
+      resolve3 = r;
+    });
+    await prev;
     try {
-      const raw = readFileSync(this.filePath, "utf-8");
+      return await fn();
+    } finally {
+      resolve3();
+    }
+  }
+  async read() {
+    try {
+      const raw = await readFile5(this.filePath, "utf-8");
       return JSON.parse(raw);
     } catch {
       return { version: STORE_VERSION, sessions: [] };
     }
   }
-  atomicWrite(data) {
+  async atomicWrite(data) {
     const tmp = this.filePath + ".tmp";
-    writeFileSync(tmp, JSON.stringify(data, null, 2), "utf-8");
-    renameSync(tmp, this.filePath);
+    await writeFile4(tmp, JSON.stringify(data, null, 2), "utf-8");
+    await rename(tmp, this.filePath);
   }
 };
 
@@ -25396,8 +25786,8 @@ var claudeReviewGateInputSchema = external_exports.object({
 function validationErrorMessage(err) {
   if (err instanceof external_exports.ZodError) {
     return err.issues.map((issue2) => {
-      const path9 = issue2.path.length ? issue2.path.join(".") : "input";
-      return `${path9}: ${issue2.message}`;
+      const path11 = issue2.path.length ? issue2.path.join(".") : "input";
+      return `${path11}: ${issue2.message}`;
     }).join("; ");
   }
   return err instanceof Error ? err.message : String(err);
@@ -25455,6 +25845,32 @@ function errorResult(error51) {
 function withInteraction(result, interaction) {
   return { ...result, interaction };
 }
+function toResultRecord(value) {
+  return value;
+}
+var ImplementRunLogSchema = external_exports.object({
+  type: external_exports.unknown().optional(),
+  downstream: external_exports.object({
+    current_lifecycle: external_exports.unknown().optional()
+  }).optional(),
+  input: external_exports.object({
+    cwd: external_exports.unknown().optional(),
+    files: external_exports.unknown().optional()
+  }).optional(),
+  observed: external_exports.object({
+    worktree_path: external_exports.unknown().optional(),
+    base_commit: external_exports.unknown().optional(),
+    changed_files: external_exports.unknown().optional(),
+    resource_limits: external_exports.object({
+      changed_files_exceeded: external_exports.unknown().optional(),
+      warnings: external_exports.unknown().optional()
+    }).optional(),
+    scope: external_exports.object({
+      scope_exceeded: external_exports.unknown().optional(),
+      warnings: external_exports.unknown().optional()
+    }).optional()
+  }).optional()
+});
 
 // src/claude-process.ts
 init_guard();
@@ -25534,266 +25950,6 @@ async function getEnvironmentDiagnostics(safeEnv = sanitizeEnv()) {
   };
 }
 
-// src/run-logs.ts
-import { mkdir as mkdir4, writeFile as writeFile3, readFile as readFile4, readdir, stat as stat3 } from "node:fs/promises";
-import path5 from "node:path";
-function getRunLogDir(cwd) {
-  if (process.env.CODEX_CLAUDE_RUN_LOG_DIR) {
-    return path5.resolve(process.env.CODEX_CLAUDE_RUN_LOG_DIR);
-  }
-  const base = cwd ?? process.cwd();
-  return path5.join(base, ".codex-claude-delegate", "runs");
-}
-function normalizeRepoPath(cwd, file2) {
-  const repoRelative = path5.isAbsolute(file2) ? path5.relative(cwd, file2) : file2;
-  return repoRelative.replaceAll(path5.sep, "/").replace(/^\.\//, "");
-}
-function isUnderRequestedFile(file2, requested) {
-  return file2 === requested || file2.startsWith(`${requested.replace(/\/$/, "")}/`);
-}
-function normalizeRequestedFiles(cwd, files) {
-  if (!files?.length) return [];
-  const normalized = /* @__PURE__ */ new Set();
-  for (const file2 of files) {
-    const repoPath = normalizeRepoPath(cwd, file2).replace(/\/+$/g, "");
-    if (repoPath) normalized.add(repoPath);
-  }
-  return [...normalized].sort();
-}
-async function logRun(runId, data, cwd) {
-  const logDir = getRunLogDir(cwd);
-  try {
-    await mkdir4(logDir, { recursive: true });
-    const timestamp = (/* @__PURE__ */ new Date()).toISOString();
-    await writeFile3(
-      path5.join(logDir, `${runId}.json`),
-      JSON.stringify({ started_at: timestamp, updated_at: timestamp, ...data }, null, 2)
-    );
-  } catch {
-  }
-}
-async function findImplementLogForWorktree(worktreePath, cwd) {
-  const logDir = getRunLogDir(cwd);
-  try {
-    const entries = await readdir(logDir);
-    const candidates = await Promise.all(
-      entries.filter((name) => name.endsWith(".json")).map(async (name) => {
-        const file2 = path5.join(logDir, name);
-        try {
-          return { file: file2, mtimeMs: (await stat3(file2)).mtimeMs };
-        } catch {
-          return null;
-        }
-      })
-    );
-    for (const entry of candidates.filter((item) => item !== null).sort((a, b) => b.mtimeMs - a.mtimeMs)) {
-      try {
-        const parsed = JSON.parse(await readFile4(entry.file, "utf8"));
-        if (parsed.type === "implement" && parsed.observed?.worktree_path === worktreePath) {
-          return parsed;
-        }
-      } catch {
-      }
-    }
-  } catch {
-  }
-  return null;
-}
-async function findImplementLogRecordForWorktree(worktreePath, cwd) {
-  const logDir = getRunLogDir(cwd);
-  try {
-    const entries = await readdir(logDir);
-    const candidates = await Promise.all(
-      entries.filter((name) => name.endsWith(".json")).map(async (name) => {
-        const file2 = path5.join(logDir, name);
-        try {
-          return { file: file2, mtimeMs: (await stat3(file2)).mtimeMs };
-        } catch {
-          return null;
-        }
-      })
-    );
-    for (const entry of candidates.filter((item) => item !== null).sort((a, b) => b.mtimeMs - a.mtimeMs)) {
-      try {
-        const parsed = JSON.parse(await readFile4(entry.file, "utf8"));
-        if (parsed.type === "implement" && parsed.observed?.worktree_path === worktreePath) {
-          return { file: entry.file, parsed };
-        }
-      } catch {
-        continue;
-      }
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-async function updateImplementLifecycleForWorktree(worktreePath, update, cwd) {
-  const record2 = await findImplementLogRecordForWorktree(worktreePath, cwd);
-  if (!record2) return;
-  const parsed = record2.parsed;
-  const timestamp = (/* @__PURE__ */ new Date()).toISOString();
-  const next = {
-    ...parsed,
-    updated_at: timestamp,
-    downstream: {
-      ...parsed.downstream ?? {},
-      ...update
-    }
-  };
-  await writeFile3(record2.file, JSON.stringify(next, null, 2));
-}
-function parseRunStatus(raw) {
-  if (typeof raw.error === "string" && raw.error.length > 0) return "failed";
-  const exitCode = raw.execution?.exit_code;
-  const timedOut = raw.execution?.timed_out === true;
-  if (timedOut || typeof exitCode === "number" && exitCode !== 0) {
-    const changedFiles = Array.isArray(raw.observed?.changed_files) ? raw.observed.changed_files.length : 0;
-    return changedFiles > 0 ? "partial" : "failed";
-  }
-  const status = raw.report?.status;
-  if (status === "success" || status === "failed" || status === "partial" || status === "needs_user") {
-    return status;
-  }
-  return "unknown";
-}
-function parseRunLifecycle(raw) {
-  const downstreamLifecycle = raw.downstream?.current_lifecycle;
-  if (downstreamLifecycle === "queued" || downstreamLifecycle === "running" || downstreamLifecycle === "success" || downstreamLifecycle === "partial" || downstreamLifecycle === "failed" || downstreamLifecycle === "apply_blocked" || downstreamLifecycle === "applied" || downstreamLifecycle === "cleaned" || downstreamLifecycle === "unknown") {
-    return downstreamLifecycle;
-  }
-  const type = typeof raw.type === "string" ? raw.type : "unknown";
-  const status = parseRunStatus(raw);
-  if (type === "apply") {
-    if (typeof raw.error === "string" && raw.error.length > 0) return "apply_blocked";
-    const appliedCount = Array.isArray(raw.applied_files) ? raw.applied_files.length : 0;
-    if (appliedCount > 0) return "applied";
-    if (raw.preview === true) return "success";
-  }
-  if (type === "cleanup") {
-    const removedCount = typeof raw.removed_count === "number" ? raw.removed_count : 0;
-    const failedCount = typeof raw.failed_count === "number" ? raw.failed_count : 0;
-    if (removedCount > 0 && failedCount === 0) return "cleaned";
-    if (failedCount > 0) return "partial";
-    return "success";
-  }
-  if (status === "needs_user") {
-    return "partial";
-  }
-  if (status === "success" || status === "partial" || status === "failed") {
-    return status;
-  }
-  return "unknown";
-}
-function summarizeRunLog(runId, raw, updatedAt) {
-  const worktreePath = typeof raw.observed?.worktree_path === "string" ? raw.observed.worktree_path : typeof raw.input?.worktree_path === "string" ? raw.input.worktree_path : void 0;
-  return {
-    run_id: runId,
-    type: typeof raw.type === "string" ? raw.type : "unknown",
-    status: parseRunStatus(raw),
-    lifecycle: parseRunLifecycle(raw),
-    cwd: typeof raw.input?.cwd === "string" ? raw.input.cwd : void 0,
-    summary: typeof raw.report?.summary === "string" ? raw.report.summary : void 0,
-    error: typeof raw.error === "string" ? raw.error : void 0,
-    worktree_path: worktreePath,
-    worktree_name: typeof raw.observed?.worktree_name === "string" ? raw.observed.worktree_name : worktreePath ? path5.basename(worktreePath) : void 0,
-    requested_session_id: typeof raw.session?.requested_session_id === "string" || raw.session?.requested_session_id === null ? raw.session.requested_session_id : void 0,
-    returned_session_id: typeof raw.session?.returned_session_id === "string" || raw.session?.returned_session_id === null ? raw.session.returned_session_id : void 0,
-    retried_after_session_expired: raw.retried_after_session_expired === true,
-    started_at: typeof raw.started_at === "string" ? raw.started_at : updatedAt,
-    updated_at: typeof raw.updated_at === "string" ? raw.updated_at : updatedAt
-  };
-}
-function summarizeRecentRuns(entries) {
-  const lifecycleCounts = {};
-  for (const entry of entries) {
-    lifecycleCounts[entry.lifecycle] = (lifecycleCounts[entry.lifecycle] ?? 0) + 1;
-  }
-  return { entries, lifecycle_counts: lifecycleCounts };
-}
-async function readRunLogFile(runId, cwd) {
-  const logDir = getRunLogDir(cwd);
-  const file2 = path5.join(logDir, `${runId}.json`);
-  try {
-    return JSON.parse(await readFile4(file2, "utf8"));
-  } catch {
-    return null;
-  }
-}
-async function listRunLogs(input) {
-  const limit = input.limit ?? 20;
-  const logDir = getRunLogDir(input.cwd);
-  try {
-    const entries = await readdir(logDir);
-    const candidates = await Promise.all(
-      entries.filter((name) => name.endsWith(".json")).map(async (name) => {
-        const file2 = path5.join(logDir, name);
-        try {
-          const stats = await stat3(file2);
-          return { file: file2, runId: name.replace(/\.json$/, ""), mtimeMs: stats.mtimeMs, updatedAt: new Date(stats.mtimeMs).toISOString() };
-        } catch {
-          return null;
-        }
-      })
-    );
-    const summaries = [];
-    for (const candidate of candidates.filter((item) => item !== null).sort((a, b) => b.mtimeMs - a.mtimeMs)) {
-      try {
-        const raw = JSON.parse(await readFile4(candidate.file, "utf8"));
-        const summary = summarizeRunLog(candidate.runId, raw, candidate.updatedAt);
-        if (summary.cwd && summary.cwd !== input.cwd) continue;
-        if (input.type && summary.type !== input.type) continue;
-        if (input.status && summary.status !== input.status) continue;
-        if (input.worktree_name && summary.worktree_name !== input.worktree_name) continue;
-        summaries.push(summary);
-        if (summaries.length >= limit) break;
-      } catch {
-        continue;
-      }
-    }
-    return { entries: summaries, total_entries: summaries.length };
-  } catch {
-    return { entries: [], total_entries: 0 };
-  }
-}
-async function getRecentRunsSummary(cwd, limit = 5) {
-  const runs = await listRunLogs({ cwd, limit });
-  return summarizeRecentRuns(runs.entries);
-}
-async function getRunLogById(input) {
-  const raw = await readRunLogFile(input.run_id, input.cwd);
-  if (!raw) return null;
-  const summary = summarizeRunLog(input.run_id, raw);
-  if (summary.cwd && summary.cwd !== input.cwd) return null;
-  return {
-    entry: summary,
-    raw,
-    related_runs: {
-      apply_run_id: typeof raw.downstream?.last_apply_run_id === "string" ? raw.downstream.last_apply_run_id : void 0,
-      cleanup_run_id: typeof raw.downstream?.last_cleanup_run_id === "string" ? raw.downstream.last_cleanup_run_id : void 0
-    }
-  };
-}
-function buildRunResultPayload(raw) {
-  const payload = {
-    type: typeof raw.type === "string" ? raw.type : "unknown"
-  };
-  if (raw.report && typeof raw.report === "object") payload.report = raw.report;
-  if (typeof raw.error === "string" && raw.error.length > 0) payload.error = raw.error;
-  if (typeof raw.preview === "boolean") payload.preview = raw.preview;
-  if (Array.isArray(raw.applied_files)) payload.applied_files = raw.applied_files;
-  if (typeof raw.removed_count === "number") payload.removed_count = raw.removed_count;
-  if (typeof raw.failed_count === "number") payload.failed_count = raw.failed_count;
-  if (raw.observed && typeof raw.observed === "object") payload.observed = raw.observed;
-  if (raw.downstream && typeof raw.downstream === "object") payload.downstream = raw.downstream;
-  return payload;
-}
-function buildResultSummaryFromRun(entry) {
-  if (entry.summary) return entry.summary;
-  if (entry.error) return `${entry.type} failed: ${entry.error}`;
-  return `${entry.type} ${entry.lifecycle}`;
-}
-
 // src/background-jobs.ts
 init_guard();
 import { spawn as spawn2 } from "node:child_process";
@@ -25802,8 +25958,8 @@ import path7 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/jobs.ts
-import { existsSync as existsSync2 } from "node:fs";
-import { mkdir as mkdir5, readFile as readFile5, readdir as readdir2, rename, unlink, writeFile as writeFile4 } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir as mkdir5, readFile as readFile6, readdir as readdir2, rename as rename2, unlink, writeFile as writeFile5 } from "node:fs/promises";
 import path6 from "node:path";
 var TERMINAL_JOB_STATUSES = /* @__PURE__ */ new Set(["succeeded", "failed", "cancelled"]);
 var ACTIVE_JOB_STATUSES = /* @__PURE__ */ new Set(["queued", "running"]);
@@ -25822,9 +25978,9 @@ var JobStore = class {
   }
   async get(jobId) {
     const filePath = this.getJobPath(jobId);
-    if (!existsSync2(filePath)) return null;
+    if (!existsSync(filePath)) return null;
     try {
-      return JSON.parse(await readFile5(filePath, "utf8"));
+      return JSON.parse(await readFile6(filePath, "utf8"));
     } catch {
       return null;
     }
@@ -25932,7 +26088,7 @@ var JobStore = class {
     return Promise.all(
       entries.filter((entry) => entry.endsWith(".json")).map(async (entry) => {
         try {
-          const raw = await readFile5(path6.join(this.jobsDir, entry), "utf8");
+          const raw = await readFile6(path6.join(this.jobsDir, entry), "utf8");
           return JSON.parse(raw);
         } catch {
           return null;
@@ -25943,8 +26099,8 @@ var JobStore = class {
   async writeRecord(record2) {
     const filePath = this.getJobPath(record2.job_id);
     const tmpPath = `${filePath}.tmp`;
-    await writeFile4(tmpPath, JSON.stringify(record2, null, 2), "utf8");
-    await rename(tmpPath, filePath);
+    await writeFile5(tmpPath, JSON.stringify(record2, null, 2), "utf8");
+    await rename2(tmpPath, filePath);
   }
 };
 
@@ -26334,24 +26490,14 @@ async function cleanupBackgroundJobs(input) {
   return jobStore.cleanup({ cwd: input.cwd, older_than_hours: input.older_than_hours ?? 24, dry_run: input.dry_run ?? true, limit: input.limit ?? 20 });
 }
 
-// src/claude-cli.ts
+// src/review-gate.ts
+init_guard();
+import { mkdir as mkdir6, readFile as readFile7, writeFile as writeFile6 } from "node:fs/promises";
+import { existsSync as existsSync2 } from "node:fs";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
+import path8 from "node:path";
 var REVIEW_GATE_RELATIVE_PATH = path8.join(".codex-claude-delegate", "review-gate.json");
 var REVIEW_GATE_HOOK_COMMAND = "node '${CLAUDE_PLUGIN_ROOT}/hooks/review-gate-stop.mjs'";
-var stores = /* @__PURE__ */ new Map();
-async function getStore(cwd) {
-  let sessionStore = stores.get(cwd);
-  if (!sessionStore) {
-    const sessionDir = path8.join(cwd, ".codex-claude-delegate");
-    sessionStore = new SessionStore(sessionDir);
-    await sessionStore.init();
-    stores.set(cwd, sessionStore);
-  }
-  return sessionStore;
-}
-var getJobStore2 = getJobStore;
-var toJobSummary2 = toJobSummary;
-var extractBackgroundResultStatus2 = extractBackgroundResultStatus;
-var waitForJobCompletionInline2 = waitForJobCompletionInline;
 function getRepoRootFromModule() {
   return path8.resolve(path8.dirname(fileURLToPath3(import.meta.url)), "..");
 }
@@ -26365,7 +26511,7 @@ function resolvePluginRootFromModule() {
   ].filter((candidate) => typeof candidate === "string");
   for (const candidate of candidates) {
     const hooksDir = path8.join(candidate, "hooks");
-    if (existsSync3(path8.join(hooksDir, "hooks.json")) || existsSync3(path8.join(hooksDir, "review-gate-stop.mjs"))) {
+    if (existsSync2(path8.join(hooksDir, "hooks.json")) || existsSync2(path8.join(hooksDir, "review-gate-stop.mjs"))) {
       return candidate;
     }
   }
@@ -26382,9 +26528,9 @@ function getReviewGateStatePath(cwd) {
 }
 async function readReviewGateState(cwd) {
   const filePath = getReviewGateStatePath(cwd);
-  if (!existsSync3(filePath)) return null;
+  if (!existsSync2(filePath)) return null;
   try {
-    return JSON.parse(await readFile6(filePath, "utf8"));
+    return JSON.parse(await readFile7(filePath, "utf8"));
   } catch {
     return null;
   }
@@ -26400,13 +26546,13 @@ async function writeReviewGateState(cwd, enabled) {
     config_path: pathCheck.resolved,
     hook_manifest_path: getHookManifestPath(),
     hook_script_path: getHookScriptPath(),
-    hook_installed: existsSync3(getHookManifestPath()) && existsSync3(getHookScriptPath()),
+    hook_installed: existsSync2(getHookManifestPath()) && existsSync2(getHookScriptPath()),
     enabled,
     mode: "soft-stop",
     pending_review: false,
     updated_at: (/* @__PURE__ */ new Date()).toISOString()
   };
-  await writeFile5(pathCheck.resolved, JSON.stringify(next, null, 2), "utf8");
+  await writeFile6(pathCheck.resolved, JSON.stringify(next, null, 2), "utf8");
   return next;
 }
 async function markReviewGatePending(cwd, pending, activity) {
@@ -26422,19 +26568,19 @@ async function markReviewGatePending(cwd, pending, activity) {
     config_path: pathCheck.resolved,
     hook_manifest_path: getHookManifestPath(),
     hook_script_path: getHookScriptPath(),
-    hook_installed: existsSync3(getHookManifestPath()) && existsSync3(getHookScriptPath()),
+    hook_installed: existsSync2(getHookManifestPath()) && existsSync2(getHookScriptPath()),
     pending_review: pending,
     updated_at: now,
     last_write_at: activity === "write" ? now : current.last_write_at,
     last_review_at: activity === "review" ? now : current.last_review_at
   };
   await mkdir6(path8.dirname(pathCheck.resolved), { recursive: true });
-  await writeFile5(pathCheck.resolved, JSON.stringify(next, null, 2), "utf8");
+  await writeFile6(pathCheck.resolved, JSON.stringify(next, null, 2), "utf8");
 }
 async function ensureReviewGateHookManifest() {
   const manifestPath = getHookManifestPath();
   await mkdir6(path8.dirname(manifestPath), { recursive: true });
-  const existingRaw = existsSync3(manifestPath) ? await readFile6(manifestPath, "utf8").catch(() => "") : "";
+  const existingRaw = existsSync2(manifestPath) ? await readFile7(manifestPath, "utf8").catch(() => "") : "";
   let parsed = {};
   if (existingRaw.trim()) {
     try {
@@ -26462,7 +26608,7 @@ async function ensureReviewGateHookManifest() {
     });
   }
   hooksRoot.Stop = stopEntries;
-  await writeFile5(manifestPath, JSON.stringify({ hooks: hooksRoot }, null, 2), "utf8");
+  await writeFile6(manifestPath, JSON.stringify({ hooks: hooksRoot }, null, 2), "utf8");
 }
 function getReviewGateNextSteps(enabled, hookInstallable, pendingReview = false) {
   if (!hookInstallable) {
@@ -26496,6 +26642,82 @@ function buildReviewGateState(cwd, state, hookInstalled) {
     last_review_at: state?.last_review_at
   };
 }
+function buildWaitMetadata2(input) {
+  return buildWaitMetadata(input);
+}
+async function runClaudeSetup(input, checkStatus) {
+  const hookManifestPath = getHookManifestPath();
+  const hookScriptPath = getHookScriptPath();
+  const hookInstalled = existsSync2(hookManifestPath) && existsSync2(hookScriptPath);
+  const gateState = await readReviewGateState(input.cwd);
+  const status = await checkStatus(input.cwd);
+  const reviewGate = buildReviewGateState(input.cwd, gateState, hookInstalled);
+  const authStatus = status.auth_status === "authenticated" ? "ok" : status.auth_status === "not authenticated" || status.auth_status === "unauthenticated or unknown" ? "missing" : "unknown";
+  return {
+    workspace_root: input.cwd,
+    review_gate: reviewGate,
+    claude_available: status.claude_available,
+    claude_version: status.claude_version,
+    auth_status: authStatus,
+    git_available: status.git_available,
+    worktree_capable: status.worktree_capable,
+    cwd_valid: status.cwd_valid,
+    cwd_is_git_repo: status.cwd_is_git_repo,
+    errors: status.errors,
+    next_steps: [
+      ...status.claude_available && status.git_available && status.cwd_valid ? [] : ["Run claude_status and fix Claude CLI, git, or workspace readiness issues before using the review gate."],
+      ...getReviewGateNextSteps(reviewGate.enabled, hookInstalled, reviewGate.pending_review)
+    ]
+  };
+}
+async function manageClaudeReviewGate(input) {
+  const hookManifestPath = getHookManifestPath();
+  const hookScriptPath = getHookScriptPath();
+  const hookInstallable = existsSync2(hookScriptPath);
+  const current = await readReviewGateState(input.cwd);
+  const action = input.action ?? "status";
+  const hookInstalled = existsSync2(hookManifestPath) && hookInstallable;
+  if (action === "status") {
+    const reviewGate2 = buildReviewGateState(input.cwd, current, hookInstalled);
+    return {
+      ...reviewGate2,
+      action,
+      changed: false,
+      summary: reviewGate2.enabled ? reviewGate2.pending_review ? "Review gate is enabled and a review is pending." : "Review gate is enabled for this workspace." : "Review gate is disabled for this workspace.",
+      next_steps: getReviewGateNextSteps(reviewGate2.enabled, hookInstalled, reviewGate2.pending_review)
+    };
+  }
+  if (!hookInstallable) {
+    throw new Error(`Review gate hook script is missing: ${hookScriptPath}`);
+  }
+  if (action === "enable") {
+    await ensureReviewGateHookManifest();
+  }
+  const nextState = await writeReviewGateState(input.cwd, action === "enable");
+  const reviewGate = buildReviewGateState(input.cwd, nextState, existsSync2(hookManifestPath) && hookInstallable);
+  return {
+    ...reviewGate,
+    action,
+    changed: current?.enabled !== nextState.enabled || !current,
+    summary: nextState.enabled ? "Review gate enabled for this workspace and stop-hook manifest is ready." : "Review gate disabled for this workspace. Hook asset is left installed but locally inactive.",
+    next_steps: getReviewGateNextSteps(nextState.enabled, existsSync2(hookManifestPath) && hookInstallable, reviewGate.pending_review)
+  };
+}
+
+// src/workflow-results.ts
+import { readdir as readdir3, stat as stat4 } from "node:fs/promises";
+import path9 from "node:path";
+var stores = /* @__PURE__ */ new Map();
+async function getStore(cwd) {
+  let sessionStore = stores.get(cwd);
+  if (!sessionStore) {
+    const sessionDir = path9.join(cwd, ".codex-claude-delegate");
+    sessionStore = new SessionStore(sessionDir);
+    await sessionStore.init();
+    stores.set(cwd, sessionStore);
+  }
+  return sessionStore;
+}
 function toWorkflowSessionSummaryFromStore(session) {
   return {
     session_id: session.session_id,
@@ -26507,29 +26729,11 @@ function toWorkflowSessionSummaryFromStore(session) {
     source: "store"
   };
 }
-function buildWaitMetadata2(input) {
-  return buildWaitMetadata(input);
-}
-function log(msg) {
-  process.stderr.write(`[claude-delegate] ${msg}
-`);
-}
-async function findImplementJobForWorktree(worktreePath, cwd) {
-  const wtName = path8.basename(worktreePath);
-  const jobStore = await getJobStore2();
-  const jobs = await jobStore.list({
-    cwd,
-    limit: 100,
-    type: "implement"
-  });
-  const terminalStatuses = /* @__PURE__ */ new Set(["succeeded", "failed", "cancelled"]);
-  return jobs.find((job) => job.worktree_name === wtName && terminalStatuses.has(job.status)) ?? null;
-}
 async function resolveWorkflowSessionSummary(input) {
   const store = await getStore(input.cwd);
   const run = input.run;
   if (run?.returned_session_id) {
-    const stored = store.getById(run.returned_session_id);
+    const stored = await store.getById(run.returned_session_id);
     if (stored) {
       return {
         ...toWorkflowSessionSummaryFromStore(stored),
@@ -26625,12 +26829,12 @@ function compareRecency(a, b) {
   return aTime - bTime;
 }
 async function listDelegatedWorktrees(cwd) {
-  const worktreeDir = path8.join(cwd, ".claude", "worktrees");
+  const worktreeDir = path9.join(cwd, ".claude", "worktrees");
   const cutoff = Date.now() - 24 * 60 * 60 * 1e3;
   try {
     const entries = await readdir3(worktreeDir, { withFileTypes: true });
     const summarized = await Promise.all(entries.filter((entry) => entry.isDirectory() && entry.name.startsWith("codex-delegated-")).map(async (entry) => {
-      const worktreePath = path8.join(worktreeDir, entry.name);
+      const worktreePath = path9.join(worktreeDir, entry.name);
       try {
         const details = await stat4(worktreePath);
         return {
@@ -26658,7 +26862,7 @@ async function getClaudeResult(input) {
   let resolvedRun = null;
   let resultPayload;
   if (input.job_id) {
-    const jobResult = await getBackgroundJobResult2({ cwd: input.cwd, job_id: input.job_id });
+    const jobResult = await getBackgroundJobResult({ cwd: input.cwd, job_id: input.job_id });
     if (!jobResult) {
       throw new Error(`Job not found: ${input.job_id}`);
     }
@@ -26677,9 +26881,9 @@ async function getClaudeResult(input) {
     const runTypeFilter = prefer === "latest-implement" ? "implement" : prefer === "latest-review" ? "review" : void 0;
     const jobTypeFilter = runTypeFilter;
     const terminalJobLists = await Promise.all([
-      listBackgroundJobs2({ cwd: input.cwd, limit: 20, status: "succeeded", type: jobTypeFilter }),
-      listBackgroundJobs2({ cwd: input.cwd, limit: 20, status: "failed", type: jobTypeFilter }),
-      listBackgroundJobs2({ cwd: input.cwd, limit: 20, status: "cancelled", type: jobTypeFilter })
+      listBackgroundJobs({ cwd: input.cwd, limit: 20, status: "succeeded", type: jobTypeFilter }),
+      listBackgroundJobs({ cwd: input.cwd, limit: 20, status: "failed", type: jobTypeFilter }),
+      listBackgroundJobs({ cwd: input.cwd, limit: 20, status: "cancelled", type: jobTypeFilter })
     ]);
     const latestJob = terminalJobLists.flatMap((result) => result.entries).sort((a, b) => compareRecency(b.updated_at, a.updated_at))[0];
     const latestRun = (await listRunLogs({ cwd: input.cwd, limit: 20, type: runTypeFilter })).entries.find((entry) => entry.status !== "unknown" || entry.lifecycle !== "unknown");
@@ -26690,7 +26894,7 @@ async function getClaudeResult(input) {
       }
     } else if (prefer === "latest-job" || !latestRun) {
       if (latestJob) {
-        const jobResult = await getBackgroundJobResult2({ cwd: input.cwd, job_id: latestJob.job_id });
+        const jobResult = await getBackgroundJobResult({ cwd: input.cwd, job_id: latestJob.job_id });
         resolvedJob = latestJob;
         resultPayload = jobResult?.result;
         if (latestJob.run_id) {
@@ -26699,7 +26903,7 @@ async function getClaudeResult(input) {
       }
     } else if (latestJob && latestRun) {
       if (compareRecency(latestJob.updated_at, latestRun.updated_at) >= 0) {
-        const jobResult = await getBackgroundJobResult2({ cwd: input.cwd, job_id: latestJob.job_id });
+        const jobResult = await getBackgroundJobResult({ cwd: input.cwd, job_id: latestJob.job_id });
         resolvedJob = latestJob;
         resultPayload = jobResult?.result;
         if (latestJob.run_id) {
@@ -26742,11 +26946,11 @@ async function getClaudeResult(input) {
 async function getWorkspaceStatus(input) {
   const limit = input.limit ?? 10;
   const [runningJobs, queuedJobs, succeededJobs, failedJobs, cancelledJobs, recentRuns, worktrees] = await Promise.all([
-    listBackgroundJobs2({ cwd: input.cwd, limit, status: "running" }),
-    listBackgroundJobs2({ cwd: input.cwd, limit, status: "queued" }),
-    input.include_terminal ? listBackgroundJobs2({ cwd: input.cwd, limit, status: "succeeded" }) : Promise.resolve({ entries: [] }),
-    input.include_terminal ? listBackgroundJobs2({ cwd: input.cwd, limit, status: "failed" }) : Promise.resolve({ entries: [] }),
-    input.include_terminal ? listBackgroundJobs2({ cwd: input.cwd, limit, status: "cancelled" }) : Promise.resolve({ entries: [] }),
+    listBackgroundJobs({ cwd: input.cwd, limit, status: "running" }),
+    listBackgroundJobs({ cwd: input.cwd, limit, status: "queued" }),
+    input.include_terminal ? listBackgroundJobs({ cwd: input.cwd, limit, status: "succeeded" }) : Promise.resolve({ entries: [] }),
+    input.include_terminal ? listBackgroundJobs({ cwd: input.cwd, limit, status: "failed" }) : Promise.resolve({ entries: [] }),
+    input.include_terminal ? listBackgroundJobs({ cwd: input.cwd, limit, status: "cancelled" }) : Promise.resolve({ entries: [] }),
     listRunLogs({ cwd: input.cwd, limit }),
     listDelegatedWorktrees(input.cwd)
   ]);
@@ -26764,7 +26968,7 @@ async function getWorkspaceStatus(input) {
   }));
   const store = await getStore(input.cwd);
   const repoKey = await computeRepoKey(input.cwd);
-  const latestSessions = store.listByRepo(repoKey, limit).filter((session) => !session.expired).map(toWorkflowSessionSummaryFromStore);
+  const latestSessions = (await store.listByRepo(repoKey, limit)).filter((session) => !session.expired).map(toWorkflowSessionSummaryFromStore);
   const attentionItems = [];
   const queuedCutoff = Date.now() - 10 * 60 * 1e3;
   for (const job of queuedJobs.entries) {
@@ -26831,63 +27035,29 @@ async function getWorkspaceStatus(input) {
     attention_items: attentionItems
   };
 }
-async function runClaudeSetup(input) {
-  const hookManifestPath = getHookManifestPath();
-  const hookScriptPath = getHookScriptPath();
-  const hookInstalled = existsSync3(hookManifestPath) && existsSync3(hookScriptPath);
-  const gateState = await readReviewGateState(input.cwd);
-  const status = await checkClaudeStatus(input.cwd);
-  const reviewGate = buildReviewGateState(input.cwd, gateState, hookInstalled);
-  const authStatus = status.auth_status === "authenticated" ? "ok" : status.auth_status === "not authenticated" || status.auth_status === "unauthenticated or unknown" ? "missing" : "unknown";
-  return {
-    workspace_root: input.cwd,
-    review_gate: reviewGate,
-    claude_available: status.claude_available,
-    claude_version: status.claude_version,
-    auth_status: authStatus,
-    git_available: status.git_available,
-    worktree_capable: status.worktree_capable,
-    cwd_valid: status.cwd_valid,
-    cwd_is_git_repo: status.cwd_is_git_repo,
-    errors: status.errors,
-    next_steps: [
-      ...status.claude_available && status.git_available && status.cwd_valid ? [] : ["Run claude_status and fix Claude CLI, git, or workspace readiness issues before using the review gate."],
-      ...getReviewGateNextSteps(reviewGate.enabled, hookInstalled, reviewGate.pending_review)
-    ]
-  };
+
+// src/claude-cli.ts
+var getJobStore2 = getJobStore;
+var toJobSummary2 = toJobSummary;
+var extractBackgroundResultStatus2 = extractBackgroundResultStatus;
+var waitForJobCompletionInline2 = waitForJobCompletionInline;
+async function runClaudeSetup2(input) {
+  return runClaudeSetup(input, checkClaudeStatus);
 }
-async function manageClaudeReviewGate(input) {
-  const hookManifestPath = getHookManifestPath();
-  const hookScriptPath = getHookScriptPath();
-  const hookInstallable = existsSync3(hookScriptPath);
-  const current = await readReviewGateState(input.cwd);
-  const action = input.action ?? "status";
-  const hookInstalled = existsSync3(hookManifestPath) && hookInstallable;
-  if (action === "status") {
-    const reviewGate2 = buildReviewGateState(input.cwd, current, hookInstalled);
-    return {
-      ...reviewGate2,
-      action,
-      changed: false,
-      summary: reviewGate2.enabled ? reviewGate2.pending_review ? "Review gate is enabled and a review is pending." : "Review gate is enabled for this workspace." : "Review gate is disabled for this workspace.",
-      next_steps: getReviewGateNextSteps(reviewGate2.enabled, hookInstalled, reviewGate2.pending_review)
-    };
-  }
-  if (!hookInstallable) {
-    throw new Error(`Review gate hook script is missing: ${hookScriptPath}`);
-  }
-  if (action === "enable") {
-    await ensureReviewGateHookManifest();
-  }
-  const nextState = await writeReviewGateState(input.cwd, action === "enable");
-  const reviewGate = buildReviewGateState(input.cwd, nextState, existsSync3(hookManifestPath) && hookInstallable);
-  return {
-    ...reviewGate,
-    action,
-    changed: current?.enabled !== nextState.enabled || !current,
-    summary: nextState.enabled ? "Review gate enabled for this workspace and stop-hook manifest is ready." : "Review gate disabled for this workspace. Hook asset is left installed but locally inactive.",
-    next_steps: getReviewGateNextSteps(nextState.enabled, existsSync3(hookManifestPath) && hookInstallable, reviewGate.pending_review)
-  };
+function log(msg) {
+  process.stderr.write(`[claude-delegate] ${msg}
+`);
+}
+async function findImplementJobForWorktree(worktreePath, cwd) {
+  const wtName = path10.basename(worktreePath);
+  const jobStore = await getJobStore2();
+  const jobs = await jobStore.list({
+    cwd,
+    limit: 100,
+    type: "implement"
+  });
+  const terminalStatuses = /* @__PURE__ */ new Set(["succeeded", "failed", "cancelled"]);
+  return jobs.find((job) => job.worktree_name === wtName && terminalStatuses.has(job.status)) ?? null;
 }
 function inferClaudeTaskMode(input) {
   if (input.mode && input.mode !== "auto") {
@@ -27141,7 +27311,7 @@ async function runClaudeTask(input, _runId) {
           delegated_mode: delegatedMode,
           status: "needs_user",
           summary: "Write task needs a dirty-workspace decision before it can be delegated.",
-          result: implementResult,
+          result: toResultRecord(implementResult),
           wait: buildWaitMetadata2({
             timeoutSec: input.wait_timeout_sec ?? 540,
             completedInline: false,
@@ -27336,31 +27506,6 @@ async function cancelBackgroundJob2(input) {
 async function cleanupBackgroundJobs2(input) {
   return cleanupBackgroundJobs(input);
 }
-async function findDirtyFiles(cwd, requestedFiles) {
-  if (requestedFiles.length === 0) return [];
-  const output = await execCapture("git", ["status", "--porcelain=v1", "-z", "--", ...requestedFiles], { cwd }).catch(() => "");
-  const dirty = /* @__PURE__ */ new Set();
-  for (const entry of parseStatusPorcelainZ(output)) {
-    if (entry.file) dirty.add(entry.file);
-  }
-  return [...dirty].sort();
-}
-function isIgnoredMainWorkspaceDirtyFile(file2) {
-  return file2 === ".claude" || file2.startsWith(".claude/") || file2 === ".codex-claude-delegate" || file2.startsWith(".codex-claude-delegate/");
-}
-async function findDirtyMainWorkspaceFiles(cwd) {
-  const output = await execCapture("git", ["status", "--porcelain=v1", "-z"], { cwd }).catch(() => "");
-  const dirty = /* @__PURE__ */ new Set();
-  for (const entry of parseStatusPorcelainZ(output)) {
-    const file2 = normalizeRepoPath(cwd, entry.file);
-    if (!file2 || isIgnoredMainWorkspaceDirtyFile(file2)) continue;
-    dirty.add(file2);
-  }
-  return [...dirty].sort();
-}
-async function findDirtyImplementFiles(cwd, requestedFiles) {
-  return requestedFiles.length > 0 ? findDirtyFiles(cwd, requestedFiles) : findDirtyMainWorkspaceFiles(cwd);
-}
 function dirtyNeedsUserResult(input, dirtyFiles, requestedFiles, startTime = Date.now()) {
   const summary = requestedFiles.length > 0 ? `Requested files have uncommitted changes: ${dirtyFiles.join(", ")}.` : `Main workspace has uncommitted changes: ${dirtyFiles.join(", ")}.`;
   const report = {
@@ -27399,96 +27544,22 @@ async function preflightImplementDirtyState(input) {
   const dirtyFiles = await findDirtyImplementFiles(input.cwd, requestedFiles);
   return { requestedFiles, dirtyFiles };
 }
-function parseStatusPorcelainZ(output) {
-  const entries = output.split("\0");
-  const parsed = [];
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i];
-    if (!entry) continue;
-    const match = entry.match(/^(.{2}) (.+)$/s) ?? entry.match(/^([ MADRCU?!]) (.+)$/s);
-    if (!match) continue;
-    const xy = match[1].length === 1 ? `${match[1]} ` : match[1];
-    const firstPath = match[2];
-    if (!firstPath) continue;
-    let status = "?";
-    if (xy === "??") {
-      status = "A";
-    } else if (xy.includes("R") || xy.includes("C")) {
-      status = "unsupported";
-      const nextPath = entries[i + 1];
-      const file2 = nextPath || firstPath;
-      if (nextPath) i++;
-      parsed.push({ status, file: file2 });
-      continue;
-    } else if (xy.includes("D")) {
-      status = "D";
-    } else if (xy.includes("A")) {
-      status = "A";
-    } else if (xy.includes("M")) {
-      status = "M";
-    } else {
-      status = xy.trim() || "?";
-    }
-    parsed.push({ status, file: firstPath });
-  }
-  return parsed;
-}
-function parseNameStatusPorcelainZ(output) {
-  const entries = output.split("\0");
-  const parsed = [];
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i];
-    if (!entry) continue;
-    let rawStatus = "";
-    let firstPath = "";
-    let consumedExtraPath = false;
-    const tabIndex = entry.indexOf("	");
-    if (tabIndex > 0) {
-      rawStatus = entry.slice(0, tabIndex);
-      firstPath = entry.slice(tabIndex + 1);
-    } else if (/^[A-Z?][0-9]*$/.test(entry)) {
-      rawStatus = entry;
-      firstPath = entries[i + 1] ?? "";
-      consumedExtraPath = true;
-    } else {
-      continue;
-    }
-    if (!firstPath) continue;
-    const statusCode = rawStatus[0] ?? "?";
-    if (statusCode === "R" || statusCode === "C") {
-      const nextPath = entries[i + (consumedExtraPath ? 2 : 1)];
-      const file2 = nextPath || firstPath;
-      i += consumedExtraPath ? 1 : 0;
-      if (nextPath) i++;
-      parsed.push({ status: "unsupported", file: file2 });
-      continue;
-    }
-    if (statusCode === "A" || statusCode === "M" || statusCode === "D") {
-      if (consumedExtraPath) i++;
-      parsed.push({ status: statusCode, file: firstPath });
-      continue;
-    }
-    if (consumedExtraPath) i++;
-    parsed.push({ status: statusCode, file: firstPath });
-  }
-  return parsed;
-}
 async function expandDirectoryChange(change, worktreeRoot) {
   if (change.status === "D") return [change];
-  const sourcePath = path8.join(worktreeRoot, change.file);
+  const sourcePath = path10.join(worktreeRoot, change.file);
   let sourceStat;
   try {
-    sourceStat = await stat4(sourcePath);
+    sourceStat = await stat5(sourcePath);
   } catch {
     return [change];
   }
   if (!sourceStat.isDirectory()) return [change];
   const expanded = [];
   const walk = async (relativeDir) => {
-    const dirPath = path8.join(worktreeRoot, relativeDir);
-    const entries = await readdir3(dirPath, { withFileTypes: true });
+    const dirPath = path10.join(worktreeRoot, relativeDir);
+    const entries = await readdir4(dirPath, { withFileTypes: true });
     for (const entry of entries) {
-      const childRelative = path8.join(relativeDir, entry.name);
+      const childRelative = path10.join(relativeDir, entry.name);
       if (entry.isDirectory()) {
         await walk(childRelative);
       } else if (entry.isFile()) {
@@ -27558,7 +27629,7 @@ async function checkClaudeStatus(cwd) {
     }
   }
   result.cwd_valid = result.git_available && result.cwd_is_git_repo;
-  const worktreeDir = path8.join(cwd, ".claude", "worktrees");
+  const worktreeDir = path10.join(cwd, ".claude", "worktrees");
   try {
     const { readdirSync, statSync } = await import("node:fs");
     if (existsSync3(worktreeDir)) {
@@ -27568,7 +27639,7 @@ async function checkClaudeStatus(cwd) {
       const cutoff = Date.now() - 24 * 60 * 60 * 1e3;
       result.stale_worktrees_count = result.delegated_worktrees.filter((n) => {
         try {
-          return statSync(path8.join(worktreeDir, n)).mtimeMs < cutoff;
+          return statSync(path10.join(worktreeDir, n)).mtimeMs < cutoff;
         } catch {
           return false;
         }
@@ -27596,7 +27667,7 @@ async function runClaudeApply(input, runId) {
       error: result.error,
       duration_ms: Date.now() - startTime
     }, input.cwd);
-    const wtRelPath = path8.join(".claude", "worktrees", path8.basename(path8.resolve(input.cwd, input.worktree_path)));
+    const wtRelPath = path10.join(".claude", "worktrees", path10.basename(path10.resolve(input.cwd, input.worktree_path)));
     if (input.preview === true) {
       await updateImplementLifecycleForWorktree(wtRelPath, {
         current_lifecycle: result.error ? "apply_blocked" : "success",
@@ -27618,12 +27689,12 @@ async function runClaudeApply(input, runId) {
     }
     return result;
   };
-  const wtReal = path8.resolve(input.cwd, input.worktree_path);
-  const wtDir = path8.join(input.cwd, ".claude", "worktrees");
-  if (!wtReal.startsWith(wtDir + path8.sep)) {
+  const wtReal = path10.resolve(input.cwd, input.worktree_path);
+  const wtDir = path10.join(input.cwd, ".claude", "worktrees");
+  if (!wtReal.startsWith(wtDir + path10.sep)) {
     return finish({ applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: `worktree_path must be under ${wtDir}` });
   }
-  if (!wtReal.startsWith(wtDir + path8.sep + "codex-delegated-")) {
+  if (!wtReal.startsWith(wtDir + path10.sep + "codex-delegated-")) {
     return finish({ applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: "worktree_path must be a delegated worktree (codex-delegated-*)" });
   }
   if (!existsSync3(wtReal)) {
@@ -27631,7 +27702,7 @@ async function runClaudeApply(input, runId) {
   }
   const worktreeLock = await acquireFileLock({
     cwd: input.cwd,
-    resource: `worktree:${path8.basename(wtReal)}`
+    resource: `worktree:${path10.basename(wtReal)}`
   }).catch((err) => {
     if (err instanceof LockBusyError) return err;
     throw err;
@@ -27642,7 +27713,7 @@ async function runClaudeApply(input, runId) {
       diff_stat: "",
       cleanup_performed: false,
       conflicts: [],
-      error: `Another operation is already using delegated worktree ${path8.basename(wtReal)}. Retry after the current apply or cleanup finishes.`,
+      error: `Another operation is already using delegated worktree ${path10.basename(wtReal)}. Retry after the current apply or cleanup finishes.`,
       preview: input.preview === true,
       planned_changes: []
     });
@@ -27666,13 +27737,13 @@ async function runClaudeApply(input, runId) {
         planned_changes: []
       });
     }
-    const wtRelPath = path8.join(".claude", "worktrees", path8.basename(wtReal));
+    const wtRelPath = path10.join(".claude", "worktrees", path10.basename(wtReal));
     const jobMatch = await findImplementJobForWorktree(wtRelPath, input.cwd);
     let implementLog = null;
     if (jobMatch?.run_id) {
       const raw = await readRunLogFile(jobMatch.run_id, input.cwd);
       if (raw) {
-        implementLog = raw;
+        implementLog = ImplementRunLogSchema.parse(raw);
       }
     }
     if (!implementLog) {
@@ -27684,7 +27755,7 @@ async function runClaudeApply(input, runId) {
     const hasObservedScope = baseCommit !== void 0 && observedChangedFiles.length > 0;
     const pathspecs = hasObservedScope ? observedChangedFiles : [];
     if (!baseCommit) {
-      const wtName = path8.basename(wtReal);
+      const wtName = path10.basename(wtReal);
       return finish({
         applied_files: [],
         diff_stat: "",
@@ -27772,8 +27843,8 @@ async function runClaudeApply(input, runId) {
     }
     const copied = [];
     for (const c of changes) {
-      const dest = path8.join(input.cwd, c.file);
-      const src = path8.join(wtReal, c.file);
+      const dest = path10.join(input.cwd, c.file);
+      const src = path10.join(wtReal, c.file);
       try {
         if (c.status === "D") {
           if (existsSync3(dest)) {
@@ -27783,8 +27854,8 @@ async function runClaudeApply(input, runId) {
           copied.push(c.file);
         } else {
           const content = await import("node:fs/promises").then((m) => m.readFile(src));
-          await mkdir6(path8.dirname(dest), { recursive: true });
-          await writeFile5(dest, content);
+          await mkdir7(path10.dirname(dest), { recursive: true });
+          await writeFile7(dest, content);
           copied.push(c.file);
         }
       } catch (err) {
@@ -27833,7 +27904,7 @@ async function runClaudeCleanup(input, runId) {
     };
   }
   try {
-    const worktreeDir = path8.join(input.cwd, ".claude", "worktrees");
+    const worktreeDir = path10.join(input.cwd, ".claude", "worktrees");
     const entries = [];
     let removedCount = 0;
     let failedCount = 0;
@@ -27846,8 +27917,8 @@ async function runClaudeCleanup(input, runId) {
       const dirs = readdirSync(worktreeDir, { withFileTypes: true }).filter((d) => d.isDirectory() && d.name.startsWith("codex-delegated-")).map((d) => d.name);
       const cutoff = olderThanHours > 0 ? Date.now() - olderThanHours * 60 * 60 * 1e3 : 0;
       for (const name of dirs) {
-        const dirPath = path8.join(worktreeDir, name);
-        const wtRelPath = path8.join(".claude", "worktrees", name);
+        const dirPath = path10.join(worktreeDir, name);
+        const wtRelPath = path10.join(".claude", "worktrees", name);
         if (olderThanHours > 0) {
           try {
             if (statSync(dirPath).mtimeMs > cutoff) {
@@ -28467,7 +28538,7 @@ async function handleToolCall(name, args, runId = randomUUID3()) {
             next_step: "Add this repo to allow roots, restart Codex, then run claude_setup again."
           }));
         }
-        const result = await runClaudeSetup({ cwd: check2.resolved });
+        const result = await runClaudeSetup2({ cwd: check2.resolved });
         const needsAttention = result.errors.length > 0 || !result.claude_available;
         const payload = allowRootConfiguration ? { ...result, allow_root_configuration: allowRootConfiguration } : result;
         return jsonResult(withInteraction(payload, {
