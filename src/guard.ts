@@ -23,29 +23,32 @@ const DANGEROUS_ROOTS: ReadonlySet<string> = new Set([
   "/var",
 ]);
 
-// Allowlist of directories that MCP tools may operate within.
-// Override via CODEX_CLAUDE_ALLOW_ROOTS (colon-separated paths on macOS/Linux).
-export function dangerousRoot(raw: string): boolean {
+/** Exact match against a dangerous root — always rejected, cannot be overridden. */
+export function dangerousRootExact(raw: string): boolean {
   const resolved = path.resolve(raw);
   const home = process.env.HOME ? path.resolve(process.env.HOME) : "";
-
-  // Home directory itself is dangerous (operating on the entire home).
   if (!!home && resolved === home) return true;
+  return DANGEROUS_ROOTS.has(resolved);
+}
 
-  // If the path is inside HOME, it is safe — the user's own data is not
-  // a system dangerous root, even if HOME happens to live under /var, /tmp, etc.
+/** Subdirectory of a dangerous root — rejected unless overridden by allow-roots. */
+export function dangerousRootPrefix(resolved: string): boolean {
+  const home = process.env.HOME ? path.resolve(process.env.HOME) : "";
+
+  // Inside HOME is always safe, even if HOME lives under a dangerous tree.
   if (!!home && resolved.startsWith(home + path.sep)) return false;
 
-  // Exact match against dangerous system roots
-  if (DANGEROUS_ROOTS.has(resolved)) return true;
-
-  // Subdirectory of any dangerous system directory
   for (const root of DANGEROUS_ROOTS) {
-    if (root === "/") continue; // "/" prefix-matches everything, handle exactly only
+    if (root === "/") continue;
     if (resolved.startsWith(root + path.sep)) return true;
   }
 
   return false;
+}
+
+/** Combined check (for callers that want the original single-call behavior). */
+export function dangerousRoot(raw: string): boolean {
+  return dangerousRootExact(raw) || dangerousRootPrefix(path.resolve(raw));
 }
 
 function splitAllowRootsEnv(raw: string): string[] {
@@ -96,14 +99,21 @@ export async function validateCwd(raw: string): Promise<CwdCheck> {
     (root) => resolved === root || resolved.startsWith(root + path.sep)
   );
 
-  // Allow-roots override: if path is within an allowed root, skip dangerous-root checks.
+  // Exact dangerous root match: always rejected, allow-roots cannot override.
+  if (dangerousRootExact(raw)) {
+    return { ok: false, resolved: path.resolve(raw), error: `Refusing dangerous root path: ${path.resolve(raw)}` };
+  }
+  if (dangerousRootExact(resolved)) {
+    return { ok: false, resolved, error: `Refusing dangerous root path: ${resolved}` };
+  }
+
+  // Prefix dangerous root match: rejected unless overridden by allow-roots
+  // (e.g., /var/folders/.../repo on macOS resides under /var but is safe).
+  if (dangerousRootPrefix(resolved) && !isWithinAllowed) {
+    return { ok: false, resolved, error: `Refusing dangerous root path: ${resolved}` };
+  }
+
   if (!isWithinAllowed) {
-    if (dangerousRoot(raw)) {
-      return { ok: false, resolved: path.resolve(raw), error: `Refusing dangerous root path: ${path.resolve(raw)}` };
-    }
-    if (dangerousRoot(resolved)) {
-      return { ok: false, resolved, error: `Refusing dangerous root path: ${resolved}` };
-    }
     return {
       ok: false,
       resolved,

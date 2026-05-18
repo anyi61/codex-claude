@@ -146,4 +146,22 @@ describe("guard safety checks", () => {
 
     await rm(overrideRoot, { recursive: true, force: true });
   });
+
+  it("CODEX_CLAUDE_ALLOW_ROOTS cannot override dangerous root itself (e.g., /etc)", async () => {
+    process.env.CODEX_CLAUDE_ALLOW_ROOTS = "/etc";
+    await expect(validateCwd("/etc")).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/dangerous root/),
+    });
+    delete process.env.CODEX_CLAUDE_ALLOW_ROOTS;
+  });
+
+  it("CODEX_CLAUDE_ALLOW_ROOTS cannot override dangerous root itself (e.g., /)", async () => {
+    process.env.CODEX_CLAUDE_ALLOW_ROOTS = "/";
+    await expect(validateCwd("/")).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/dangerous root/),
+    });
+    delete process.env.CODEX_CLAUDE_ALLOW_ROOTS;
+  });
 });
