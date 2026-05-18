@@ -106,7 +106,8 @@ describe("job runner helpers", () => {
     }
 
     expect(updated?.status).toBe("cancelled");
-    expect(abortMock).toHaveBeenCalledTimes(1);
+    // Let the async chain (markCancelled → abort → exit) settle.
+    await vi.waitFor(() => expect(abortMock).toHaveBeenCalledTimes(1), { timeout: 1000 });
     expect(abortMock).toHaveBeenCalledWith("SIGTERM");
     expect(exitMock).toHaveBeenCalledTimes(1);
     expect(exitMock).toHaveBeenCalledWith(0);
