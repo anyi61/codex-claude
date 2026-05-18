@@ -286,7 +286,8 @@ npm uninstall -g @anyi61/codex-claude-delegate-mcp
 - `sanitizeEnv()` — 最小环境（剥离 API 密钥、令牌、SSH agent）
 - `BRIDGE_DEPTH` — 递归保护（≥2 时拒绝）
 - `validateCwd()` — realpath + allow roots 白名单
-- `dangerousRoot()` — 拒绝 `/`、`/tmp`、`/etc`、`$HOME`
+- `dangerousRoot()` — 拒绝 15 个系统目录（`/`, `/bin`, `/boot`, `/dev`, `/etc`, `/lib`, `/lib64`, `/opt`, `/proc`, `/root`, `/sbin`, `/sys`, `/tmp`, `/usr`, `/var`）及其子目录；`$HOME` 本身拒绝，但子目录如 `~/projects` 安全
+- `CODEX_CLAUDE_ALLOW_ROOTS` 可覆盖危险目录的子目录限制（如 macOS 下 `/var/folders/.../repo`），但不能放行危险根目录本身
 
 ## 已知限制
 
