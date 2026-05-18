@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
@@ -86,12 +86,38 @@ export async function acquireFileLock(input: AcquireFileLockInput): Promise<File
           await rm(targetPath, { recursive: true, force: true });
         },
       };
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST" && code !== "ENOENT") throw err;
+
+      // Only try to reclaim stale locks — fresh locks must not be
+      // disrupted because the creator may be mid-writeFile.
       if (await lockIsStale(targetPath, staleMs)) {
-        await rm(targetPath, { recursive: true, force: true });
-        continue;
+        const tempPath = targetPath + ".stale." + randomUUID();
+        try {
+          await rename(targetPath, tempPath);
+          // Double-check staleness on what we actually renamed.
+          // Between our staleness check and the rename, another caller
+          // could have created a fresh lock at targetPath.
+          if (await lockIsStale(tempPath, staleMs)) {
+            // Genuinely stale — clean up and retry mkdir.
+            await rm(tempPath, { recursive: true, force: true });
+            continue;
+          }
+          // Fresh lock — put it back (best effort) and treat as busy.
+          try { await rename(tempPath, targetPath); } catch { /* best effort */ }
+        } catch (renameErr: unknown) {
+          const code2 = (renameErr as NodeJS.ErrnoException).code;
+          if (code2 === "ENOENT") {
+            // Another process already claimed the stale lock and removed it.
+            // Do NOT retry mkdir — fall through to the busy path to prevent
+            // a race where an ENOENT caller creates a fresh lock that gets
+            // stolen by a late-arriving rename caller.
+          }
+          // EPERM, EACCES, etc. — treat as busy and fall through.
+        }
       }
+
       if (Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 10));
         continue;
