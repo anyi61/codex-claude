@@ -545,3 +545,129 @@ describe("scanClaudeDelegateConfig fields", () => {
     expect(scan.mcpEnabledTools).toEqual(["claude_setup"]);
   });
 });
+
+// =============== TOML regex parser boundary tests ===============
+
+describe("TOML parsing edge cases", () => {
+  it("rejects inline comments in string values (strict $ anchor)", async () => {
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, [
+      "[shell_environment_policy.set]",
+      'CODEX_CLAUDE_ALLOW_ROOTS = "/safe" # this is a comment',
+      "",
+    ].join("\n"), "utf8");
+
+    const scan = await scanClaudeDelegateConfig();
+    // The value regex uses a strict $ anchor that does not skip trailing content.
+    // Inline comments cause the regex to miss; the value is not accidentally parsed
+    // with "# comment" included.
+    expect(scan.allowRootsValue).toBeNull();
+    expect(scan.exists).toBe(true);
+  });
+
+  it("unescapes backslash-escaped quotes in string values", async () => {
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, [
+      "[shell_environment_policy.set]",
+      'CODEX_CLAUDE_ALLOW_ROOTS = "path with \\"escaped\\" quotes"',
+      "",
+    ].join("\n"), "utf8");
+
+    const scan = await scanClaudeDelegateConfig();
+    expect(scan.allowRootsValue).toBe('path with "escaped" quotes');
+  });
+
+  it("returns empty array when array value is []", async () => {
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, [
+      "[mcp_servers.claude_delegate]",
+      'command = "codex-claude"',
+      "enabled_tools = []",
+      "",
+    ].join("\n"), "utf8");
+
+    const scan = await scanClaudeDelegateConfig();
+    expect(scan.mcpEnabledTools).toEqual([]);
+  });
+
+  it("parses array values with internal whitespace", async () => {
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, [
+      "[mcp_servers.claude_delegate]",
+      'command = "codex-claude"',
+      'enabled_tools = [ "claude_setup", "claude_task" ]',
+      "",
+    ].join("\n"), "utf8");
+
+    const scan = await scanClaudeDelegateConfig();
+    expect(scan.mcpEnabledTools).toEqual(["claude_setup", "claude_task"]);
+  });
+
+  it("reads numeric values correctly", async () => {
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, [
+      "[mcp_servers.claude_delegate]",
+      'command = "codex-claude"',
+      "tool_timeout_sec = 1000",
+      "",
+    ].join("\n"), "utf8");
+
+    const scan = await scanClaudeDelegateConfig();
+    expect(scan.mcpToolTimeoutSec).toBe(1000);
+  });
+
+  it("returns null for missing table instead of throwing", async () => {
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, [
+      "[some_other_table]",
+      'key = "value"',
+      "",
+    ].join("\n"), "utf8");
+
+    // Should not throw; unrecognised tables safely return null for lookups.
+    const scan = await scanClaudeDelegateConfig();
+    expect(scan.allowRootsValue).toBeNull();
+    expect(scan.mcpClassification).toBeNull();
+  });
+
+  it("does not match values across adjacent table sections", async () => {
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, [
+      "[mcp_servers.claude_delegate]",
+      'command = "codex-claude"',
+      "",
+      "[mcp_servers.claude_delegate.env]",
+      'command = "should-not-read-this"',
+      "",
+    ].join("\n"), "utf8");
+
+    const scan = await scanClaudeDelegateConfig();
+    // The main section's command is read; the .env subsection's identically-named
+    // key does not leak across the table boundary.
+    expect(scan.mcpCommand).toBe("codex-claude");
+  });
+
+  it("uses first match when duplicate table sections exist", async () => {
+    const configPath = path.join(process.env.CODEX_HOME!, "config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, [
+      "[shell_environment_policy.set]",
+      'CODEX_CLAUDE_ALLOW_ROOTS = "/first"',
+      "",
+      "[shell_environment_policy.set]",
+      'CODEX_CLAUDE_ALLOW_ROOTS = "/second"',
+      "",
+    ].join("\n"), "utf8");
+
+    const scan = await scanClaudeDelegateConfig();
+    // String.match() without the g flag returns the first match only.
+    expect(scan.allowRootsValue).toBe("/first");
+  });
+});
