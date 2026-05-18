@@ -128,6 +128,7 @@ export function buildClaudeArgs(opts: ClaudeRunOptions): string[] {
   }
 
   args.push("--json-schema", JSON.stringify(opts.jsonSchema));
+  args.push("--");
   args.push(opts.prompt);
   return args;
 }

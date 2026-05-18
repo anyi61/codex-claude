@@ -368,19 +368,84 @@ const DEFAULT_TOOL_METADATA: Record<string, {
   annotations: Record<string, boolean>;
   outputSchema: Record<string, unknown>;
 }> = {
-  claude_setup: {
-    title: "Check Claude Delegation Setup",
-    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  claude_status: {
+    title: "Check Claude Code Status",
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     outputSchema: { type: "object", additionalProperties: true },
   },
-  claude_task: {
-    title: "Delegate Task To Claude",
-    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  claude_setup: {
+    title: "Check Claude Delegation Setup",
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true },
+  },
+  claude_runs: {
+    title: "List Recent Run Logs",
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true },
+  },
+  claude_run_inspect: {
+    title: "Inspect Run Log",
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     outputSchema: { type: "object", additionalProperties: true },
   },
   claude_result: {
     title: "Resolve Claude Result",
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+    outputSchema: { type: "object", additionalProperties: true },
+  },
+  claude_workspace_status: {
+    title: "View Workspace Status",
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true },
+  },
+  claude_task: {
+    title: "Delegate Task To Claude",
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true },
+  },
+  claude_review_gate: {
+    title: "Manage Review Gate",
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true },
+  },
+  claude_query: {
+    title: "Query Claude (Background)",
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true },
+  },
+  claude_review: {
+    title: "Review Code (Background)",
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true },
+  },
+  claude_implement: {
+    title: "Implement Task (Background)",
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true },
+  },
+  claude_jobs: {
+    title: "List Background Jobs",
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true },
+  },
+  claude_job_result: {
+    title: "Get Job Result",
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true },
+  },
+  claude_job_cancel: {
+    title: "Cancel Background Job",
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true },
+  },
+  claude_job_wait: {
+    title: "Wait For Background Job",
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+    outputSchema: { type: "object", additionalProperties: true },
+  },
+  claude_job_cleanup: {
+    title: "Clean Old Jobs",
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     outputSchema: { type: "object", additionalProperties: true },
   },
   claude_apply: {

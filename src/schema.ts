@@ -904,8 +904,30 @@ export class StructuredToolError extends Error {
   }
 }
 
+/**
+ * Strip absolute file-system paths from error messages to avoid leaking
+ * internal paths to MCP clients. Log the full message to stderr first.
+ */
+export function safeErrorMessage(message: string): string {
+  return message
+    // Quoted absolute paths: "/foo/bar" -> "[path]"
+    .replace(/"\/[^"]+"/g, '"[path]"')
+    // Standalone absolute paths (2+ directory segments, exclude "//" protocol separators)
+    .replace(/(^|[\s:,(])\/(?!\/)([\w.-]+(?:\/[\w.-]+)+)([\s,:;)]|$)/g, "$1[path]$3");
+}
+
 export function errorResult(error: string | Record<string, unknown>): CallToolResult {
-  const payload = typeof error === "string" ? { error } : error;
+  if (typeof error === "string") {
+    process.stderr.write(`[claude-delegate] ERROR: ${error}\n`);
+    const payload = { error: safeErrorMessage(error) };
+    return {
+      content: [{ type: "text", text: JSON.stringify(payload) }],
+      structuredContent: payload,
+      isError: true,
+    } as CallToolResult;
+  }
+  // Structured error payload (from StructuredToolError) is trusted — pass through.
+  const payload = error;
   return {
     content: [{ type: "text", text: JSON.stringify(payload) }],
     structuredContent: payload,
