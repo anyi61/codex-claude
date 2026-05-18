@@ -6807,6 +6807,8 @@ __export(guard_exports, {
   assertCanDelegate: () => assertCanDelegate,
   checkRecursion: () => checkRecursion,
   dangerousRoot: () => dangerousRoot,
+  dangerousRootExact: () => dangerousRootExact,
+  dangerousRootPrefix: () => dangerousRootPrefix,
   execCapture: () => execCapture,
   execStream: () => execStream,
   getAllowRoots: () => getAllowRoots,
@@ -6821,10 +6823,23 @@ import { realpath, stat } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
-function dangerousRoot(raw) {
+function dangerousRootExact(raw) {
   const resolved = path.resolve(raw);
   const home = process.env.HOME ? path.resolve(process.env.HOME) : "";
-  return resolved === "/" || resolved === "/etc" || resolved === "/tmp" || !!home && resolved === home;
+  if (!!home && resolved === home) return true;
+  return DANGEROUS_ROOTS.has(resolved);
+}
+function dangerousRootPrefix(resolved) {
+  const home = process.env.HOME ? path.resolve(process.env.HOME) : "";
+  if (!!home && resolved.startsWith(home + path.sep)) return false;
+  for (const root of DANGEROUS_ROOTS) {
+    if (root === "/") continue;
+    if (resolved.startsWith(root + path.sep)) return true;
+  }
+  return false;
+}
+function dangerousRoot(raw) {
+  return dangerousRootExact(raw) || dangerousRootPrefix(path.resolve(raw));
 }
 function splitAllowRootsEnv(raw) {
   const delimiterPattern = path.delimiter === ";" ? /[;,]/g : /[:,]/g;
@@ -6851,23 +6866,26 @@ function getAllowRoots() {
   ].filter(Boolean);
 }
 async function validateCwd(raw) {
-  if (dangerousRoot(raw)) {
-    return { ok: false, resolved: path.resolve(raw), error: `Refusing dangerous root path: ${path.resolve(raw)}` };
-  }
   let resolved;
   try {
     resolved = await realpath(raw);
   } catch {
     return { ok: false, resolved: raw, error: `Path does not exist: ${raw}` };
   }
-  if (dangerousRoot(resolved)) {
-    return { ok: false, resolved, error: `Refusing dangerous root path: ${resolved}` };
-  }
   const allowRoots = getAllowRoots();
-  const allowed = allowRoots.some(
+  const isWithinAllowed = allowRoots.some(
     (root) => resolved === root || resolved.startsWith(root + path.sep)
   );
-  if (!allowed) {
+  if (dangerousRootExact(raw)) {
+    return { ok: false, resolved: path.resolve(raw), error: `Refusing dangerous root path: ${path.resolve(raw)}` };
+  }
+  if (dangerousRootExact(resolved)) {
+    return { ok: false, resolved, error: `Refusing dangerous root path: ${resolved}` };
+  }
+  if (dangerousRootPrefix(resolved) && !isWithinAllowed) {
+    return { ok: false, resolved, error: `Refusing dangerous root path: ${resolved}` };
+  }
+  if (!isWithinAllowed) {
     return {
       ok: false,
       resolved,
@@ -6996,10 +7014,27 @@ function execStream(command, args, opts, onStdout) {
     });
   });
 }
-var MAX_BRIDGE_DEPTH, DANGEROUS_ENV_KEYS, ALLOWED_ENV_KEYS;
+var DANGEROUS_ROOTS, MAX_BRIDGE_DEPTH, DANGEROUS_ENV_KEYS, ALLOWED_ENV_KEYS;
 var init_guard = __esm({
   "src/guard.ts"() {
     "use strict";
+    DANGEROUS_ROOTS = /* @__PURE__ */ new Set([
+      "/",
+      "/bin",
+      "/boot",
+      "/dev",
+      "/etc",
+      "/lib",
+      "/lib64",
+      "/opt",
+      "/proc",
+      "/root",
+      "/sbin",
+      "/sys",
+      "/tmp",
+      "/usr",
+      "/var"
+    ]);
     MAX_BRIDGE_DEPTH = 2;
     DANGEROUS_ENV_KEYS = [
       "OPENAI_API_KEY",
@@ -25406,7 +25441,7 @@ function parseNameStatusPorcelainZ(output) {
 }
 
 // src/lock.ts
-import { mkdir as mkdir3, readFile as readFile4, rm, stat as stat3, writeFile as writeFile3 } from "node:fs/promises";
+import { mkdir as mkdir3, readFile as readFile4, rename, rm, stat as stat3, writeFile as writeFile3 } from "node:fs/promises";
 import path4 from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 var LockBusyError = class extends Error {
@@ -25474,10 +25509,25 @@ async function acquireFileLock(input) {
         }
       };
     } catch (err) {
-      if (err.code !== "EEXIST") throw err;
+      const code = err.code;
+      if (code !== "EEXIST" && code !== "ENOENT") throw err;
       if (await lockIsStale(targetPath, staleMs)) {
-        await rm(targetPath, { recursive: true, force: true });
-        continue;
+        const tempPath = targetPath + ".stale." + randomUUID();
+        try {
+          await rename(targetPath, tempPath);
+          if (await lockIsStale(tempPath, staleMs)) {
+            await rm(tempPath, { recursive: true, force: true });
+            continue;
+          }
+          try {
+            await rename(tempPath, targetPath);
+          } catch {
+          }
+        } catch (renameErr) {
+          const code2 = renameErr.code;
+          if (code2 === "ENOENT") {
+          }
+        }
       }
       if (Date.now() < deadline) {
         await new Promise((resolve3) => setTimeout(resolve3, 10));
@@ -25497,7 +25547,7 @@ async function withFileLock(input, fn) {
 }
 
 // src/session.ts
-import { mkdir as mkdir4, readFile as readFile5, realpath as realpath3, rename, writeFile as writeFile4 } from "node:fs/promises";
+import { mkdir as mkdir4, readFile as readFile5, realpath as realpath3, rename as rename2, writeFile as writeFile4 } from "node:fs/promises";
 import { createHash as createHash2 } from "node:crypto";
 import path5 from "node:path";
 async function computeRepoKey(cwd) {
@@ -25617,7 +25667,7 @@ var SessionStore = class {
   async atomicWrite(data) {
     const tmp = this.filePath + ".tmp";
     await writeFile4(tmp, JSON.stringify(data, null, 2), "utf-8");
-    await rename(tmp, this.filePath);
+    await rename2(tmp, this.filePath);
   }
 };
 
@@ -25959,7 +26009,7 @@ import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/jobs.ts
 import { existsSync } from "node:fs";
-import { mkdir as mkdir5, readFile as readFile6, readdir as readdir2, rename as rename2, unlink, writeFile as writeFile5 } from "node:fs/promises";
+import { mkdir as mkdir5, readFile as readFile6, readdir as readdir2, rename as rename3, unlink, writeFile as writeFile5 } from "node:fs/promises";
 import path6 from "node:path";
 var TERMINAL_JOB_STATUSES = /* @__PURE__ */ new Set(["succeeded", "failed", "cancelled"]);
 var ACTIVE_JOB_STATUSES = /* @__PURE__ */ new Set(["queued", "running"]);
@@ -26100,7 +26150,7 @@ var JobStore = class {
     const filePath = this.getJobPath(record2.job_id);
     const tmpPath = `${filePath}.tmp`;
     await writeFile5(tmpPath, JSON.stringify(record2, null, 2), "utf8");
-    await rename2(tmpPath, filePath);
+    await rename3(tmpPath, filePath);
   }
 };
 

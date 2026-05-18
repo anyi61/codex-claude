@@ -10,11 +10,11 @@ import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/jobs.ts
 import { existsSync } from "node:fs";
-import { mkdir as mkdir2, readFile as readFile2, readdir, rename, unlink, writeFile as writeFile2 } from "node:fs/promises";
+import { mkdir as mkdir2, readFile as readFile2, readdir, rename as rename2, unlink, writeFile as writeFile2 } from "node:fs/promises";
 import path2 from "node:path";
 
 // src/lock.ts
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 var LockBusyError = class extends Error {
@@ -82,10 +82,25 @@ async function acquireFileLock(input) {
         }
       };
     } catch (err) {
-      if (err.code !== "EEXIST") throw err;
+      const code = err.code;
+      if (code !== "EEXIST" && code !== "ENOENT") throw err;
       if (await lockIsStale(targetPath, staleMs)) {
-        await rm(targetPath, { recursive: true, force: true });
-        continue;
+        const tempPath = targetPath + ".stale." + randomUUID();
+        try {
+          await rename(targetPath, tempPath);
+          if (await lockIsStale(tempPath, staleMs)) {
+            await rm(tempPath, { recursive: true, force: true });
+            continue;
+          }
+          try {
+            await rename(tempPath, targetPath);
+          } catch {
+          }
+        } catch (renameErr) {
+          const code2 = renameErr.code;
+          if (code2 === "ENOENT") {
+          }
+        }
       }
       if (Date.now() < deadline) {
         await new Promise((resolve2) => setTimeout(resolve2, 10));
@@ -244,7 +259,7 @@ var JobStore = class {
     const filePath = this.getJobPath(record2.job_id);
     const tmpPath = `${filePath}.tmp`;
     await writeFile2(tmpPath, JSON.stringify(record2, null, 2), "utf8");
-    await rename(tmpPath, filePath);
+    await rename2(tmpPath, filePath);
   }
 };
 
@@ -699,7 +714,7 @@ function parseNameStatusPorcelainZ(output) {
 }
 
 // src/session.ts
-import { mkdir as mkdir5, readFile as readFile4, realpath, rename as rename2, writeFile as writeFile4 } from "node:fs/promises";
+import { mkdir as mkdir5, readFile as readFile4, realpath, rename as rename3, writeFile as writeFile4 } from "node:fs/promises";
 import { createHash as createHash2 } from "node:crypto";
 import path6 from "node:path";
 async function computeRepoKey(cwd) {
@@ -819,7 +834,7 @@ var SessionStore = class {
   async atomicWrite(data) {
     const tmp = this.filePath + ".tmp";
     await writeFile4(tmp, JSON.stringify(data, null, 2), "utf-8");
-    await rename2(tmp, this.filePath);
+    await rename3(tmp, this.filePath);
   }
 };
 
