@@ -3,6 +3,8 @@
 通过本地 MCP 服务器，让 Codex CLI 将读取、审查、写入任务委托给 Claude Code 执行。
 
 > 非官方项目：这不是 OpenAI 或 Anthropic 官方产品。它会在你的本机启动 Claude Code CLI，并允许 Claude 在受控 allowlist 内读取文件、运行命令、在隔离 git worktree 中写入。它不是强沙箱；只在你信任的本地仓库和可信 Claude CLI 路径中使用。
+>
+> 完整安全文档：[SECURITY.md](./SECURITY.md)
 
 ## 快速开始
 
@@ -283,7 +285,7 @@ npm uninstall -g @anyi61/codex-claude-delegate-mcp
 - `spawn("claude", args[])` — 无 shell 注入
 - `--tools` / `--allowedTools` / `--disallowedTools` — 三层工具控制
 - `--permission-mode dontAsk` — 非交互式安全模式
-- `sanitizeEnv()` — 最小环境（剥离 API 密钥、令牌、SSH agent）
+- `sanitizeEnv()` — 最佳努力脱敏（剥离常见 API 密钥、令牌、SSH agent；未命中关键词的变量可能透传）
 - `BRIDGE_DEPTH` — 递归保护（≥2 时拒绝）
 - `validateCwd()` — realpath + allow roots 白名单
 - `dangerousRoot()` — 拒绝 15 个系统目录（`/`, `/bin`, `/boot`, `/dev`, `/etc`, `/lib`, `/lib64`, `/opt`, `/proc`, `/root`, `/sbin`, `/sys`, `/tmp`, `/usr`, `/var`）及其子目录；`$HOME` 本身拒绝，但子目录如 `~/projects` 安全

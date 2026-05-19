@@ -17,6 +17,7 @@
     "plugins/codex-claude-delegate/.mcp.json",
     "scripts/uninstall-plugin.mjs",
     "README.md",
+    "SECURITY.md",
     "LICENSE"
   ],
   "engines": {
