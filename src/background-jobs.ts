@@ -194,7 +194,7 @@ export async function waitForJobCompletionInline(
     }
 
     const job = toJobSummary(record);
-    if (job.status === "succeeded" || job.status === "failed" || job.status === "cancelled") {
+    if (job.status === "succeeded" || job.status === "failed" || job.status === "cancelled" || job.status === "crashed") {
       return { status: "completed", job, jobRecord: record };
     }
 
@@ -478,7 +478,7 @@ export async function waitForBackgroundJob(input: ClaudeJobWaitInput): Promise<C
   const record = await jobStore.get(input.job_id);
   if (!record || record.cwd !== input.cwd) throw new Error(`Job not found: ${input.job_id}`);
 
-  if (record.status === "succeeded" || record.status === "failed" || record.status === "cancelled") {
+  if (record.status === "succeeded" || record.status === "failed" || record.status === "cancelled" || record.status === "crashed") {
     const job = toJobSummary(record);
     return {
       job,
@@ -552,7 +552,7 @@ export async function cancelBackgroundJob(input: ClaudeJobCancelInput): Promise<
   const jobStore = await getJobStore();
   const job = await jobStore.get(input.job_id);
   if (!job || job.cwd !== input.cwd) return { cancelled: false, error: `Job not found: ${input.job_id}` };
-  if (job.status === "cancelled" || job.status === "failed" || job.status === "succeeded") {
+  if (job.status === "cancelled" || job.status === "failed" || job.status === "succeeded" || job.status === "crashed") {
     return { cancelled: false, job: toJobSummary(job), error: `Job is already ${job.status}` };
   }
   if (job.status === "running" && job.pid) {
@@ -574,4 +574,81 @@ export async function findActiveImplementByWorktree(input: { cwd: string; worktr
 export async function cleanupBackgroundJobs(input: ClaudeJobCleanupInput): Promise<ClaudeJobCleanupResult> {
   const jobStore = await getJobStore();
   return jobStore.cleanup({ cwd: input.cwd, older_than_hours: input.older_than_hours ?? 24, dry_run: input.dry_run ?? true, limit: input.limit ?? 20 });
+}
+
+// ---- Crash recovery constants ----
+
+const RECOVERY_MIN_AGE_MS = 30_000;
+const RECOVERY_STALE_HEARTBEAT_MS = 300_000;
+const RECOVERY_QUEUED_NO_PID_MIN_AGE_MS = 300_000;
+
+function isPidAliveForRecovery(pid: number | undefined): boolean | undefined {
+  if (!pid) return undefined;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function ageMsForRecovery(timestamp: string | undefined, nowMs: number): number | undefined {
+  if (!timestamp) return undefined;
+  const parsed = Date.parse(timestamp);
+  if (!Number.isFinite(parsed)) return undefined;
+  return Math.max(0, nowMs - parsed);
+}
+
+export async function recoverCrashedJobs(): Promise<number> {
+  const store = await getJobStore();
+  const activeQueued = await store.list({ limit: 1000, status: "queued" });
+  const activeRunning = await store.list({ limit: 1000, status: "running" });
+  const candidates = [...activeQueued, ...activeRunning];
+  if (candidates.length === 0) return 0;
+
+  const nowMs = Date.now();
+  let crashedCount = 0;
+
+  for (const job of candidates) {
+    const jobAgeMs = ageMsForRecovery(job.created_at, nowMs) ?? 0;
+    if (jobAgeMs < RECOVERY_MIN_AGE_MS) continue;
+
+    const pidAlive = isPidAliveForRecovery(job.pid);
+    const heartbeatAgeMs = ageMsForRecovery(job.heartbeat_at ?? job.updated_at, nowMs);
+
+    let shouldCrash = false;
+
+    // A live PID wins over stale heartbeat data. PID reuse can leave a dead job
+    // looking alive, but marking it crashed would risk misclassifying active work.
+    if (pidAlive === true) continue;
+
+    if (job.status === "running") {
+      if (pidAlive === false) {
+        shouldCrash = true;
+      } else if (heartbeatAgeMs !== undefined && heartbeatAgeMs > RECOVERY_STALE_HEARTBEAT_MS) {
+        shouldCrash = true;
+      }
+    } else if (job.status === "queued") {
+      if (!job.pid && jobAgeMs < RECOVERY_QUEUED_NO_PID_MIN_AGE_MS) continue;
+      if (pidAlive === false) {
+        shouldCrash = true;
+      } else if (!job.pid && (heartbeatAgeMs === undefined || heartbeatAgeMs > RECOVERY_STALE_HEARTBEAT_MS)) {
+        shouldCrash = true;
+      } else if (heartbeatAgeMs !== undefined && heartbeatAgeMs > RECOVERY_STALE_HEARTBEAT_MS) {
+        shouldCrash = true;
+      }
+    }
+
+    if (!shouldCrash) continue;
+
+    const now = new Date().toISOString();
+    await store.update(job.job_id, {
+      status: "crashed",
+      updated_at: now,
+      error: "Background job process is no longer alive and was recovered as crashed on server restart.",
+    });
+    crashedCount++;
+  }
+
+  return crashedCount;
 }

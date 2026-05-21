@@ -20,6 +20,7 @@ import {
   getRunLogById,
   inferClaudeTaskMode,
   manageClaudeReviewGate,
+  recoverCrashedJobs,
   runClaudeSetup,
   runClaudeTask,
   runClaudeApply,
@@ -274,7 +275,7 @@ const BASE_TOOL_DEFINITIONS = [
       properties: {
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
         limit: { type: "number", description: "Maximum number of recent jobs to return (default 20)" },
-        status: { type: "string", enum: ["queued", "running", "succeeded", "failed", "cancelled"], description: "Filter by background job status" },
+        status: { type: "string", enum: ["queued", "running", "succeeded", "failed", "cancelled", "crashed"], description: "Filter by background job status" },
         type: { type: "string", enum: ["query", "review", "implement", "apply", "cleanup"], description: "Filter by background job type" },
       },
     },
@@ -1025,10 +1026,17 @@ function assertCanStartServer(): void {
 
 export async function main(): Promise<void> {
   assertCanStartServer();
+  void recoverCrashedJobsOnStartup();
   const server = await createServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   process.stderr.write("[claude-delegate] MCP server started (stdio)\n");
+}
+
+export async function recoverCrashedJobsOnStartup(
+  recover: () => Promise<unknown> = recoverCrashedJobs
+): Promise<void> {
+  await recover().catch(() => {});
 }
 
 export { main as startServer };

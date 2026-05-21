@@ -127,6 +127,7 @@ import {
   toJobSummary as toJobSummaryCore,
   waitForBackgroundJob as waitForBackgroundJobCore,
   waitForJobCompletionInline as waitForJobCompletionInlineCore,
+  recoverCrashedJobs as recoverCrashedJobsCore,
 } from "./background-jobs.js";
 
 import {
@@ -155,6 +156,8 @@ const summarizeBackgroundResult = summarizeBackgroundResultCore;
 const getBackgroundWorktreeName = getBackgroundWorktreeNameCore;
 const findActiveImplementByWorktree = findActiveImplementByWorktreeCore;
 
+export const recoverCrashedJobs = recoverCrashedJobsCore;
+
 export async function runClaudeSetup(input: ClaudeSetupInput): Promise<ClaudeSetupResult> {
   return executeReviewGateSetup(input, checkClaudeStatus);
 }
@@ -177,7 +180,7 @@ async function findImplementJobForWorktree(worktreePath: string, cwd: string): P
     limit: 100,
     type: "implement",
   });
-  const terminalStatuses = new Set(["succeeded", "failed", "cancelled"]);
+  const terminalStatuses = new Set(["succeeded", "failed", "cancelled", "crashed"]);
   return jobs.find((job) => job.worktree_name === wtName && terminalStatuses.has(job.status)) ?? null;
 }
 
@@ -451,7 +454,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
     }
 
     const job = toJobSummary(record);
-    if (job.status === "succeeded" || job.status === "failed" || job.status === "cancelled") {
+    if (job.status === "succeeded" || job.status === "failed" || job.status === "cancelled" || job.status === "crashed") {
       return buildClaudeTaskInlineResult({
         cwd: input.cwd,
         job,

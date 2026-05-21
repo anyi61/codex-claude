@@ -11,6 +11,7 @@ const {
   runClaudeSetupMock,
   runClaudeTaskMock,
   getWorkspaceStatusMock,
+  recoverCrashedJobsMock,
   listBackgroundJobsMock,
   getBackgroundJobResultMock,
   cancelBackgroundJobMock,
@@ -33,6 +34,7 @@ const {
   runClaudeSetupMock: vi.fn(),
   runClaudeTaskMock: vi.fn(),
   getWorkspaceStatusMock: vi.fn(),
+  recoverCrashedJobsMock: vi.fn(),
   listBackgroundJobsMock: vi.fn(),
   getBackgroundJobResultMock: vi.fn(),
   cancelBackgroundJobMock: vi.fn(),
@@ -67,6 +69,7 @@ vi.mock("../src/claude-cli.js", () => ({
   getBackgroundJobResult: getBackgroundJobResultMock,
   getRunLogById: vi.fn(),
   getWorkspaceStatus: getWorkspaceStatusMock,
+  recoverCrashedJobs: recoverCrashedJobsMock,
   manageClaudeReviewGate: manageClaudeReviewGateMock,
   runClaudeSetup: runClaudeSetupMock,
   runClaudeTask: runClaudeTaskMock,
@@ -94,7 +97,7 @@ vi.mock("../src/claude-cli.js", () => ({
   }),
 }));
 
-const { handleToolCall, registerToolDefinitions, TOOL_DEFINITIONS, buildTaskInteraction } = await import("../src/server.js");
+const { handleToolCall, registerToolDefinitions, TOOL_DEFINITIONS, buildTaskInteraction, recoverCrashedJobsOnStartup } = await import("../src/server.js");
 
 function parsePayload(result: Awaited<ReturnType<typeof handleToolCall>>) {
   expect(result.content[0]?.type).toBe("text");
@@ -143,6 +146,16 @@ describe("server background job handlers", () => {
       "claude_apply",
       "claude_cleanup",
     ]);
+  });
+
+  it("runs crashed job recovery as best-effort startup work", async () => {
+    const recover = vi.fn(async () => {
+      throw new Error("store unavailable");
+    });
+
+    await expect(recoverCrashedJobsOnStartup(recover)).resolves.toBeUndefined();
+
+    expect(recover).toHaveBeenCalledTimes(1);
   });
 
   it("routes claude_jobs through listBackgroundJobs with resolved cwd", async () => {
@@ -286,6 +299,7 @@ describe("server background job handlers", () => {
       workspace_root: "/repo/resolved",
       running_jobs: [],
       queued_jobs: [],
+      crashed_jobs: [],
       recent_terminal_jobs: [],
       recent_runs: [],
       latest_sessions: [],
@@ -293,6 +307,7 @@ describe("server background job handlers", () => {
       counts: {
         running_jobs: 0,
         queued_jobs: 0,
+        crashed_jobs: 0,
         terminal_jobs: 0,
         recent_runs: 0,
         delegated_worktrees: 0,

@@ -196,6 +196,72 @@ describe("JobStore", () => {
     expect(match).toBeNull();
   });
 
+  it("crashed jobs are not matched by findActiveByFingerprint", async () => {
+    const { repo, store } = await createStoreFixture();
+    await store.create({
+      job_id: "job-crashed",
+      type: "implement",
+      status: "crashed",
+      cwd: repo,
+      created_at: "2026-05-06T00:00:00.000Z",
+      updated_at: "2026-05-06T00:10:00.000Z",
+      fingerprint: "fp-crashed",
+      payload: { cwd: repo, task: "ship it" },
+    });
+
+    const existing = await store.findActiveByFingerprint({
+      cwd: repo,
+      type: "implement",
+      fingerprint: "fp-crashed",
+    });
+
+    expect(existing).toBeNull();
+  });
+
+  it("crashed jobs are not matched by findActiveImplementByWorktree", async () => {
+    const { repo, store } = await createStoreFixture();
+    await store.create({
+      job_id: "job-crashed-wt",
+      type: "implement",
+      status: "crashed",
+      cwd: repo,
+      worktree_name: "codex-delegated-crashed00",
+      created_at: "2026-05-06T00:00:00.000Z",
+      updated_at: "2026-05-06T00:10:00.000Z",
+      payload: { cwd: repo, task: "ship it" },
+    });
+
+    const match = await store.findActiveImplementByWorktree({
+      cwd: repo,
+      worktree_name: "codex-delegated-crashed00",
+    });
+
+    expect(match).toBeNull();
+  });
+
+  it("cleanup includes crashed jobs in terminal status filter", async () => {
+    const { repo, store } = await createStoreFixture();
+    await store.create({
+      job_id: "job-crashed-old",
+      type: "implement",
+      status: "crashed",
+      cwd: repo,
+      created_at: "2026-05-01T00:00:00.000Z",
+      updated_at: "2026-05-01T00:00:00.000Z",
+      payload: { cwd: repo, task: "ship it" },
+    });
+
+    const result = await store.cleanup({
+      cwd: repo,
+      older_than_hours: 0,
+      dry_run: true,
+      limit: 20,
+    });
+
+    expect(result.matched_count).toBe(1);
+    expect(result.entries[0]?.status).toBe("crashed");
+  });
+
   it("cleanup does not delete running jobs", async () => {
     const { repo, store } = await createStoreFixture();
     await store.create({

@@ -149,6 +149,25 @@ describe("background jobs module", () => {
     expect(result.next_actions).toEqual([]);
   });
 
+  it("waits for a crashed background job as terminal", async () => {
+    const { repo, store } = await createJobFixture();
+    await store.create({
+      job_id: "job-crashed",
+      type: "implement",
+      status: "crashed",
+      cwd: repo,
+      created_at: "2026-05-05T00:00:00.000Z",
+      updated_at: "2026-05-05T00:10:00.000Z",
+      payload: { cwd: repo, task: "review this" },
+      error: "Background job process is no longer alive and was recovered as crashed on server restart.",
+    });
+    const module = await import("../src/background-jobs.js");
+    const result = await module.waitForBackgroundJob({ cwd: repo, job_id: "job-crashed" });
+    expect(result.waiting).toBe(false);
+    expect(result.timed_out).toBe(false);
+    expect(result.status).toBe("crashed");
+  });
+
   it("lists, reads, and cancels background jobs", async () => {
     const { repo, store } = await createJobFixture();
     await store.create({
@@ -259,5 +278,141 @@ describe("background jobs module", () => {
     expect(result.cancelled).toBe(false);
     expect(result.error).toContain("not found");
     expect(killSpy).not.toHaveBeenCalled();
+  });
+
+  it("recoverCrashedJobs marks running job with dead pid as crashed", async () => {
+    const { repo, store } = await createJobFixture();
+    const staleTime = new Date(Date.now() - 60_000).toISOString();
+    await store.create({
+      job_id: "job-dead-pid",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      pid: 999999,
+      created_at: staleTime,
+      updated_at: staleTime,
+      heartbeat_at: staleTime,
+      run_id: "run-123",
+      worktree_name: "codex-delegated-testwt",
+      payload: { cwd: repo, task: "ship it" },
+      result: { status: "partial" },
+    });
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+      const err = new Error("ESRCH") as NodeJS.ErrnoException;
+      err.code = "ESRCH";
+      throw err;
+    });
+    const module = await import("../src/background-jobs.js");
+    const count = await module.recoverCrashedJobs();
+    expect(count).toBe(1);
+    const updated = await store.get("job-dead-pid");
+    expect(updated?.status).toBe("crashed");
+    expect(updated?.run_id).toBe("run-123");
+    expect(updated?.worktree_name).toBe("codex-delegated-testwt");
+    expect(updated?.payload).toEqual({ cwd: repo, task: "ship it" });
+    expect(updated?.result).toEqual({ status: "partial" });
+    killSpy.mockRestore();
+  });
+
+  it("recoverCrashedJobs marks queued job with old stale heartbeat as crashed", async () => {
+    const { repo, store } = await createJobFixture();
+    const staleTime = new Date(Date.now() - 600_000).toISOString();
+    await store.create({
+      job_id: "job-stale-queued",
+      type: "query",
+      status: "queued",
+      cwd: repo,
+      created_at: staleTime,
+      updated_at: staleTime,
+      heartbeat_at: staleTime,
+      payload: { cwd: repo, task: "explain" },
+    });
+    const module = await import("../src/background-jobs.js");
+    const count = await module.recoverCrashedJobs();
+    expect(count).toBe(1);
+    const updated = await store.get("job-stale-queued");
+    expect(updated?.status).toBe("crashed");
+  });
+
+  it("recoverCrashedJobs does not mark queued job without pid created < 30s ago", async () => {
+    const { repo, store } = await createJobFixture();
+    const recentTime = new Date(Date.now() - 10_000).toISOString();
+    await store.create({
+      job_id: "job-recent-queued",
+      type: "query",
+      status: "queued",
+      cwd: repo,
+      created_at: recentTime,
+      updated_at: recentTime,
+      payload: { cwd: repo, task: "explain" },
+    });
+    const module = await import("../src/background-jobs.js");
+    const count = await module.recoverCrashedJobs();
+    expect(count).toBe(0);
+    const updated = await store.get("job-recent-queued");
+    expect(updated?.status).toBe("queued");
+  });
+
+  it("recoverCrashedJobs does not mark running job with alive pid", async () => {
+    const { repo, store } = await createJobFixture();
+    const staleTime = new Date(Date.now() - 600_000).toISOString();
+    await store.create({
+      job_id: "job-alive-pid",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      pid: process.pid,
+      created_at: staleTime,
+      updated_at: staleTime,
+      heartbeat_at: staleTime,
+      payload: { cwd: repo, task: "ship it" },
+    });
+    const module = await import("../src/background-jobs.js");
+    const count = await module.recoverCrashedJobs();
+    expect(count).toBe(0);
+    const updated = await store.get("job-alive-pid");
+    expect(updated?.status).toBe("running");
+  });
+
+  it("recoverCrashedJobs does not mark already-terminal jobs", async () => {
+    const { repo, store } = await createJobFixture();
+    const staleTime = new Date(Date.now() - 600_000).toISOString();
+    await store.create({
+      job_id: "job-already-done",
+      type: "review",
+      status: "succeeded",
+      cwd: repo,
+      created_at: staleTime,
+      updated_at: staleTime,
+      payload: { cwd: repo, task: "review" },
+    });
+    await store.create({
+      job_id: "job-already-failed",
+      type: "review",
+      status: "failed",
+      cwd: repo,
+      created_at: staleTime,
+      updated_at: staleTime,
+      payload: { cwd: repo, task: "review" },
+    });
+    await store.create({
+      job_id: "job-already-crashed",
+      type: "review",
+      status: "crashed",
+      cwd: repo,
+      created_at: staleTime,
+      updated_at: staleTime,
+      payload: { cwd: repo, task: "review" },
+    });
+    const module = await import("../src/background-jobs.js");
+    const count = await module.recoverCrashedJobs();
+    expect(count).toBe(0);
+  });
+
+  it("recoverCrashedJobs returns 0 when no active jobs exist", async () => {
+    const { repo } = await createJobFixture();
+    const module = await import("../src/background-jobs.js");
+    const count = await module.recoverCrashedJobs();
+    expect(count).toBe(0);
   });
 });

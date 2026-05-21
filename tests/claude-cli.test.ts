@@ -2814,8 +2814,10 @@ describe("claude cli argument construction", () => {
     const worktreeRoot = path.join(repo, ".claude", "worktrees");
     const staleWorktree = path.join(worktreeRoot, "codex-delegated-stale");
     const freshWorktree = path.join(worktreeRoot, "codex-delegated-fresh");
+    const crashedWorktree = path.join(worktreeRoot, "codex-delegated-crashed");
     await mkdir(staleWorktree, { recursive: true });
     await mkdir(freshWorktree, { recursive: true });
+    await mkdir(crashedWorktree, { recursive: true });
     const staleDate = new Date(Date.now() - 48 * 60 * 60 * 1000);
     await utimes(staleWorktree, staleDate, staleDate);
     await writeFile(path.join(logDir, "run-apply-blocked.json"), JSON.stringify({
@@ -2851,6 +2853,17 @@ describe("claude cli argument construction", () => {
       payload: { cwd: repo, task: "implement" },
       summary: "done",
     });
+    await jobStore.create({
+      job_id: "job-crashed",
+      type: "implement",
+      status: "crashed",
+      cwd: repo,
+      created_at: "2026-05-05T00:00:00.000Z",
+      updated_at: "2026-05-05T00:03:00.000Z",
+      payload: { cwd: repo, task: "implement" },
+      worktree_name: "codex-delegated-crashed",
+      summary: "Recovered crashed job",
+    });
     await sessionStore.upsert("sess-query", "query", repoKey, repo, "Explained workspace");
 
     const reloaded = await import("../src/claude-cli.js");
@@ -2859,6 +2872,8 @@ describe("claude cli argument construction", () => {
     expect(result.workspace_root).toBe(repo);
     expect(result.counts.running_jobs).toBe(1);
     expect(result.counts.queued_jobs).toBe(1);
+    expect(result.counts.crashed_jobs).toBe(1);
+    expect(result.crashed_jobs[0]?.job_id).toBe("job-crashed");
     expect(result.counts.terminal_jobs).toBeGreaterThanOrEqual(1);
     expect(result.counts.apply_blocked_runs).toBe(1);
     expect(result.counts.orphan_worktrees).toBe(1);
@@ -2868,8 +2883,17 @@ describe("claude cli argument construction", () => {
     );
     expect(result.delegated_worktrees.find((worktree) => worktree.worktree_name === "codex-delegated-fresh")?.orphaned).toBe(true);
     expect(result.delegated_worktrees.find((worktree) => worktree.worktree_name === "codex-delegated-stale")?.orphaned).toBe(false);
+    expect(result.delegated_worktrees.find((worktree) => worktree.worktree_name === "codex-delegated-crashed")?.orphaned).toBe(false);
     expect(result.attention_items.map((item) => item.kind)).toEqual(
-      expect.arrayContaining(["queued_job", "apply_blocked", "stale_worktree", "orphan_worktree"])
+      expect.arrayContaining(["queued_job", "apply_blocked", "stale_worktree", "orphan_worktree", "crashed_job"])
+    );
+    expect(result.next_actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          tool: "claude_task",
+          args: expect.objectContaining({ job_id: "job-running" }),
+        }),
+      ])
     );
   });
 
@@ -2889,6 +2913,7 @@ describe("claude cli argument construction", () => {
     expect(result.counts).toEqual({
       running_jobs: 0,
       queued_jobs: 0,
+      crashed_jobs: 0,
       terminal_jobs: 0,
       recent_runs: 0,
       delegated_worktrees: 0,
@@ -2897,6 +2922,40 @@ describe("claude cli argument construction", () => {
       apply_blocked_runs: 0,
     });
     expect(result.attention_items).toEqual([]);
+  });
+
+  it("returns crashed job next actions when no active jobs block the workspace", async () => {
+    const { repo, jobStore } = await createWorkflowFixture();
+    await jobStore.create({
+      job_id: "job-crashed",
+      type: "implement",
+      status: "crashed",
+      cwd: repo,
+      created_at: "2026-05-05T00:00:00.000Z",
+      updated_at: "2026-05-05T00:03:00.000Z",
+      payload: { cwd: repo, task: "implement" },
+      worktree_name: "codex-delegated-crashed",
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.getWorkspaceStatus({ cwd: repo, limit: 10, include_terminal: true });
+
+    expect(result.do_not_start_duplicate_job).toBeUndefined();
+    expect(result.next_actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          tool: "claude_job_result",
+          args: expect.objectContaining({ job_id: "job-crashed" }),
+        }),
+        expect.objectContaining({
+          tool: "claude_apply",
+          args: expect.objectContaining({
+            worktree_path: ".claude/worktrees/codex-delegated-crashed",
+            preview: true,
+          }),
+        }),
+      ])
+    );
   });
 
   it("routes claude_task read mode to a background query job", async () => {

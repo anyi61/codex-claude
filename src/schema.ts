@@ -97,7 +97,7 @@ export interface ModeInference {
 }
 
 export type BackgroundJobType = "query" | "review" | "implement" | "apply" | "cleanup";
-export type BackgroundJobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type BackgroundJobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "crashed";
 export type BackgroundJobStaleState = "fresh" | "stale_candidate" | "stale";
 
 export interface BackgroundJobSummary {
@@ -264,7 +264,7 @@ export interface DelegatedWorktreeSummary {
 }
 
 export interface WorkspaceAttentionItem {
-  kind: "queued_job" | "apply_blocked" | "stale_worktree" | "orphan_worktree";
+  kind: "queued_job" | "apply_blocked" | "stale_worktree" | "orphan_worktree" | "crashed_job";
   severity: "info" | "warning";
   message: string;
 }
@@ -273,6 +273,7 @@ export interface ClaudeWorkspaceStatusResult {
   workspace_root: string;
   running_jobs: BackgroundJobSummary[];
   queued_jobs: BackgroundJobSummary[];
+  crashed_jobs: BackgroundJobSummary[];
   recent_terminal_jobs: BackgroundJobSummary[];
   recent_runs: RunLogEntrySummary[];
   latest_sessions: WorkflowSessionSummary[];
@@ -280,6 +281,7 @@ export interface ClaudeWorkspaceStatusResult {
   counts: {
     running_jobs: number;
     queued_jobs: number;
+    crashed_jobs: number;
     terminal_jobs: number;
     recent_runs: number;
     delegated_worktrees: number;
@@ -737,7 +739,7 @@ export const claudeRunInspectInputSchema = z.object({
 export const claudeJobsInputSchema = z.object({
   cwd: cwdSchema,
   limit: z.number().int().positive().max(200).optional().default(20),
-  status: z.enum(["queued", "running", "succeeded", "failed", "cancelled"]).optional(),
+  status: z.enum(["queued", "running", "succeeded", "failed", "cancelled", "crashed"]).optional(),
   type: z.enum(["query", "review", "implement", "apply", "cleanup"]).optional(),
 }).strict();
 

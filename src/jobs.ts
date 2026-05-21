@@ -15,7 +15,7 @@ export interface BackgroundJobRecord extends BackgroundJobSummary {
 }
 
 interface JobListInput {
-  cwd: string;
+  cwd?: string;
   limit: number;
   status?: BackgroundJobStatus;
   type?: BackgroundJobType;
@@ -28,7 +28,7 @@ interface JobCleanupInput {
   limit: number;
 }
 
-const TERMINAL_JOB_STATUSES = new Set<BackgroundJobStatus>(["succeeded", "failed", "cancelled"]);
+const TERMINAL_JOB_STATUSES = new Set<BackgroundJobStatus>(["succeeded", "failed", "cancelled", "crashed"]);
 
 const ACTIVE_JOB_STATUSES = new Set<BackgroundJobStatus>(["queued", "running"]);
 
@@ -82,7 +82,7 @@ export class JobStore {
     const jobs = await this.readAllRecords();
     return jobs
       .filter((entry): entry is BackgroundJobRecord => entry !== null)
-      .filter((entry) => entry.cwd === input.cwd)
+      .filter((entry) => !input.cwd || entry.cwd === input.cwd)
       .filter((entry) => !input.status || entry.status === input.status)
       .filter((entry) => !input.type || entry.type === input.type)
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at))

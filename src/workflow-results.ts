@@ -249,6 +249,7 @@ export async function getClaudeResult(input: ClaudeResultInput): Promise<ClaudeR
       listBackgroundJobs({ cwd: input.cwd, limit: 20, status: "succeeded", type: jobTypeFilter }),
       listBackgroundJobs({ cwd: input.cwd, limit: 20, status: "failed", type: jobTypeFilter }),
       listBackgroundJobs({ cwd: input.cwd, limit: 20, status: "cancelled", type: jobTypeFilter }),
+      listBackgroundJobs({ cwd: input.cwd, limit: 20, status: "crashed", type: jobTypeFilter }),
     ]);
     const latestJob = terminalJobLists
       .flatMap((result) => result.entries)
@@ -319,9 +320,10 @@ export async function getClaudeResult(input: ClaudeResultInput): Promise<ClaudeR
 
 export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Promise<ClaudeWorkspaceStatusResult> {
   const limit = input.limit ?? 10;
-  const [runningJobs, queuedJobs, succeededJobs, failedJobs, cancelledJobs, recentRuns, worktrees] = await Promise.all([
+  const [runningJobs, queuedJobs, crashedJobs, succeededJobs, failedJobs, cancelledJobs, recentRuns, worktrees] = await Promise.all([
     listBackgroundJobs({ cwd: input.cwd, limit, status: "running" }),
     listBackgroundJobs({ cwd: input.cwd, limit, status: "queued" }),
+    listBackgroundJobs({ cwd: input.cwd, limit, status: "crashed" }),
     input.include_terminal ? listBackgroundJobs({ cwd: input.cwd, limit, status: "succeeded" }) : Promise.resolve({ entries: [] }),
     input.include_terminal ? listBackgroundJobs({ cwd: input.cwd, limit, status: "failed" }) : Promise.resolve({ entries: [] }),
     input.include_terminal ? listBackgroundJobs({ cwd: input.cwd, limit, status: "cancelled" }) : Promise.resolve({ entries: [] }),
@@ -336,7 +338,7 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
   for (const run of recentRuns.entries) {
     if (run.worktree_name) referencedWorktreeNames.add(run.worktree_name);
   }
-  for (const job of [...runningJobs.entries, ...queuedJobs.entries, ...terminalJobs]) {
+  for (const job of [...runningJobs.entries, ...queuedJobs.entries, ...crashedJobs.entries, ...terminalJobs]) {
     if (job.worktree_name) referencedWorktreeNames.add(job.worktree_name);
   }
   const summarizedWorktrees = worktrees.map((worktree) => ({
@@ -361,6 +363,14 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
         message: `Queued job ${job.job_id} has been waiting for more than 10 minutes.`,
       });
     }
+  }
+
+  for (const job of crashedJobs.entries) {
+    attentionItems.push({
+      kind: "crashed_job",
+      severity: "warning",
+      message: `Background job ${job.job_id} (${job.type}) was recovered as crashed after server restart. Use claude_job_result to inspect.`,
+    });
   }
 
   for (const run of recentRuns.entries) {
@@ -397,11 +407,27 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
     reason: "Workspace has an active delegated job. Continue waiting for this job_id instead of starting a duplicate task.",
     args: { cwd: input.cwd, job_id: job.job_id, wait_strategy: "block", wait_timeout_sec: 540 },
   }));
+  const crashedNextActions = crashedJobs.entries.slice(0, limit).flatMap((job) => {
+    const actions: WorkflowNextAction[] = [{
+      tool: "claude_job_result",
+      reason: "Inspect the recovered crashed job before retrying or cleaning up any retained worktree.",
+      args: { cwd: input.cwd, job_id: job.job_id },
+    }];
+    if (job.worktree_name) {
+      actions.push({
+        tool: "claude_apply",
+        reason: "Preview the retained crashed implement worktree before deciding whether any changes should be applied.",
+        args: { cwd: input.cwd, worktree_path: `.claude/worktrees/${job.worktree_name}`, preview: true },
+      });
+    }
+    return actions;
+  });
 
   return {
     workspace_root: input.cwd,
     running_jobs: runningJobs.entries,
     queued_jobs: queuedJobs.entries,
+    crashed_jobs: crashedJobs.entries,
     recent_terminal_jobs: terminalJobs,
     recent_runs: recentRuns.entries,
     latest_sessions: latestSessions,
@@ -409,6 +435,7 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
     counts: {
       running_jobs: runningJobs.entries.length,
       queued_jobs: queuedJobs.entries.length,
+      crashed_jobs: crashedJobs.entries.length,
       terminal_jobs: terminalJobs.length,
       recent_runs: recentRuns.entries.length,
       delegated_worktrees: summarizedWorktrees.length,
@@ -417,7 +444,7 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
       apply_blocked_runs: recentRuns.entries.filter((run) => run.lifecycle === "apply_blocked").length,
     },
     do_not_start_duplicate_job: activeJobs.length > 0 ? true : undefined,
-    next_actions: workspaceNextActions.length > 0 ? workspaceNextActions : undefined,
+    next_actions: workspaceNextActions.length > 0 ? workspaceNextActions : crashedNextActions.length > 0 ? crashedNextActions : undefined,
     attention_items: attentionItems,
   };
 }

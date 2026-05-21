@@ -239,6 +239,7 @@ describe("schema definitions", () => {
     expect(claudeReviewInputSchema.safeParse({ cwd: "/repo", task: "review this" }).success).toBe(true);
     expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "ship it" }).success).toBe(true);
     expect(claudeJobsInputSchema.safeParse({ cwd: "/repo", limit: 10, type: "query" }).success).toBe(true);
+    expect(claudeJobsInputSchema.safeParse({ cwd: "/repo", status: "crashed" }).success).toBe(true);
     expect(claudeJobResultInputSchema.safeParse({ cwd: "/repo", job_id: "job-123" }).success).toBe(true);
     expect(claudeJobCancelInputSchema.safeParse({ cwd: "/repo", job_id: "job-123" }).success).toBe(true);
     expect(claudeJobCleanupInputSchema.safeParse({ cwd: "/repo", dry_run: true, older_than_hours: 12, limit: 5 }).success).toBe(true);
