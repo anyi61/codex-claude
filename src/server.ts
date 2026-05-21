@@ -343,6 +343,8 @@ const BASE_TOOL_DEFINITIONS = [
             type: "boolean",
             description: "Required for non-preview apply after the user explicitly approves applying the previewed diff. Not required for preview=true.",
           },
+          include_patch: { type: "boolean", description: "Generate a binary git diff patch for previewed planned_changes. The patch covers tracked committed and uncommitted changes within the observed scope." },
+          patch_max_bytes: { type: "number", description: "Maximum inline patch bytes before writing to a persistent .claude/patches/<runId>.patch file (default 60000, min 1024, max 500000)." },
         },
       },
     },
@@ -915,19 +917,19 @@ export async function handleToolCall(name: string, args: unknown, runId = random
         const startTime = Date.now();
         const parsed = claudeApplyInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { cwd, worktree_path, cleanup, preview, background, confirmed_by_user } = parsed.data;
+        const { cwd, worktree_path, cleanup, preview, background, confirmed_by_user, include_patch, patch_max_bytes } = parsed.data;
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
 
         if (background === true) {
           return jsonResult(await startBackgroundApply(
-            { cwd: check.resolved, worktree_path, cleanup, preview, background, confirmed_by_user },
+            { cwd: check.resolved, worktree_path, cleanup, preview, background, confirmed_by_user, include_patch, patch_max_bytes },
           ));
         }
 
         const result = await runClaudeApply(
-          { cwd: check.resolved, worktree_path, cleanup, preview, confirmed_by_user },
+          { cwd: check.resolved, worktree_path, cleanup, preview, confirmed_by_user, include_patch, patch_max_bytes },
           runId
         );
         const payload = {

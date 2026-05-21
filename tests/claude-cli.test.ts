@@ -3802,6 +3802,307 @@ describe("claude cli argument construction", () => {
     vi.resetModules();
   });
 
+  it("preview include_patch returns patch with diff --git, diff_sha256, patch_bytes, patch_truncated=false for tracked modification", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-patch-preview-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+    const worktreeRel = ".claude/worktrees/codex-delegated-patch-preview";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(logDir, "implement-patch.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "success", summary: "Changed README" },
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["README.md"],
+        scope: { requested_files: undefined, out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 1, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+      include_patch: true,
+    }, "patch-preview-run");
+
+    expect(preview.preview).toBe(true);
+    expect(preview.planned_changes).toEqual([{ status: "M", file: "README.md" }]);
+    expect(preview.applied_files).toEqual([]);
+    expect(preview.patch).toBeDefined();
+    expect(preview.patch).toContain("diff --git");
+    expect(preview.patch).toContain("@@");
+    expect(preview.diff_sha256).toBeDefined();
+    expect(preview.diff_sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(preview.patch_bytes).toBeGreaterThan(0);
+    expect(preview.patch_truncated).toBe(false);
+    expect(preview.patch_path).toBeUndefined();
+    // Main workspace not mutated
+    expect(await readFile(path.join(repo, "README.md"), "utf8")).toBe("# main\n");
+    // Try preview without include_patch
+    const reloaded2 = await import("../src/claude-cli.js");
+    const preview2 = await reloaded2.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+      include_patch: false,
+    }, "patch-preview-no-patch");
+    expect(preview2.patch).toBeUndefined();
+    expect(preview2.diff_sha256).toBeUndefined();
+    expect(preview2.patch_truncated).toBeUndefined();
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("preview include_patch=false preserves legacy preview expectations", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-patch-legacy-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+    const worktreeRel = ".claude/worktrees/codex-delegated-patch-legacy";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(logDir, "implement-legacy.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["README.md"],
+        scope: { requested_files: undefined, out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 1, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+    }, "patch-legacy-run");
+
+    // Legacy behavior: standard preview fields, no patch fields
+    expect(preview.preview).toBe(true);
+    expect(preview.planned_changes).toBeDefined();
+    expect(preview.applied_files).toEqual([]);
+    expect(preview.patch).toBeUndefined();
+    expect(preview.patch_truncated).toBeUndefined();
+    expect(preview.patch_path).toBeUndefined();
+    expect(preview.diff_sha256).toBeUndefined();
+    expect(preview.patch_bytes).toBeUndefined();
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("large patch writes .claude/patches artifact and returns patch_truncated=true", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-patch-large-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+
+    // Create a large file so the patch exceeds patch_max_bytes
+    const largeContent = "large content line " + "x".repeat(500) + "\n";
+    await writeFile(path.join(repo, "big.txt"), largeContent.repeat(5));
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-patch-large";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await writeFile(path.join(worktree, "big.txt"), largeContent.repeat(10));
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(logDir, "implement-large.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["big.txt"],
+        scope: { requested_files: undefined, out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 1, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+      include_patch: true,
+      patch_max_bytes: 1024,
+    }, "patch-large-run");
+
+    expect(preview.patch_truncated).toBe(true);
+    expect(preview.patch_bytes).toBeGreaterThan(1024);
+    expect(preview.diff_sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(preview.patch_path).toBeDefined();
+    expect(preview.patch_path).toContain(".claude/patches");
+    expect(preview.patch_path).toContain("patch-large-run.patch");
+    // Verify the file exists
+    const patchFile = path.join(repo, preview.patch_path!);
+    expect(existsSync(patchFile)).toBe(true);
+    const fileContent = await readFile(patchFile, "utf8");
+    expect(fileContent).toContain("diff --git");
+    // Verify sha256 matches file content
+    const { createHash } = await import("node:crypto");
+    const expectedHash = createHash("sha256").update(fileContent).digest("hex");
+    expect(preview.diff_sha256).toBe(expectedHash);
+    // planned_changes unchanged
+    expect(preview.planned_changes).toEqual([{ status: "M", file: "big.txt" }]);
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("preview include_patch with untracked file sets untracked_not_in_patch=true", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-patch-untracked-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+    const worktreeRel = ".claude/worktrees/codex-delegated-patch-untracked";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+    // Create an untracked file
+    await writeFile(path.join(worktree, "untracked.txt"), "untracked content\n");
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(logDir, "implement-untracked.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["README.md", "untracked.txt"],
+        scope: { requested_files: undefined, out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 1, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+      include_patch: true,
+    }, "patch-untracked-run");
+
+    expect(preview.preview).toBe(true);
+    expect(preview.applied_files).toEqual([]);
+    expect(preview.untracked_not_in_patch).toBe(true);
+    // planned_changes includes the untracked file
+    const files = (preview.planned_changes ?? []).map((c) => c.file);
+    expect(files).toContain("untracked.txt");
+    expect(files).toContain("README.md");
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("preview include_patch returns a clear error when binary patch generation fails", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-patch-failure-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-patch-failure";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(logDir, "implement-failure.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["README.md"],
+        scope: { requested_files: undefined, out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 1, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.doMock("../src/guard.js", async () => {
+      const actual = await vi.importActual<typeof import("../src/guard.js")>("../src/guard.js");
+      return {
+        ...actual,
+        execCapture: vi.fn((bin: string, args: string[], options: Parameters<typeof actual.execCapture>[2]) => {
+          if (bin === "git" && args[0] === "diff" && args.includes("--binary")) {
+            throw new Error("simulated diff failure");
+          }
+          return actual.execCapture(bin, args, options);
+        }),
+      };
+    });
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+      include_patch: true,
+    }, "patch-failure-run");
+
+    expect(preview.preview).toBe(true);
+    expect(preview.applied_files).toEqual([]);
+    expect(preview.planned_changes).toEqual([{ status: "M", file: "README.md" }]);
+    expect(preview.error).toContain("Patch generation failed");
+    expect(preview.error).toContain("simulated diff failure");
+    expect(preview.patch).toBeUndefined();
+    expect(await readFile(path.join(repo, "README.md"), "utf8")).toBe("# main\n");
+    vi.doUnmock("../src/guard.js");
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
   it("transactional apply: preview does not create backups or write files", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "codex-tx-apply-preview-"));
     cleanupPaths.push(root);

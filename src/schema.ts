@@ -460,6 +460,8 @@ export interface ClaudeApplyInput {
   preview?: boolean;
   background?: boolean;
   confirmed_by_user?: boolean;
+  include_patch?: boolean;
+  patch_max_bytes?: number;
 }
 
 export interface ApplyPlannedChange {
@@ -483,6 +485,12 @@ export interface ClaudeApplyResult {
   dirty_recovery_needed?: boolean;
   dirty_files?: ApplyDirtyEntry[];
   rollback_error?: string;
+  patch?: string;
+  patch_truncated?: boolean;
+  patch_path?: string;
+  diff_sha256?: string;
+  patch_bytes?: number;
+  untracked_not_in_patch?: boolean;
 }
 
 export interface ClaudeCleanupInput {
@@ -662,6 +670,8 @@ export const claudeApplyInputSchema = z.object({
   preview: z.boolean().optional(),
   background: z.boolean().optional(),
   confirmed_by_user: z.boolean().optional(),
+  include_patch: z.boolean().optional(),
+  patch_max_bytes: z.number().int().min(1024).max(500000).optional(),
 }).strict().refine((value) => !(value.preview === true && value.cleanup === true), {
   message: "preview=true cannot be combined with cleanup=true",
   path: ["cleanup"],

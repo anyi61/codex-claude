@@ -851,6 +851,51 @@ describe("server background job handlers", () => {
     expect(applyTool?.inputSchema.properties).toHaveProperty("confirmed_by_user");
   });
 
+  it("exposes include_patch and patch_max_bytes in TOOL_DEFINITIONS for claude_apply", () => {
+    const applyTool = TOOL_DEFINITIONS.find((tool) => tool.name === "claude_apply");
+    expect(applyTool?.inputSchema.properties).toHaveProperty("include_patch");
+    expect(applyTool?.inputSchema.properties).toHaveProperty("patch_max_bytes");
+  });
+
+  it("forwards include_patch and patch_max_bytes to runClaudeApply", async () => {
+    const runClaudeApply = (await import("../src/claude-cli.js")).runClaudeApply as ReturnType<typeof vi.fn>;
+    runClaudeApply.mockResolvedValue({
+      applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [],
+      preview: true, planned_changes: [],
+    });
+
+    await handleToolCall("claude_apply", {
+      cwd: "/repo/input",
+      worktree_path: ".claude/worktrees/codex-delegated-x",
+      preview: true,
+      include_patch: true,
+      patch_max_bytes: 12345,
+    });
+
+    expect(runClaudeApply).toHaveBeenCalledWith(
+      expect.objectContaining({ include_patch: true, patch_max_bytes: 12345 }),
+      expect.any(String),
+    );
+  });
+
+  it("forwards include_patch and patch_max_bytes to startBackgroundApply", async () => {
+    startBackgroundApplyMock.mockResolvedValue({
+      job: { job_id: "job-bg-apply-patch", type: "apply", status: "queued" },
+    });
+
+    await handleToolCall("claude_apply", {
+      cwd: "/repo/input",
+      worktree_path: ".claude/worktrees/codex-delegated-x",
+      background: true,
+      include_patch: true,
+      patch_max_bytes: 99999,
+    });
+
+    expect(startBackgroundApplyMock).toHaveBeenCalledWith(
+      expect.objectContaining({ include_patch: true, patch_max_bytes: 99999 }),
+    );
+  });
+
   it("documents the five default tools and marks the rest as advanced", async () => {
     let listToolsHandler: (() => Promise<{ tools: Array<{ name: string; description?: string }> }>) | undefined;
     const fakeServer = {

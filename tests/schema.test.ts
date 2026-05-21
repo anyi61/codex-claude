@@ -180,6 +180,47 @@ describe("schema definitions", () => {
     }).success).toBe(false);
   });
 
+  it("accepts include_patch and valid patch_max_bytes on claude_apply", () => {
+    expect(claudeApplyInputSchema.safeParse({
+      cwd: "/repo",
+      worktree_path: ".claude/worktrees/codex-delegated-x",
+      preview: true,
+      include_patch: true,
+      patch_max_bytes: 60000,
+    }).success).toBe(true);
+    expect(claudeApplyInputSchema.safeParse({
+      cwd: "/repo",
+      worktree_path: ".claude/worktrees/codex-delegated-x",
+      preview: true,
+      include_patch: true,
+    }).success).toBe(true);
+  });
+
+  it("rejects patch_max_bytes < 1024 and > 500000", () => {
+    expect(claudeApplyInputSchema.safeParse({
+      cwd: "/repo",
+      worktree_path: ".claude/worktrees/codex-delegated-x",
+      include_patch: true,
+      patch_max_bytes: 1023,
+    }).success).toBe(false);
+    expect(claudeApplyInputSchema.safeParse({
+      cwd: "/repo",
+      worktree_path: ".claude/worktrees/codex-delegated-x",
+      include_patch: true,
+      patch_max_bytes: 500001,
+    }).success).toBe(false);
+  });
+
+  it("still rejects preview=true with cleanup=true even when include_patch is set", () => {
+    expect(claudeApplyInputSchema.safeParse({
+      cwd: "/repo",
+      worktree_path: ".claude/worktrees/codex-delegated-x",
+      preview: true,
+      cleanup: true,
+      include_patch: true,
+    }).success).toBe(false);
+  });
+
   it("validates run inspect inputs", () => {
     expect(claudeRunInspectInputSchema.safeParse({ cwd: "/repo", run_id: "abc" }).success).toBe(true);
     expect(claudeRunInspectInputSchema.safeParse({ cwd: "/repo", run_id: "" }).success).toBe(false);

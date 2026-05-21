@@ -1,6 +1,6 @@
 import { writeFile, mkdir, readFile, readdir, stat, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import path from "node:path";
 import { execCapture } from "./guard.js";
 import {
@@ -2000,6 +2000,76 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
     return finish({ applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts, error: "Main workspace has uncommitted or unsupported changes; apply refused", preview: input.preview === true, planned_changes: plannedChanges });
   }
 
+  // Patch generation for preview-with-patch mode
+  let patchResult: {
+    patch?: string;
+    patch_truncated?: boolean;
+    patch_path?: string;
+    diff_sha256?: string;
+    patch_bytes?: number;
+    untracked_not_in_patch?: boolean;
+  } = {};
+
+  const patchMaxBytes = input.patch_max_bytes ?? 60000;
+
+  if (input.include_patch === true) {
+    let fullPatch = "";
+    try {
+      fullPatch = await execCapture("git", ["diff", "--binary", baseCommit, "--", ...pathspecs], {
+        cwd: wtReal,
+        timeoutMs: 30000,
+      });
+    } catch (err) {
+      return finish({
+        applied_files: [],
+        diff_stat: diffStat,
+        cleanup_performed: false,
+        conflicts,
+        error: `Patch generation failed: ${err instanceof Error ? err.message : String(err)}`,
+        preview: input.preview === true,
+        planned_changes: plannedChanges,
+      });
+    }
+
+    if (fullPatch.trim()) {
+      const patchBuf = Buffer.from(fullPatch, "utf8");
+      const fullBytes = patchBuf.byteLength;
+      const sha256 = createHash("sha256").update(patchBuf).digest("hex");
+
+      patchResult.diff_sha256 = sha256;
+      patchResult.patch_bytes = fullBytes;
+
+      if (fullBytes <= patchMaxBytes) {
+        patchResult.patch = fullPatch;
+        patchResult.patch_truncated = false;
+      } else {
+        const patchesDir = path.join(input.cwd, ".claude", "patches");
+        await mkdir(patchesDir, { recursive: true });
+        const patchPath = `.claude/patches/${runId}.patch`;
+        await writeFile(path.join(input.cwd, patchPath), fullPatch, "utf8");
+        patchResult.patch_truncated = true;
+        patchResult.patch_path = patchPath;
+      }
+    } else {
+      patchResult.diff_sha256 = createHash("sha256").update("").digest("hex");
+      patchResult.patch_bytes = 0;
+      patchResult.patch_truncated = false;
+    }
+
+    // Detect untracked files: any file from untrackedStatus that maps to "??"
+    // in raw porcelain is not covered by git diff.
+    if (untrackedStatus) {
+      const rawEntries = untrackedStatus.split("\0").filter(Boolean);
+      const hasUntracked = rawEntries.some((entry) => {
+        const code = entry.slice(0, 2);
+        return code === "??";
+      });
+      if (hasUntracked) {
+        patchResult.untracked_not_in_patch = true;
+      }
+    }
+  }
+
   if (input.preview) {
     return finish({
       applied_files: [],
@@ -2008,6 +2078,7 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
       conflicts: [],
       preview: true,
       planned_changes: plannedChanges,
+      ...patchResult,
     });
   }
 

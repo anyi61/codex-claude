@@ -53,7 +53,7 @@ One Message To Codex：
 - **委托读取/审查/写入任务** — 从 Codex 到 Claude Code
 - **隔离的 git worktree 执行** — 写入任务在独立的 worktree 中运行，不影响主工作区
 - **节省 Token 的内联等待** — `claude_task` 默认阻塞等待结果，减少模型往返
-- **应用前预览** — 在变更落地到主工作区前预览 worktree diff
+- **应用前预览** — 在变更落地到主工作区前预览 worktree diff，支持生成二进制 git diff patch
 - **审查门禁** — 可选的 stop-hook，在终端状态转换前提示审查
 
 ## 安装
@@ -221,6 +221,7 @@ enabled_tools = ["claude_status", "claude_runs", "claude_run_inspect", "claude_w
 - **应用安全：** `preview=true` 不会修改主工作区。非预览模式的 `claude_apply` 需要用户确认后设置 `confirmed_by_user=true`。
 - **无效组合：** `preview=true` + `cleanup=true` 会被拒绝——预览不应删除 worktree。
 - **下一步操作：** `claude_result` 和已完成的内联等待仅建议预览操作（`preview=true`），绝不直接建议非预览应用。
+- **Diff patch 预览：** 使用 `include_patch=true` 生成包含 `diff --git` 内容的二进制 git diff patch。patch 覆盖 tracked 的已提交和未提交变更。patch 过大时（超出 `patch_max_bytes`，默认 60000，范围 1024–500000），完整 patch 写入 `.claude/patches/<runId>.patch`，结果中返回 `patch_truncated=true`、`patch_path` 和 `diff_sha256`（完整 patch 的 SHA-256）。注意：git diff 不包括未跟踪文件，此时 `untracked_not_in_patch=true` 会在 planned_changes 包含未跟踪文件时设置。
 
 ## 配置
 
