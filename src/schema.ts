@@ -29,6 +29,8 @@ export interface ClaudeReviewInput {
   files?: string[];
   timeout_sec?: number;
   max_turns?: number;
+  reviewed_run_id?: string;
+  reviewed_worktree_path?: string;
 }
 
 export interface ClaudeImplementInput {
@@ -67,6 +69,8 @@ export interface ClaudeTaskInput {
   diff?: string;
   dirty_policy?: "ask" | "committed" | "snapshot";
   security_profile?: SecurityProfile;
+  reviewed_run_id?: string;
+  reviewed_worktree_path?: string;
 }
 
 export type SecurityProfile = "strict" | "default" | "permissive";
@@ -279,6 +283,11 @@ export interface ReviewGateState {
   updated_at?: string;
   last_write_at?: string;
   last_review_at?: string;
+  pending_activity?: "write" | "apply";
+  pending_run_id?: string;
+  pending_worktree_path?: string;
+  pending_fingerprint?: string;
+  last_cleared_by_review_run_id?: string;
 }
 
 export interface ClaudeReviewGateResult extends ReviewGateState {
@@ -611,6 +620,8 @@ export const claudeReviewInputSchema = z.object({
   files: filesSchema,
   timeout_sec: timeoutSchema.default(180),
   max_turns: maxTurnsSchema.optional(),
+  reviewed_run_id: z.string().trim().min(1).optional(),
+  reviewed_worktree_path: z.string().trim().min(1).optional(),
 }).strict();
 
 export const claudeImplementInputSchema = z.object({
@@ -652,6 +663,8 @@ export const claudeTaskInputSchema = z.object({
   diff: z.string().optional(),
   dirty_policy: dirtyPolicySchema,
   security_profile: securityProfileSchema,
+  reviewed_run_id: z.string().trim().min(1).optional(),
+  reviewed_worktree_path: z.string().trim().min(1).optional(),
 }).strict().refine((value) => value.mode !== "read" || !value.resume_latest, {
   message: "resume_latest is only supported for write mode",
   path: ["resume_latest"],

@@ -4157,3 +4157,245 @@ describe("claude cli argument construction", () => {
     vi.resetModules();
   });
 });
+
+describe("review gate metadata integration", () => {
+  it("runClaudeReview with reviewed_run_id clears matching pending state", async () => {
+    const { repo } = await createGitRepoFixture("codex-review-clear-match-");
+    const stateDir = path.join(path.dirname(repo), ".codex-claude-delegate");
+    process.chdir(path.dirname(repo));
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = path.join(stateDir, "runs");
+
+    // Enable review gate and set pending metadata
+    const { manageClaudeReviewGate, markReviewGatePending } = await import("../src/review-gate.js");
+    await manageClaudeReviewGate({ cwd: repo, action: "enable" });
+    await markReviewGatePending(repo, {
+      activity: "write",
+      run_id: "run-implement-123",
+      worktree_path: ".claude/worktrees/codex-delegated-abc",
+    });
+
+    // Mock claude spawn to succeed
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      const spawnMock = vi.fn((bin: string, args: string[], options: unknown) => {
+        if (bin !== "claude") return actual.spawn(bin, args, options as never);
+        const stdout = JSON.stringify({
+          structured_output: { findings: "ok", recommendations: "none", severity: "none" },
+        });
+        return createClaudeSpawnResult(stdout, "", 0);
+      });
+      return { ...actual, spawn: spawnMock };
+    });
+    vi.resetModules();
+
+    const reloaded = await import("../src/claude-cli.js");
+    await reloaded.runClaudeReview({
+      cwd: repo,
+      task: "Review this.",
+      reviewed_run_id: "run-implement-123",
+    }, "review-run-match");
+
+    const configRaw = await readFile(path.join(repo, ".codex-claude-delegate", "review-gate.json"), "utf8");
+    const config = JSON.parse(configRaw);
+    expect(config.pending_review).toBe(false);
+    expect(config.pending_run_id).toBeUndefined();
+    expect(config.last_cleared_by_review_run_id).toBe("review-run-match");
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  });
+
+  it("runClaudeReview without reviewed_run_id does not clear pending state", async () => {
+    const { repo } = await createGitRepoFixture("codex-review-no-clear-");
+    const stateDir = path.join(path.dirname(repo), ".codex-claude-delegate");
+    process.chdir(path.dirname(repo));
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = path.join(stateDir, "runs");
+
+    const { manageClaudeReviewGate, markReviewGatePending } = await import("../src/review-gate.js");
+    await manageClaudeReviewGate({ cwd: repo, action: "enable" });
+    await markReviewGatePending(repo, {
+      activity: "write",
+      run_id: "run-implement-456",
+    });
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      const spawnMock = vi.fn((bin: string, args: string[], options: unknown) => {
+        if (bin !== "claude") return actual.spawn(bin, args, options as never);
+        const stdout = JSON.stringify({
+          structured_output: { findings: "ok", recommendations: "none", severity: "none" },
+        });
+        return createClaudeSpawnResult(stdout, "", 0);
+      });
+      return { ...actual, spawn: spawnMock };
+    });
+    vi.resetModules();
+
+    const reloaded = await import("../src/claude-cli.js");
+    await reloaded.runClaudeReview({
+      cwd: repo,
+      task: "Review this.",
+      // No reviewed_run_id
+    }, "review-run-no-binding");
+
+    const configRaw = await readFile(path.join(repo, ".codex-claude-delegate", "review-gate.json"), "utf8");
+    const config = JSON.parse(configRaw);
+    expect(config.pending_review).toBe(true);
+    expect(config.pending_run_id).toBe("run-implement-456");
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  });
+
+  it("runClaudeReview with wrong reviewed_run_id does not clear pending state", async () => {
+    const { repo } = await createGitRepoFixture("codex-review-wrong-id-");
+    const stateDir = path.join(path.dirname(repo), ".codex-claude-delegate");
+    process.chdir(path.dirname(repo));
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = path.join(stateDir, "runs");
+
+    const { manageClaudeReviewGate, markReviewGatePending } = await import("../src/review-gate.js");
+    await manageClaudeReviewGate({ cwd: repo, action: "enable" });
+    await markReviewGatePending(repo, {
+      activity: "write",
+      run_id: "run-implement-789",
+    });
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      const spawnMock = vi.fn((bin: string, args: string[], options: unknown) => {
+        if (bin !== "claude") return actual.spawn(bin, args, options as never);
+        const stdout = JSON.stringify({
+          structured_output: { findings: "ok", recommendations: "none", severity: "none" },
+        });
+        return createClaudeSpawnResult(stdout, "", 0);
+      });
+      return { ...actual, spawn: spawnMock };
+    });
+    vi.resetModules();
+
+    const reloaded = await import("../src/claude-cli.js");
+    await reloaded.runClaudeReview({
+      cwd: repo,
+      task: "Review this.",
+      reviewed_run_id: "wrong-run-id",
+    }, "review-run-wrong");
+
+    const configRaw = await readFile(path.join(repo, ".codex-claude-delegate", "review-gate.json"), "utf8");
+    const config = JSON.parse(configRaw);
+    expect(config.pending_review).toBe(true);
+    expect(config.pending_run_id).toBe("run-implement-789");
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  });
+
+  it("successful non-preview apply with applied files sets pending_activity=apply and pending_run_id", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-pending-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const logDir = path.join(stateDir, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+    const worktreeRel = ".claude/worktrees/codex-delegated-apply-pending";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+    await writeFile(path.join(logDir, "apply-pending-run.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["README.md"],
+        scope: { requested_files: ["README.md"], out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 1, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    // Enable review gate
+    const { manageClaudeReviewGate } = await import("../src/review-gate.js");
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const { manageClaudeReviewGate: manageGate2 } = await import("../src/claude-cli.js");
+    await manageGate2({ cwd: repo, action: "enable" });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      confirmed_by_user: true,
+    }, "apply-run-id-test");
+
+    expect(result.applied_files).toEqual(["README.md"]);
+    expect(result.error).toBeUndefined();
+
+    const configRaw = await readFile(path.join(repo, ".codex-claude-delegate", "review-gate.json"), "utf8");
+    const config = JSON.parse(configRaw);
+    expect(config.pending_review).toBe(true);
+    expect(config.pending_activity).toBe("apply");
+    expect(config.pending_run_id).toBe("apply-run-id-test");
+
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("preview apply does not set pending_activity", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-preview-no-pending-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const logDir = path.join(stateDir, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+    const worktreeRel = ".claude/worktrees/codex-delegated-preview-no-pending";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+    await writeFile(path.join(logDir, "preview-no-pending-run.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["README.md"],
+        scope: { requested_files: ["README.md"], out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 1, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    await reloaded.manageClaudeReviewGate({ cwd: repo, action: "enable" });
+
+    const result = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+    }, "preview-no-pending-run");
+
+    expect(result.preview).toBe(true);
+    expect(result.applied_files).toEqual([]);
+
+    const configRaw = await readFile(path.join(repo, ".codex-claude-delegate", "review-gate.json"), "utf8");
+    const config = JSON.parse(configRaw);
+    expect(config.pending_review).toBe(false);
+    expect(config.pending_activity).toBeUndefined();
+
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+});

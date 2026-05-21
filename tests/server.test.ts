@@ -513,8 +513,65 @@ describe("server background job handlers", () => {
       files: ["README.md"],
       timeout_sec: 180,
       max_turns: undefined,
+      reviewed_run_id: undefined,
+      reviewed_worktree_path: undefined,
     });
     expect((payload.job as Record<string, unknown>).job_id).toBe("job-review-default");
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("forwards reviewed_run_id and reviewed_worktree_path through claude_review", async () => {
+    startBackgroundReviewMock.mockResolvedValue({
+      job: { job_id: "job-review-bound", type: "review", status: "queued" },
+    });
+
+    const result = await handleToolCall("claude_review", {
+      cwd: "/repo/input",
+      task: "review this",
+      reviewed_run_id: "run-implement-123",
+      reviewed_worktree_path: ".claude/worktrees/codex-delegated-abc",
+    });
+    parsePayload(result);
+
+    expect(startBackgroundReviewMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: "/repo/resolved",
+        task: "review this",
+        reviewed_run_id: "run-implement-123",
+        reviewed_worktree_path: ".claude/worktrees/codex-delegated-abc",
+      }),
+    );
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("forwards reviewed_run_id and reviewed_worktree_path through claude_task review mode", async () => {
+    runClaudeTaskMock.mockResolvedValue({
+      delegated_mode: "review",
+      summary: "review ok",
+      status: "success",
+      completed_inline: true,
+      next_actions: [],
+    });
+
+    const result = await handleToolCall("claude_task", {
+      cwd: "/repo/input",
+      task: "review this",
+      mode: "review",
+      reviewed_run_id: "run-implement-456",
+      reviewed_worktree_path: ".claude/worktrees/codex-delegated-def",
+    });
+    parsePayload(result);
+
+    expect(runClaudeTaskMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: "/repo/resolved",
+        task: "review this",
+        mode: "review",
+        reviewed_run_id: "run-implement-456",
+        reviewed_worktree_path: ".claude/worktrees/codex-delegated-def",
+      }),
+      expect.any(String),
+    );
     expect(result.isError).toBeUndefined();
   });
 

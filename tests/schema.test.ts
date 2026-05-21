@@ -364,6 +364,57 @@ describe("schema definitions", () => {
     expect(claudeReviewGateInputSchema.safeParse({ cwd: "/repo", action: "disable" }).success).toBe(true);
     expect(claudeReviewGateInputSchema.safeParse({ cwd: "/repo", action: "bad" }).success).toBe(false);
   });
+
+  it("accepts reviewed_run_id and reviewed_worktree_path on claudeReviewInputSchema", () => {
+    expect(claudeReviewInputSchema.safeParse({
+      cwd: "/repo",
+      task: "review this",
+      reviewed_run_id: "run-abc123",
+      reviewed_worktree_path: ".claude/worktrees/codex-delegated-abc",
+    }).success).toBe(true);
+    expect(claudeReviewInputSchema.safeParse({
+      cwd: "/repo",
+      task: "review this",
+      reviewed_run_id: "run-abc123",
+    }).success).toBe(true);
+    expect(claudeReviewInputSchema.safeParse({
+      cwd: "/repo",
+      task: "review this",
+      reviewed_worktree_path: ".claude/worktrees/codex-delegated-abc",
+    }).success).toBe(true);
+    expect(claudeReviewInputSchema.safeParse({
+      cwd: "/repo",
+      task: "review this",
+      reviewed_run_id: "",
+    }).success).toBe(false);
+    expect(claudeReviewInputSchema.safeParse({
+      cwd: "/repo",
+      task: "review this",
+      reviewed_worktree_path: "",
+    }).success).toBe(false);
+  });
+
+  it("accepts reviewed_run_id and reviewed_worktree_path on claudeTaskInputSchema", () => {
+    expect(claudeTaskInputSchema.safeParse({
+      cwd: "/repo",
+      task: "review this",
+      mode: "review",
+      reviewed_run_id: "run-abc123",
+      reviewed_worktree_path: ".claude/worktrees/codex-delegated-abc",
+    }).success).toBe(true);
+    expect(claudeTaskInputSchema.safeParse({
+      cwd: "/repo",
+      task: "review this",
+      mode: "review",
+      reviewed_run_id: "run-abc123",
+    }).success).toBe(true);
+    expect(claudeTaskInputSchema.safeParse({
+      cwd: "/repo",
+      task: "review this",
+      mode: "review",
+      reviewed_run_id: "",
+    }).success).toBe(false);
+  });
 });
 
 describe("schema-to-tool-definition contract", () => {

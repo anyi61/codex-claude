@@ -88,7 +88,26 @@ async function writeReviewGateState(cwd: string, enabled: boolean): Promise<Revi
   return next;
 }
 
-export async function markReviewGatePending(cwd: string, pending: boolean, activity: "write" | "review"): Promise<void> {
+export interface ReviewGatePendingMetadata {
+  activity: "write" | "apply";
+  run_id: string;
+  worktree_path?: string;
+  fingerprint?: string;
+}
+
+export interface ClearReviewGateInput {
+  review_run_id: string;
+  reviewed_run_id?: string;
+  reviewed_worktree_path?: string;
+  reviewed_fingerprint?: string;
+}
+
+export interface ClearReviewGateResult {
+  cleared: boolean;
+  reason: string;
+}
+
+export async function markReviewGatePending(cwd: string, metadata: ReviewGatePendingMetadata): Promise<void> {
   const current = await readReviewGateState(cwd);
   if (!current?.enabled) return;
   const pathCheck = resolveRepoLocalPath(cwd, REVIEW_GATE_RELATIVE_PATH);
@@ -102,13 +121,65 @@ export async function markReviewGatePending(cwd: string, pending: boolean, activ
     hook_manifest_path: getHookManifestPath(),
     hook_script_path: getHookScriptPath(),
     hook_installed: existsSync(getHookManifestPath()) && existsSync(getHookScriptPath()),
-    pending_review: pending,
+    pending_review: true,
+    pending_activity: metadata.activity,
+    pending_run_id: metadata.run_id,
+    pending_worktree_path: metadata.worktree_path,
+    pending_fingerprint: metadata.fingerprint,
     updated_at: now,
-    last_write_at: activity === "write" ? now : current.last_write_at,
-    last_review_at: activity === "review" ? now : current.last_review_at,
+    last_write_at: now,
   };
   await mkdir(path.dirname(pathCheck.resolved), { recursive: true });
   await writeFile(pathCheck.resolved, JSON.stringify(next, null, 2), "utf8");
+}
+
+export async function clearReviewGatePendingIfMatches(cwd: string, input: ClearReviewGateInput): Promise<ClearReviewGateResult> {
+  const current = await readReviewGateState(cwd);
+  if (!current?.enabled) {
+    return { cleared: false, reason: "gate_not_enabled" };
+  }
+  if (!current.pending_review) {
+    return { cleared: false, reason: "no_pending" };
+  }
+
+  const hasReviewedBinding = !!input.reviewed_run_id || !!input.reviewed_worktree_path || !!input.reviewed_fingerprint;
+  if (!hasReviewedBinding) {
+    return { cleared: false, reason: "no_binding" };
+  }
+
+  if (input.reviewed_run_id && input.reviewed_run_id !== current.pending_run_id) {
+    return { cleared: false, reason: "run_id_mismatch" };
+  }
+  if (input.reviewed_worktree_path && input.reviewed_worktree_path !== current.pending_worktree_path) {
+    return { cleared: false, reason: "worktree_path_mismatch" };
+  }
+  if (input.reviewed_fingerprint && input.reviewed_fingerprint !== current.pending_fingerprint) {
+    return { cleared: false, reason: "fingerprint_mismatch" };
+  }
+
+  const pathCheck = resolveRepoLocalPath(cwd, REVIEW_GATE_RELATIVE_PATH);
+  if (!pathCheck.ok) {
+    throw new Error(pathCheck.error);
+  }
+  const now = new Date().toISOString();
+  const next: ReviewGateState = {
+    ...current,
+    config_path: pathCheck.resolved,
+    hook_manifest_path: getHookManifestPath(),
+    hook_script_path: getHookScriptPath(),
+    hook_installed: existsSync(getHookManifestPath()) && existsSync(getHookScriptPath()),
+    pending_review: false,
+    pending_activity: undefined,
+    pending_run_id: undefined,
+    pending_worktree_path: undefined,
+    pending_fingerprint: undefined,
+    last_cleared_by_review_run_id: input.review_run_id,
+    updated_at: now,
+    last_review_at: now,
+  };
+  await mkdir(path.dirname(pathCheck.resolved), { recursive: true });
+  await writeFile(pathCheck.resolved, JSON.stringify(next, null, 2), "utf8");
+  return { cleared: true, reason: "cleared" };
 }
 
 async function ensureReviewGateHookManifest(): Promise<void> {
@@ -180,6 +251,11 @@ function buildReviewGateState(cwd: string, state: Partial<ReviewGateState> | nul
     updated_at: state?.updated_at,
     last_write_at: state?.last_write_at,
     last_review_at: state?.last_review_at,
+    pending_activity: state?.pending_activity,
+    pending_run_id: state?.pending_run_id,
+    pending_worktree_path: state?.pending_worktree_path,
+    pending_fingerprint: state?.pending_fingerprint,
+    last_cleared_by_review_run_id: state?.last_cleared_by_review_run_id,
   };
 }
 

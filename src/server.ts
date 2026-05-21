@@ -173,6 +173,8 @@ const BASE_TOOL_DEFINITIONS = [
         diff: { type: "string", description: "Diff to review. Presence strongly biases auto mode toward review." },
         dirty_policy: { type: "string", enum: ["ask", "committed", "snapshot"], description: "Write-mode handling for uncommitted main-workspace changes: ask (default), committed (ignore dirty changes and use HEAD), or snapshot (copy dirty files into the delegated worktree)." },
         security_profile: { type: "string", enum: ["strict", "default", "permissive"], description: "Write-mode command allowlist profile. default is conservative and does not allow npx; permissive restores broader local command flexibility." },
+        reviewed_run_id: { type: "string", description: "Bind this review to a specific implement/apply run id for review-gate clearing." },
+        reviewed_worktree_path: { type: "string", description: "Bind this review to a specific worktree path for review-gate clearing." },
       },
     },
   },
@@ -228,6 +230,8 @@ const BASE_TOOL_DEFINITIONS = [
         files: { type: "array", items: { type: "string" }, description: "Specific files to focus on" },
         timeout_sec: { type: "number", description: "Timeout in seconds (default 180)" },
         max_turns: { type: "number", description: "Maximum Claude turns for this review. Omitted means no explicit turn cap." },
+        reviewed_run_id: { type: "string", description: "Bind this review to a specific implement/apply run id for review-gate clearing." },
+        reviewed_worktree_path: { type: "string", description: "Bind this review to a specific worktree path for review-gate clearing." },
       },
     },
   },
@@ -808,7 +812,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
       case "claude_review": {
         const parsed = claudeReviewInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, diff, instruction_files, files, timeout_sec, max_turns } = parsed.data;
+        const { task, cwd, diff, instruction_files, files, timeout_sec, max_turns, reviewed_run_id, reviewed_worktree_path } = parsed.data;
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
@@ -817,7 +821,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
         if (!fileCheck.ok) return errorResult(fileCheck.error!);
 
         return jsonResult(await startBackgroundReview(
-          { task, cwd: check.resolved, diff, instruction_files, files, timeout_sec, max_turns },
+          { task, cwd: check.resolved, diff, instruction_files, files, timeout_sec, max_turns, reviewed_run_id, reviewed_worktree_path },
         ));
       }
 

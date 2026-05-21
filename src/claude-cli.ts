@@ -133,9 +133,10 @@ import {
   createTaskFingerprint,
   manageClaudeReviewGate,
   markReviewGatePending,
+  clearReviewGatePendingIfMatches,
   runClaudeSetup as executeReviewGateSetup,
 } from "./review-gate.js";
-export { manageClaudeReviewGate, markReviewGatePending, createTaskFingerprint };
+export { manageClaudeReviewGate, markReviewGatePending, clearReviewGatePendingIfMatches, createTaskFingerprint };
 
 // Test-only overrides for inline wait timing (never read from env in production)
 export const __test = backgroundJobsTestState;
@@ -465,6 +466,8 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         diff: input.diff,
         instruction_files: instructionFiles,
         timeout_sec: INTERNAL_CLAUDE_TIMEOUT_SEC,
+        reviewed_run_id: input.reviewed_run_id,
+        reviewed_worktree_path: input.reviewed_worktree_path,
       });
     } else {
       const implementResult = await startBackgroundImplement({
@@ -649,9 +652,7 @@ export async function enqueueBackgroundJob(input: {
 }
 
 export async function startBackgroundReview(input: ClaudeReviewInput): Promise<BackgroundJobEnqueueResult> {
-  const queued = await startBackgroundReviewCore(input);
-  await markReviewGatePending(input.cwd, false, "review").catch(() => {});
-  return queued;
+  return startBackgroundReviewCore(input);
 }
 
 export async function startBackgroundQuery(input: ClaudeQueryInput): Promise<BackgroundJobEnqueueResult> {
@@ -665,15 +666,11 @@ export async function startBackgroundImplement(input: ClaudeImplementInput): Pro
       return dirtyNeedsUserResult(input, dirtyFiles, requestedFiles);
     }
   }
-  const queued = await startBackgroundImplementCore(input);
-  await markReviewGatePending(input.cwd, true, "write").catch(() => {});
-  return queued;
+  return startBackgroundImplementCore(input);
 }
 
 export async function startBackgroundApply(input: ClaudeApplyInput): Promise<BackgroundJobEnqueueResult> {
-  const queued = await startBackgroundApplyCore(input);
-  await markReviewGatePending(input.cwd, true, "write").catch(() => {});
-  return queued;
+  return startBackgroundApplyCore(input);
 }
 
 export async function startBackgroundCleanup(input: ClaudeCleanupInput): Promise<BackgroundJobEnqueueResult> {
@@ -1530,7 +1527,11 @@ export async function runClaudeReview(
   try {
     const { report, execution } = await spawnClaude(opts);
     await logRun(runId, { type: "review", input, report }, input.cwd);
-    await markReviewGatePending(input.cwd, false, "review").catch(() => {});
+    await clearReviewGatePendingIfMatches(input.cwd, {
+      review_run_id: runId,
+      reviewed_run_id: input.reviewed_run_id,
+      reviewed_worktree_path: input.reviewed_worktree_path,
+    }).catch(() => {});
     return makeEnvelope("success", report, execution, [], { claude_report: report });
   } catch (err) {
     await logRun(runId, { type: "review", input, error: (err as Error).message }, input.cwd);
@@ -1780,7 +1781,11 @@ export async function runClaudeImplement(
     ...recoveryWarnings,
     "Worktree is retained for inspection. After applying results, call claude_cleanup to remove old delegated worktrees.",
   ];
-  await markReviewGatePending(implementInput.cwd, true, "write").catch(() => {});
+  await markReviewGatePending(implementInput.cwd, {
+    activity: "write",
+    run_id: runId,
+    worktree_path: observed.worktree_path,
+  }).catch(() => {});
   return makeEnvelope(status, undefined, execution, warnings, {
     claude_report: report,
     server_observed: observed,
@@ -1821,7 +1826,11 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
       }, input.cwd).catch(() => {});
     }
     if (!result.error && input.preview !== true && result.applied_files.length > 0) {
-      await markReviewGatePending(input.cwd, true, "write").catch(() => {});
+      await markReviewGatePending(input.cwd, {
+        activity: "apply",
+        run_id: runId,
+        worktree_path: input.worktree_path,
+      }).catch(() => {});
     }
     return result;
   };
