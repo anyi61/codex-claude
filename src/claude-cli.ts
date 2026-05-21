@@ -57,12 +57,14 @@ import type {
   SessionLog,
   ToolEnvelope,
   SecurityProfile,
+  SensitiveFilePolicy,
 } from "./schema.js";
 import {
   QUERY_SCHEMA,
   REVIEW_SCHEMA,
   IMPLEMENT_SCHEMA,
   ImplementRunLogSchema,
+  buildSensitiveFileDenyPatterns,
   claudeApplyInputSchema,
   claudeCleanupInputSchema,
   claudeImplementInputSchema,
@@ -550,6 +552,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         task: input.task!,
         instruction_files: instructionFiles,
         timeout_sec: INTERNAL_CLAUDE_TIMEOUT_SEC,
+        sensitive_file_policy: input.sensitive_file_policy,
       });
     } else if (delegatedMode === "review") {
       queued = await startBackgroundReview({
@@ -560,6 +563,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         timeout_sec: INTERNAL_CLAUDE_TIMEOUT_SEC,
         reviewed_run_id: input.reviewed_run_id,
         reviewed_worktree_path: input.reviewed_worktree_path,
+        sensitive_file_policy: input.sensitive_file_policy,
       });
     } else {
       const implementResult = await startBackgroundImplement({
@@ -572,6 +576,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         resume_latest: input.resume_latest,
         dirty_policy: input.dirty_policy,
         security_profile: input.security_profile,
+        sensitive_file_policy: input.sensitive_file_policy,
         max_changed_files: input.max_changed_files,
       });
       if (!("job" in implementResult)) {
@@ -1164,6 +1169,7 @@ function readOnlyDisallowedTools(): string[] {
 function createQueryOptions(input: ClaudeQueryInput): ClaudeRunOptions {
   const effectiveMaxTurns = input.max_turns ?? (input.fast ? 2 : undefined);
   const effectiveTimeoutSec = input.timeout_sec ?? (input.fast ? 45 : 120);
+  const sfp = buildSensitiveFileDenyPatterns(input.sensitive_file_policy ?? "default");
   return {
     prompt: buildQueryPrompt(input),
     cwd: input.cwd,
@@ -1184,7 +1190,7 @@ function createQueryOptions(input: ClaudeQueryInput): ClaudeRunOptions {
       "Bash(tail *)",
       "Bash(cat *)",
     ],
-    disallowedTools: readOnlyDisallowedTools(),
+    disallowedTools: [...readOnlyDisallowedTools(), ...sfp.readDeny, ...sfp.grepGlobDeny, ...sfp.bashReadDeny],
     maxTurns: effectiveMaxTurns,
     timeoutSec: effectiveTimeoutSec,
     jsonSchema: QUERY_SCHEMA,
@@ -1192,6 +1198,7 @@ function createQueryOptions(input: ClaudeQueryInput): ClaudeRunOptions {
 }
 
 function createReviewOptions(input: ClaudeReviewInput): ClaudeRunOptions {
+  const sfp = buildSensitiveFileDenyPatterns(input.sensitive_file_policy ?? "default");
   return {
     prompt: buildReviewPrompt(input),
     cwd: input.cwd,
@@ -1206,7 +1213,7 @@ function createReviewOptions(input: ClaudeReviewInput): ClaudeRunOptions {
       "Bash(git show *)",
       "Bash(git blame *)",
     ],
-    disallowedTools: readOnlyDisallowedTools(),
+    disallowedTools: [...readOnlyDisallowedTools(), ...sfp.readDeny, ...sfp.grepGlobDeny, ...sfp.bashReadDeny],
     maxTurns: input.max_turns,
     timeoutSec: input.timeout_sec ?? 180,
     jsonSchema: REVIEW_SCHEMA,
@@ -1219,6 +1226,7 @@ function createImplementOptions(
   resumeSessionId?: string,
   forked?: boolean
 ): ClaudeRunOptions {
+  const sfp = buildSensitiveFileDenyPatterns(input.sensitive_file_policy ?? "default");
   return {
     prompt: buildImplementPrompt(input),
     cwd: input.cwd,
@@ -1226,6 +1234,9 @@ function createImplementOptions(
     allowedTools: implementAllowedTools(input.security_profile ?? "default"),
     disallowedTools: [
       ...DANGEROUS_DISALLOWED_TOOLS,
+      ...sfp.readDeny,
+      ...sfp.grepGlobDeny,
+      ...sfp.bashReadDeny,
       "Bash(git push --force *)",
       "Bash(git branch -D *)",
       "Bash(git reset --hard *)",

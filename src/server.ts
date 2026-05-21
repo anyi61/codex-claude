@@ -179,6 +179,7 @@ const BASE_TOOL_DEFINITIONS = [
         security_profile: { type: "string", enum: ["strict", "default", "permissive"], description: "Write-mode command allowlist profile. default is conservative and does not allow npx; permissive restores broader local command flexibility." },
         reviewed_run_id: { type: "string", description: "Bind this review to a specific implement/apply run id for review-gate clearing." },
         reviewed_worktree_path: { type: "string", description: "Bind this review to a specific worktree path for review-gate clearing." },
+        sensitive_file_policy: { type: "string", enum: ["default", "strict", "off"], description: "Controls sensitive-file deny rules. default blocks .env/.env.*/secrets/** reads; strict adds .pem/.key/.ssh/.aws/credentials and similar; off removes only sensitive-file denies (dangerous Bash denies remain)." },
       },
     },
   },
@@ -216,6 +217,7 @@ const BASE_TOOL_DEFINITIONS = [
           type: "boolean",
           description: "Control query session resume behavior. Defaults to true, but fast mode defaults to false.",
         },
+        sensitive_file_policy: { type: "string", enum: ["default", "strict", "off"], description: "Controls sensitive-file deny rules. default blocks .env/.env.*/secrets/** reads; strict adds .pem/.key/.ssh/.aws/credentials and similar; off removes only sensitive-file denies (dangerous Bash denies remain)." },
       },
     },
   },
@@ -236,6 +238,7 @@ const BASE_TOOL_DEFINITIONS = [
         max_turns: { type: "number", description: "Maximum Claude turns for this review. Omitted means no explicit turn cap." },
         reviewed_run_id: { type: "string", description: "Bind this review to a specific implement/apply run id for review-gate clearing." },
         reviewed_worktree_path: { type: "string", description: "Bind this review to a specific worktree path for review-gate clearing." },
+        sensitive_file_policy: { type: "string", enum: ["default", "strict", "off"], description: "Controls sensitive-file deny rules. default blocks .env/.env.*/secrets/** reads; strict adds .pem/.key/.ssh/.aws/credentials and similar; off removes only sensitive-file denies (dangerous Bash denies remain)." },
       },
     },
   },
@@ -262,6 +265,7 @@ const BASE_TOOL_DEFINITIONS = [
         worktreeName: { type: "string", description: "Optional delegated worktree name override" },
         dirty_policy: { type: "string", enum: ["ask", "committed", "snapshot"], description: "Handling for uncommitted main-workspace changes: ask (default), committed (ignore dirty changes and use HEAD), or snapshot (copy dirty files into the delegated worktree)." },
         security_profile: { type: "string", enum: ["strict", "default", "permissive"], description: "Command allowlist profile for implementation tasks. default excludes remote package execution paths such as npx; permissive allows broader local project commands." },
+        sensitive_file_policy: { type: "string", enum: ["default", "strict", "off"], description: "Controls sensitive-file deny rules. default blocks .env/.env.*/secrets/** reads; strict adds .pem/.key/.ssh/.aws/credentials and similar; off removes only sensitive-file denies (dangerous Bash denies remain)." },
       },
     },
   },
@@ -784,7 +788,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
       case "claude_query": {
         const parsed = claudeQueryInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, instruction_files, timeout_sec, max_turns, fast, resume } = parsed.data;
+        const { task, cwd, instruction_files, timeout_sec, max_turns, fast, resume, sensitive_file_policy } = parsed.data;
         const resolvedTimeout = timeout_sec ?? (fast ? 45 : 120);
         const resolvedMaxTurns = max_turns ?? (fast ? 2 : undefined);
 
@@ -802,6 +806,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
             max_turns: resolvedMaxTurns,
             fast,
             resume,
+            sensitive_file_policy,
           },
         ));
       }
@@ -809,7 +814,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
       case "claude_review": {
         const parsed = claudeReviewInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, diff, instruction_files, files, timeout_sec, max_turns, reviewed_run_id, reviewed_worktree_path } = parsed.data;
+        const { task, cwd, diff, instruction_files, files, timeout_sec, max_turns, reviewed_run_id, reviewed_worktree_path, sensitive_file_policy } = parsed.data;
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
@@ -818,14 +823,14 @@ export async function handleToolCall(name: string, args: unknown, runId = random
         if (!fileCheck.ok) return errorResult(fileCheck.error!);
 
         return jsonResult(await startBackgroundReview(
-          { task, cwd: check.resolved, diff, instruction_files, files, timeout_sec, max_turns, reviewed_run_id, reviewed_worktree_path },
+          { task, cwd: check.resolved, diff, instruction_files, files, timeout_sec, max_turns, reviewed_run_id, reviewed_worktree_path, sensitive_file_policy },
         ));
       }
 
       case "claude_implement": {
         const parsed = claudeImplementInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, files, constraints, timeout_sec, max_turns, session_key, fork_session, resume_latest, max_cost_usd, max_changed_files, worktreeName, dirty_policy, security_profile } = parsed.data;
+        const { task, cwd, files, constraints, timeout_sec, max_turns, session_key, fork_session, resume_latest, max_cost_usd, max_changed_files, worktreeName, dirty_policy, security_profile, sensitive_file_policy } = parsed.data;
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
@@ -856,6 +861,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
           worktreeName,
           dirty_policy,
           security_profile,
+          sensitive_file_policy,
         }));
       }
 

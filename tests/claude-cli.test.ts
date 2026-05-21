@@ -156,6 +156,81 @@ describe("claude cli argument construction", () => {
     expect(buildImplementArgs({ cwd: "/repo", task: "change" }).join("\0")).toMatch(/\b(Edit|Write)\b/);
   });
 
+  it("query args include default sensitive file Read deny patterns", () => {
+    const args = buildQueryArgs({ cwd: "/repo", task: "explain" });
+    expect(args).toContain("Read(./.env)");
+    expect(args).toContain("Read(./.env.*)");
+    expect(args).toContain("Read(./secrets/**)");
+  });
+
+  it("query args include default sensitive file Bash read-command deny patterns", () => {
+    const args = buildQueryArgs({ cwd: "/repo", task: "explain" });
+    expect(args).toContain("Bash(cat ./.env)");
+    expect(args).toContain("Bash(cat ./.env.*)");
+    expect(args).toContain("Bash(cat ./secrets/**)");
+    expect(args).toContain("Bash(head ./.env)");
+    expect(args).toContain("Bash(tail ./.env.*)");
+    expect(args).toContain("Bash(grep * ./.env)");
+    expect(args).toContain("Bash(grep * ./secrets/**)");
+  });
+
+  it("query args with off policy remove sensitive file denies but keep dangerous bash denies", () => {
+    const args = buildQueryArgs({ cwd: "/repo", task: "explain", sensitive_file_policy: "off" });
+    expect(args).not.toContain("Read(./.env)");
+    expect(args).not.toContain("Bash(cat ./.env)");
+    // Dangerous bash denies still present
+    expect(args).toContain("Bash(rm *)");
+    expect(args).toContain("Bash(sudo *)");
+  });
+
+  it("review args include default sensitive file deny patterns", () => {
+    const args = buildReviewArgs({ cwd: "/repo", task: "review this" });
+    expect(args).toContain("Read(./.env)");
+    expect(args).toContain("Read(./.env.*)");
+    expect(args).toContain("Read(./secrets/**)");
+    expect(args).toContain("Bash(cat ./.env)");
+  });
+
+  it("implement args include default sensitive file deny patterns", () => {
+    const args = buildImplementArgs({ cwd: "/repo", task: "change code" });
+    expect(args).toContain("Read(./.env)");
+    expect(args).toContain("Read(./.env.*)");
+    expect(args).toContain("Read(./secrets/**)");
+    expect(args).toContain("Bash(cat ./.env)");
+    expect(args).toContain("Bash(grep * ./.env.*)");
+    // Dangerous bash denies still present
+    expect(args).toContain("Bash(rm *)");
+    expect(args).toContain("Bash(sudo *)");
+  });
+
+  it("implement args with strict policy include broader secret store deny patterns", () => {
+    const args = buildImplementArgs({ cwd: "/repo", task: "change code", sensitive_file_policy: "strict" });
+    expect(args).toContain("Read(./.env)");
+    expect(args).toContain("Read(./**/*.pem)");
+    expect(args).toContain("Read(./**/*.key)");
+    expect(args).toContain("Read(./**/id_rsa*)");
+    expect(args).toContain("Read(./**/id_ed25519*)");
+    expect(args).toContain("Read(./.aws/**)");
+    expect(args).toContain("Read(./.ssh/**)");
+    expect(args).toContain("Read(./.gnupg/**)");
+    expect(args).toContain("Read(./.netrc)");
+    expect(args).toContain("Read(./.npmrc)");
+    expect(args).toContain("Read(./credentials*)");
+    // Dangerous bash denies still present
+    expect(args).toContain("Bash(rm *)");
+  });
+
+  it("implement args with off policy remove sensitive file denies but keep dangerous bash denies", () => {
+    const args = buildImplementArgs({ cwd: "/repo", task: "change code", sensitive_file_policy: "off" });
+    expect(args).not.toContain("Read(./.env)");
+    expect(args).not.toContain("Bash(cat ./.env)");
+    // Dangerous bash denies still present
+    expect(args).toContain("Bash(rm *)");
+    expect(args).toContain("Bash(sudo *)");
+    expect(args).toContain("Bash(git push --force *)");
+    expect(args).toContain("Bash(npm install *)");
+  });
+
   it("builds a lower-turn fast query prompt", () => {
     const args = buildQueryArgs({ cwd: "/repo", task: "explain", fast: true });
     const maxTurnsIndex = args.indexOf("--max-turns");

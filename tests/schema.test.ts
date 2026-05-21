@@ -3,6 +3,7 @@ import {
   IMPLEMENT_SCHEMA,
   QUERY_SCHEMA,
   REVIEW_SCHEMA,
+  buildSensitiveFileDenyPatterns,
   claudeApplyInputSchema,
   claudeImplementInputSchema,
   claudeJobCancelInputSchema,
@@ -141,6 +142,108 @@ describe("schema definitions", () => {
     expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", security_profile: "unsafe" }).success).toBe(false);
     expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "x", mode: "write", security_profile: "strict" }).success).toBe(true);
     expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "x", mode: "write", security_profile: "unsafe" }).success).toBe(false);
+  });
+
+  it("accepts sensitive_file_policy on implement, query, review, and task schemas", () => {
+    expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", sensitive_file_policy: "default" }).success).toBe(true);
+    expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", sensitive_file_policy: "strict" }).success).toBe(true);
+    expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", sensitive_file_policy: "off" }).success).toBe(true);
+    expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", sensitive_file_policy: "invalid" }).success).toBe(false);
+
+    expect(claudeQueryInputSchema.safeParse({ cwd: "/repo", task: "explain", sensitive_file_policy: "default" }).success).toBe(true);
+    expect(claudeQueryInputSchema.safeParse({ cwd: "/repo", task: "explain", sensitive_file_policy: "strict" }).success).toBe(true);
+    expect(claudeQueryInputSchema.safeParse({ cwd: "/repo", task: "explain", sensitive_file_policy: "off" }).success).toBe(true);
+    expect(claudeQueryInputSchema.safeParse({ cwd: "/repo", task: "explain", sensitive_file_policy: "invalid" }).success).toBe(false);
+
+    expect(claudeReviewInputSchema.safeParse({ cwd: "/repo", task: "review", sensitive_file_policy: "default" }).success).toBe(true);
+    expect(claudeReviewInputSchema.safeParse({ cwd: "/repo", task: "review", sensitive_file_policy: "off" }).success).toBe(true);
+    expect(claudeReviewInputSchema.safeParse({ cwd: "/repo", task: "review", sensitive_file_policy: "invalid" }).success).toBe(false);
+
+    expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "x", sensitive_file_policy: "default" }).success).toBe(true);
+    expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "x", sensitive_file_policy: "strict" }).success).toBe(true);
+    expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "x", sensitive_file_policy: "off" }).success).toBe(true);
+    expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "x", sensitive_file_policy: "invalid" }).success).toBe(false);
+  });
+
+  describe("buildSensitiveFileDenyPatterns", () => {
+    it("default policy returns Read/Grep/Glob deny patterns for .env/.env.*/secrets/** plus Bash read-command denies", () => {
+      const patterns = buildSensitiveFileDenyPatterns("default");
+      expect(patterns.readDeny).toEqual(expect.arrayContaining([
+        "Read(./.env)",
+        "Read(./.env.*)",
+        "Read(./**/.env)",
+        "Read(./**/.env.*)",
+        "Read(./secrets/**)",
+      ]));
+      expect(patterns.grepGlobDeny).toEqual(expect.arrayContaining([
+        "Grep(./.env)",
+        "Grep(./.env.*)",
+        "Grep(./**/.env)",
+        "Grep(./**/.env.*)",
+        "Grep(./secrets/**)",
+        "Glob(./.env)",
+        "Glob(./.env.*)",
+        "Glob(./**/.env)",
+        "Glob(./**/.env.*)",
+        "Glob(./secrets/**)",
+      ]));
+      expect(patterns.bashReadDeny).toEqual(expect.arrayContaining([
+        "Bash(cat ./.env)",
+        "Bash(cat ./.env.*)",
+        "Bash(cat ./secrets/**)",
+        "Bash(head ./.env)",
+        "Bash(head ./.env.*)",
+        "Bash(head ./secrets/**)",
+        "Bash(tail ./.env)",
+        "Bash(tail ./.env.*)",
+        "Bash(tail ./secrets/**)",
+        "Bash(grep * ./.env)",
+        "Bash(grep * ./.env.*)",
+        "Bash(grep * ./secrets/**)",
+      ]));
+    });
+
+    it("strict policy includes broader secret stores on top of default", () => {
+      const patterns = buildSensitiveFileDenyPatterns("strict");
+      // Still has all default patterns
+      expect(patterns.readDeny).toEqual(expect.arrayContaining(["Read(./.env)", "Read(./.env.*)", "Read(./secrets/**)"]));
+      // Adds broader secret store patterns
+      expect(patterns.readDeny).toEqual(expect.arrayContaining([
+        "Read(./**/*.pem)",
+        "Read(./**/*.key)",
+        "Read(./**/*.p12)",
+        "Read(./**/*.pfx)",
+        "Read(./**/id_rsa*)",
+        "Read(./**/id_ed25519*)",
+        "Read(./**/id_ecdsa*)",
+        "Read(./.aws/**)",
+        "Read(./**/.aws/**)",
+        "Read(./.ssh/**)",
+        "Read(./**/.ssh/**)",
+        "Read(./.gnupg/**)",
+        "Read(./**/.gnupg/**)",
+        "Read(./.kube/**)",
+        "Read(./**/.kube/**)",
+        "Read(./.docker/**)",
+        "Read(./**/.docker/**)",
+        "Read(./.netrc)",
+        "Read(./**/.netrc)",
+        "Read(./.npmrc)",
+        "Read(./**/.npmrc)",
+        "Read(./.pypirc)",
+        "Read(./**/.pypirc)",
+        "Read(./credentials*)",
+        "Read(./**/credentials*)",
+        "Read(./**/credential*)",
+      ]));
+    });
+
+    it("off policy removes all sensitive file deny patterns but keeps empty arrays", () => {
+      const patterns = buildSensitiveFileDenyPatterns("off");
+      expect(patterns.readDeny).toEqual([]);
+      expect(patterns.grepGlobDeny).toEqual([]);
+      expect(patterns.bashReadDeny).toEqual([]);
+    });
   });
 
 

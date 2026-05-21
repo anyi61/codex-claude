@@ -349,6 +349,7 @@ describe("server background job handlers", () => {
       task: "Explain auth flow",
       mode: "read",
       background: true,
+      sensitive_file_policy: "strict",
     });
     const payload = parsePayload(result);
 
@@ -359,6 +360,7 @@ describe("server background job handlers", () => {
       task: "Explain auth flow",
       mode: "read",
       background: true,
+      sensitive_file_policy: "strict",
     }), expect.any(String));
     expect(payload.delegated_mode).toBe("read");
     expect(result.isError).toBeUndefined();
@@ -608,6 +610,7 @@ describe("server background job handlers", () => {
       task: "implement this",
       files: ["README.md"],
       dirty_policy: "committed",
+      sensitive_file_policy: "off",
     });
     const payload = parsePayload(result);
 
@@ -629,6 +632,7 @@ describe("server background job handlers", () => {
       worktreeName: undefined,
       dirty_policy: "committed",
       security_profile: "default",
+      sensitive_file_policy: "off",
     });
     expect((payload.job as Record<string, unknown>).job_id).toBe("job-implement-default");
     expect(result.isError).toBeUndefined();
@@ -935,6 +939,18 @@ describe("server background job handlers", () => {
     const taskTool = TOOL_DEFINITIONS.find((tool) => tool.name === "claude_task");
     expect(taskTool?.inputSchema.properties).toHaveProperty("allowed_files");
     expect(taskTool?.inputSchema.properties).toHaveProperty("max_changed_files");
+  });
+
+  it("exposes sensitive_file_policy on claude_task, claude_query, claude_review, and claude_implement tool definitions", () => {
+    const taskTool = TOOL_DEFINITIONS.find((tool) => tool.name === "claude_task");
+    const queryTool = TOOL_DEFINITIONS.find((tool) => tool.name === "claude_query");
+    const reviewTool = TOOL_DEFINITIONS.find((tool) => tool.name === "claude_review");
+    const implementTool = TOOL_DEFINITIONS.find((tool) => tool.name === "claude_implement");
+
+    expect(taskTool?.inputSchema.properties).toHaveProperty("sensitive_file_policy");
+    expect(queryTool?.inputSchema.properties).toHaveProperty("sensitive_file_policy");
+    expect(reviewTool?.inputSchema.properties).toHaveProperty("sensitive_file_policy");
+    expect(implementTool?.inputSchema.properties).toHaveProperty("sensitive_file_policy");
   });
 
   it("rejects claude_task allowed_files outside cwd", async () => {

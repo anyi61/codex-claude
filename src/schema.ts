@@ -19,6 +19,7 @@ export interface ClaudeQueryInput {
   max_turns?: number;
   fast?: boolean;
   resume?: boolean;
+  sensitive_file_policy?: SensitiveFilePolicy;
 }
 
 export interface ClaudeReviewInput {
@@ -31,6 +32,7 @@ export interface ClaudeReviewInput {
   max_turns?: number;
   reviewed_run_id?: string;
   reviewed_worktree_path?: string;
+  sensitive_file_policy?: SensitiveFilePolicy;
 }
 
 export interface ClaudeImplementInput {
@@ -49,6 +51,7 @@ export interface ClaudeImplementInput {
   worktreeName?: string;
   dirty_policy?: "ask" | "committed" | "snapshot";
   security_profile?: SecurityProfile;
+  sensitive_file_policy?: SensitiveFilePolicy;
 }
 
 export type ClaudeTaskMode = "auto" | "read" | "review" | "write";
@@ -71,11 +74,14 @@ export interface ClaudeTaskInput {
   diff?: string;
   dirty_policy?: "ask" | "committed" | "snapshot";
   security_profile?: SecurityProfile;
+  sensitive_file_policy?: SensitiveFilePolicy;
   reviewed_run_id?: string;
   reviewed_worktree_path?: string;
 }
 
 export type SecurityProfile = "strict" | "default" | "permissive";
+
+export type SensitiveFilePolicy = "default" | "strict" | "off";
 
 export type ModeInferenceReason =
   | "explicit"
@@ -630,6 +636,7 @@ const constraintsSchema = z.array(z.string().trim().min(1)).optional();
 const worktreeNameSchema = z.string().regex(/^[A-Za-z0-9_-]+$/, "worktreeName may only contain letters, numbers, hyphens, and underscores").optional();
 const dirtyPolicySchema = z.enum(["ask", "committed", "snapshot"]).optional();
 const securityProfileSchema = z.enum(["strict", "default", "permissive"]).optional().default("default");
+const sensitiveFilePolicySchema = z.enum(["default", "strict", "off"]).optional();
 
 export const claudeStatusInputSchema = z.object({
   cwd: cwdSchema,
@@ -648,6 +655,7 @@ export const claudeQueryInputSchema = z.object({
   max_turns: maxTurnsSchema.optional(),
   fast: z.boolean().optional(),
   resume: z.boolean().optional(),
+  sensitive_file_policy: sensitiveFilePolicySchema,
 }).strict();
 
 export const claudeReviewInputSchema = z.object({
@@ -660,6 +668,7 @@ export const claudeReviewInputSchema = z.object({
   max_turns: maxTurnsSchema.optional(),
   reviewed_run_id: z.string().trim().min(1).optional(),
   reviewed_worktree_path: z.string().trim().min(1).optional(),
+  sensitive_file_policy: sensitiveFilePolicySchema,
 }).strict();
 
 export const claudeImplementInputSchema = z.object({
@@ -678,6 +687,7 @@ export const claudeImplementInputSchema = z.object({
   worktreeName: worktreeNameSchema,
   dirty_policy: dirtyPolicySchema,
   security_profile: securityProfileSchema,
+  sensitive_file_policy: sensitiveFilePolicySchema,
 }).strict().refine((value) => !value.fork_session || !!value.session_key, {
   message: "fork_session requires session_key",
   path: ["fork_session"],
@@ -703,6 +713,7 @@ export const claudeTaskInputSchema = z.object({
   diff: z.string().optional(),
   dirty_policy: dirtyPolicySchema,
   security_profile: securityProfileSchema,
+  sensitive_file_policy: sensitiveFilePolicySchema,
   reviewed_run_id: z.string().trim().min(1).optional(),
   reviewed_worktree_path: z.string().trim().min(1).optional(),
 }).strict().refine((value) => value.mode !== "read" || !value.resume_latest, {
@@ -808,6 +819,75 @@ export function validationErrorMessage(err: unknown): string {
     }).join("; ");
   }
   return err instanceof Error ? err.message : String(err);
+}
+
+// ---- Sensitive file deny patterns ----
+
+export interface SensitiveFileDenyPatterns {
+  readDeny: string[];
+  grepGlobDeny: string[];
+  bashReadDeny: string[];
+}
+
+const DEFAULT_SENSITIVE_PATHS = [
+  "./.env",
+  "./.env.*",
+  "./**/.env",
+  "./**/.env.*",
+  "./secrets/**",
+];
+
+const STRICT_EXTRA_PATHS = [
+  "./**/*.pem",
+  "./**/*.key",
+  "./**/*.p12",
+  "./**/*.pfx",
+  "./**/id_rsa*",
+  "./**/id_ed25519*",
+  "./**/id_ecdsa*",
+  "./.aws/**",
+  "./**/.aws/**",
+  "./.ssh/**",
+  "./**/.ssh/**",
+  "./.gnupg/**",
+  "./**/.gnupg/**",
+  "./.kube/**",
+  "./**/.kube/**",
+  "./.docker/**",
+  "./**/.docker/**",
+  "./.netrc",
+  "./**/.netrc",
+  "./.npmrc",
+  "./**/.npmrc",
+  "./.pypirc",
+  "./**/.pypirc",
+  "./credentials*",
+  "./**/credentials*",
+  "./**/credential*",
+];
+
+const BASH_READ_COMMANDS = ["cat", "head", "tail", "grep"];
+
+function buildDenyForPaths(paths: string[]): { readDeny: string[]; grepGlobDeny: string[]; bashReadDeny: string[] } {
+  const readDeny = paths.map((p) => `Read(${p})`);
+  const grepGlobDeny = [
+    ...paths.map((p) => `Grep(${p})`),
+    ...paths.map((p) => `Glob(${p})`),
+  ];
+  const bashReadDeny = BASH_READ_COMMANDS.flatMap((cmd) =>
+    paths.map((p) => cmd === "grep" ? `Bash(grep * ${p})` : `Bash(${cmd} ${p})`)
+  );
+  return { readDeny, grepGlobDeny, bashReadDeny };
+}
+
+export function buildSensitiveFileDenyPatterns(policy: SensitiveFilePolicy): SensitiveFileDenyPatterns {
+  if (policy === "off") {
+    return { readDeny: [], grepGlobDeny: [], bashReadDeny: [] };
+  }
+  const paths = policy === "strict"
+    ? [...DEFAULT_SENSITIVE_PATHS, ...STRICT_EXTRA_PATHS]
+    : DEFAULT_SENSITIVE_PATHS;
+  return buildDenyForPaths(paths);
 }
 
 // ---- JSON Schemas for --json-schema flag ----

@@ -98,6 +98,39 @@ rm *, rm -rf *, rm -r *, sudo *, curl *, wget *,
 chmod *, chown *, git push *, ssh *, scp *, nc *, netcat *
 ```
 
+#### 敏感文件 Deny 规则
+
+`sensitive_file_policy`（可选，默认 `"default"`）控制对敏感文件的读取 deny 规则，适用于所有模式（query/review/implement）。通过 `--disallowedTools` 注入 Claude Code CLI，基于官方 deny 语法：
+
+- `Read(./.env)` — 阻止 Read 工具访问 `.env`
+- `Read(./secrets/**)` — 阻止 Read 工具访问 secrets 目录下所有文件
+- `Bash(cat ./.env)` — 阻止 `cat ./.env` 命令
+- `Grep(./.env.*)` — 阻止 Grep 工具搜索 `.env.*` 文件
+
+**default（默认）** 阻止根目录或子目录中的 `.env`、`.env.*`，以及 `secrets/**` 的 Read/Grep/Glob 和 Bash 读取命令（cat/head/tail/grep）：
+
+```
+Read(./.env), Read(./.env.*), Read(./**/.env), Read(./**/.env.*), Read(./secrets/**)
+Grep(./.env), Grep(./.env.*), Grep(./**/.env), Grep(./**/.env.*), Grep(./secrets/**)
+Glob(./.env), Glob(./.env.*), Glob(./**/.env), Glob(./**/.env.*), Glob(./secrets/**)
+Bash(cat/head/tail ./.env), Bash(cat/head/tail ./**/.env), Bash(grep * ./.env), Bash(grep * ./**/.env)
+```
+
+**strict** 在 default 基础上额外阻止更广泛的秘密存储：
+
+```
+Read(./**/*.pem), Read(./**/*.key), Read(./**/*.p12), Read(./**/*.pfx),
+Read(./**/id_rsa*), Read(./**/id_ed25519*), Read(./**/id_ecdsa*),
+Read(./.aws/**), Read(./**/.aws/**), Read(./.ssh/**), Read(./**/.ssh/**),
+Read(./.gnupg/**), Read(./**/.gnupg/**), Read(./.kube/**), Read(./**/.kube/**),
+Read(./.docker/**), Read(./**/.docker/**),
+Read(./.netrc), Read(./**/.netrc), Read(./.npmrc), Read(./**/.npmrc),
+Read(./.pypirc), Read(./**/.pypirc), Read(./credentials*), Read(./**/credentials*), Read(./**/credential*)
+```
+（以及对应的 Grep/Glob/Bash 读取命令 deny）
+
+**off** 移除所有敏感文件 deny 规则，但 `rm *`/`sudo *` 等全局危险 Bash 命令的 deny 规则不受影响。
+
 #### 只读模式（query / review）允许的命令
 
 仅允许 `Read`、`Glob`、`Grep` 和只读 Bash 命令：
