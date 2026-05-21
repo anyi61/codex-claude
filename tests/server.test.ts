@@ -712,6 +712,64 @@ describe("server background job handlers", () => {
     );
   });
 
+  it("returns needs_user interaction when apply result has dirty_recovery_needed", async () => {
+    const runClaudeApply = (await import("../src/claude-cli.js")).runClaudeApply as ReturnType<typeof vi.fn>;
+    runClaudeApply.mockResolvedValue({
+      applied_files: [],
+      diff_stat: "",
+      cleanup_performed: false,
+      conflicts: [],
+      preview: false,
+      planned_changes: [{ status: "M", file: "file1.txt" }],
+      dirty_recovery_needed: true,
+      dirty_files: [{ file: "file1.txt", status: "rollback_restore_failed" }],
+      rollback_error: "ENOSPC during rollback",
+      error: "Apply failed for file2.txt: ENOSPC. Rollback also failed.",
+    });
+
+    const result = await handleToolCall("claude_apply", {
+      cwd: "/repo/input",
+      worktree_path: ".claude/worktrees/codex-delegated-x",
+      confirmed_by_user: true,
+    });
+    const payload = parsePayload(result);
+
+    expect(payload.dirty_recovery_needed).toBe(true);
+    expect(payload.dirty_files).toBeDefined();
+    expect(payload.rollback_error).toBe("ENOSPC during rollback");
+    expect(payload.interaction).toBeDefined();
+    const interaction = payload.interaction as Record<string, unknown>;
+    expect(interaction.state).toBe("needs_user");
+    expect(interaction.headline).toContain("rollback");
+  });
+
+  it("returns needs_user interaction when rollback succeeded but apply had error", async () => {
+    const runClaudeApply = (await import("../src/claude-cli.js")).runClaudeApply as ReturnType<typeof vi.fn>;
+    runClaudeApply.mockResolvedValue({
+      applied_files: [],
+      diff_stat: "",
+      cleanup_performed: false,
+      conflicts: [],
+      preview: false,
+      planned_changes: [{ status: "M", file: "file1.txt" }],
+      error: "Apply failed for file2.txt: ENOSPC: no space",
+    });
+
+    const result = await handleToolCall("claude_apply", {
+      cwd: "/repo/input",
+      worktree_path: ".claude/worktrees/codex-delegated-x",
+      confirmed_by_user: true,
+    });
+    const payload = parsePayload(result);
+
+    expect(payload.applied_files).toEqual([]);
+    expect(payload.error).toContain("ENOSPC");
+    expect(payload.interaction).toBeDefined();
+    const interaction = payload.interaction as Record<string, unknown>;
+    expect(interaction.state).toBe("needs_user");
+    expect(interaction.headline).not.toContain("Applied");
+  });
+
   it("routes claude_cleanup background requests through startBackgroundCleanup", async () => {
     startBackgroundCleanupMock.mockResolvedValue({
       job: { job_id: "job-cleanup", type: "cleanup", status: "queued" },

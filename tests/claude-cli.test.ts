@@ -2847,4 +2847,283 @@ describe("claude cli argument construction", () => {
     delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
     vi.resetModules();
   });
+
+  it("transactional apply: rolls back first file when second write fails", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-tx-apply-rb-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const logDir = path.join(stateDir, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "first.txt"), "original first\n");
+    await writeFile(path.join(repo, "second.txt"), "original second\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-tx-rb";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    // Modify both files in worktree to create real diff
+    await writeFile(path.join(worktree, "first.txt"), "modified first\n");
+    await writeFile(path.join(worktree, "second.txt"), "modified second\n");
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+    await writeFile(path.join(logDir, "tx-rb.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["first.txt", "second.txt"],
+        scope: { requested_files: undefined, out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 2, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+
+    // Inject FS ops that fail on second write (but not during backup phase)
+    const { __setTestFSOps, defaultFSOps } = await import("../src/transaction.js");
+    let applyWrites = 0;
+    __setTestFSOps({
+      ...defaultFSOps,
+      async writeFile(fp: string, data: Buffer): Promise<void> {
+        if (!fp.includes(".codex-claude-delegate")) {
+          applyWrites++;
+          if (applyWrites === 2) {
+            throw new Error("ENOSPC: no space");
+          }
+        }
+        return defaultFSOps.writeFile(fp, data);
+      },
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      confirmed_by_user: true,
+    }, "tx-apply-rb");
+
+    expect(result.error).toContain("ENOSPC");
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_recovery_needed).toBeUndefined();
+    // first.txt should be rolled back
+    expect(await readFile(path.join(repo, "first.txt"), "utf8")).toBe("original first\n");
+    // second.txt should be unchanged
+    expect(await readFile(path.join(repo, "second.txt"), "utf8")).toBe("original second\n");
+
+    __setTestFSOps(undefined);
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("transactional apply: rolls back written files when deletion fails", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-tx-apply-del-rb-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const logDir = path.join(stateDir, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "write.txt"), "original write\n");
+    await writeFile(path.join(repo, "remove.txt"), "will be removed\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-tx-del-rb";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await writeFile(path.join(worktree, "write.txt"), "modified write\n");
+    // Simulate deletion by removing the file from worktree
+    const { unlink } = await import("node:fs/promises");
+    await unlink(path.join(worktree, "remove.txt"));
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+    await writeFile(path.join(logDir, "tx-del-rb.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["write.txt", "remove.txt"],
+        scope: { requested_files: undefined, out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 2, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+
+    // Inject FS ops that fail on rm for remove.txt
+    const { __setTestFSOps, defaultFSOps } = await import("../src/transaction.js");
+    __setTestFSOps({
+      ...defaultFSOps,
+      async rm(target: string): Promise<void> {
+        if (target.includes("remove.txt")) {
+          throw new Error("EBUSY: resource busy");
+        }
+        return defaultFSOps.rm(target);
+      },
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      confirmed_by_user: true,
+    }, "tx-apply-del-rb");
+
+    expect(result.error).toContain("EBUSY");
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_recovery_needed).toBeUndefined();
+    // write.txt should be rolled back to original
+    expect(await readFile(path.join(repo, "write.txt"), "utf8")).toBe("original write\n");
+    // remove.txt should still exist (delete was the one that failed)
+    expect(existsSync(path.join(repo, "remove.txt"))).toBe(true);
+
+    __setTestFSOps(undefined);
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("transactional apply: dirty_recovery_needed when rollback itself fails", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-tx-apply-dirty-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const logDir = path.join(stateDir, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "file1.txt"), "original 1\n");
+    await writeFile(path.join(repo, "file2.txt"), "original 2\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-tx-dirty";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await writeFile(path.join(worktree, "file1.txt"), "modified 1\n");
+    await writeFile(path.join(worktree, "file2.txt"), "modified 2\n");
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+    await writeFile(path.join(logDir, "tx-dirty.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["file1.txt", "file2.txt"],
+        scope: { requested_files: undefined, out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 2, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+
+    // Inject FS ops that fail on second write AND on rollback write
+    const { __setTestFSOps, defaultFSOps } = await import("../src/transaction.js");
+    let applyWrites = 0;
+    let rollbackActive = false;
+    __setTestFSOps({
+      ...defaultFSOps,
+      async writeFile(fp: string, data: Buffer): Promise<void> {
+        if (!fp.includes(".codex-claude-delegate")) {
+          if (rollbackActive) {
+            // Fail all rollback writes
+            throw new Error("ENOSPC: disk full during rollback");
+          }
+          applyWrites++;
+          if (applyWrites === 2) {
+            rollbackActive = true;
+            throw new Error("ENOSPC: disk full");
+          }
+        }
+        return defaultFSOps.writeFile(fp, data);
+      },
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      confirmed_by_user: true,
+    }, "tx-apply-dirty");
+
+    expect(result.dirty_recovery_needed).toBe(true);
+    expect(result.error).toContain("Rollback also failed");
+    expect(result.applied_files).toEqual([]);
+    expect(result.rollback_error).toBeDefined();
+    expect(result.dirty_files).toBeDefined();
+    expect(result.dirty_files!.length).toBeGreaterThan(0);
+    // dirty_files should contain meaningful status
+    for (const d of result.dirty_files!) {
+      expect(d.file).toBeDefined();
+      expect(d.status).toMatch(/rollback_restore_failed|rollback_remove_failed/);
+    }
+
+    __setTestFSOps(undefined);
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("transactional apply: preview does not create backups or write files", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-tx-apply-preview-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const logDir = path.join(stateDir, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-tx-preview";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+    await writeFile(path.join(logDir, "tx-preview.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["README.md"],
+        scope: { requested_files: ["README.md"], out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 1, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+    }, "tx-apply-preview");
+
+    expect(preview.preview).toBe(true);
+    expect(preview.planned_changes).toEqual([{ status: "M", file: "README.md" }]);
+    expect(preview.applied_files).toEqual([]);
+    // File should NOT have been written
+    expect(await readFile(path.join(repo, "README.md"), "utf8")).toBe("# main\n");
+    // No backup dir should exist
+    const backupDir = path.join(repo, ".codex-claude-delegate", "apply-backups");
+    expect(existsSync(backupDir)).toBe(false);
+
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
 });

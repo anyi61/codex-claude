@@ -467,6 +467,11 @@ export interface ApplyPlannedChange {
   file: string;
 }
 
+export interface ApplyDirtyEntry {
+  file: string;
+  status: string; // "rollback_restore_failed" | "rollback_remove_failed"
+}
+
 export interface ClaudeApplyResult {
   applied_files: string[];
   diff_stat: string;
@@ -475,6 +480,9 @@ export interface ClaudeApplyResult {
   error?: string;
   preview?: boolean;
   planned_changes?: ApplyPlannedChange[];
+  dirty_recovery_needed?: boolean;
+  dirty_files?: ApplyDirtyEntry[];
+  rollback_error?: string;
 }
 
 export interface ClaudeCleanupInput {

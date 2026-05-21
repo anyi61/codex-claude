@@ -902,10 +902,12 @@ export async function handleToolCall(name: string, args: unknown, runId = random
         let applyInteraction: InteractionBlock;
         if (result.preview) {
           applyInteraction = { headline: "Delegated changes are ready for review.", state: "apply_preview", next_step: "Review planned_changes. If safe, ask the user whether to apply these changes." };
+        } else if (result.dirty_recovery_needed) {
+          applyInteraction = { headline: "Apply rollback failed — workspace may be dirty.", state: "needs_user", next_step: "Inspect dirty_files and restore affected files manually. Backup data may be preserved." };
+        } else if (result.error) {
+          applyInteraction = { headline: "Apply could not complete.", state: "needs_user", next_step: "Review the error. Changes were rolled back and the workspace should be clean." };
         } else if (result.applied_files.length > 0) {
           applyInteraction = { headline: "Delegated changes applied.", state: "applied", next_step: "Run project tests and review the final diff." };
-        } else if (result.error) {
-          applyInteraction = { headline: "Apply refused.", state: "needs_user", next_step: "Show the preview to the user and ask for explicit approval before applying." };
         } else {
           applyInteraction = { headline: "Delegated changes are ready for review.", state: "apply_preview", next_step: "Review planned_changes. If safe, ask the user whether to apply these changes." };
         }

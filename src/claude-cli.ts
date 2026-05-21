@@ -1961,31 +1961,23 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
     });
   }
 
-  // Apply changes
-  const copied: string[] = [];
-  for (const c of changes) {
-    const dest = path.join(input.cwd, c.file);
-    const src = path.join(wtReal, c.file);
-    try {
-      if (c.status === "D") {
-        // Deletion
-        if (existsSync(dest)) {
-          await import("node:fs/promises").then((m) => m.rm(dest, { recursive: true, force: true }).catch(() => {}));
-        }
-        copied.push(c.file);
-      } else {
-        const content = await import("node:fs/promises").then((m) => m.readFile(src));
-        await mkdir(path.dirname(dest), { recursive: true });
-        await writeFile(dest, content);
-        copied.push(c.file);
-      }
-    } catch (err) {
-      conflicts.push(`${c.file} (${c.status}): ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
+  // Apply changes transactionally
+  // Dynamic import to avoid circular dependency during module loading
+  const { applyChangesTransactional } = await import("./transaction.js");
+  const txResult = await applyChangesTransactional(input.cwd, wtReal, changes);
 
-  if (copied.length === 0) {
-    return finish({ applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts, error: "No changes could be applied", planned_changes: plannedChanges });
+  if (txResult.error) {
+    return finish({
+      applied_files: txResult.applied_files,
+      diff_stat: diffStat,
+      cleanup_performed: false,
+      conflicts,
+      error: txResult.error,
+      planned_changes: plannedChanges,
+      dirty_recovery_needed: txResult.dirty_recovery_needed,
+      dirty_files: txResult.dirty_files,
+      rollback_error: txResult.rollback_error,
+    });
   }
 
   // Optional: cleanup worktree
@@ -2000,7 +1992,7 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
     }
   }
 
-  return finish({ applied_files: copied, diff_stat: diffStat, cleanup_performed: cleanupPerformed, conflicts, planned_changes: plannedChanges });
+  return finish({ applied_files: txResult.applied_files, diff_stat: diffStat, cleanup_performed: cleanupPerformed, conflicts, planned_changes: plannedChanges });
   } finally {
     await worktreeLock.release();
   }
