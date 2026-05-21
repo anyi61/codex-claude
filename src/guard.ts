@@ -222,7 +222,7 @@ export function assertCanDelegate(): void {
 
 // ---- Environment sanitization ----
 
-const DANGEROUS_ENV_KEYS = [
+const DANGEROUS_ENV_KEYS: ReadonlyArray<string> = [
   "OPENAI_API_KEY",
   "ANTHROPIC_API_KEY",
   "GITHUB_TOKEN",
@@ -237,51 +237,135 @@ const DANGEROUS_ENV_KEYS = [
   "SSH_AGENT_PID",
 ];
 
-const ALLOWED_ENV_KEYS = [
+const ALLOWED_ENV_KEYS: ReadonlyArray<string> = [
   "PATH",
   "HOME",
   "SHELL",
   "LANG",
   "LC_ALL",
+  "LC_CTYPE",
   "TERM",
   "USER",
   "TMPDIR",
   "TEMP",
   "TMP",
   "NODE_ENV",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "ANTHROPIC_BASE_URL",
 ];
+
+const SENSITIVE_KEYWORDS: ReadonlyArray<string> = [
+  "AUTH",
+  "COOKIE",
+  "SESSION",
+  "PRIVATE",
+  "KEY",
+  "SECRET",
+  "TOKEN",
+  "CREDENTIAL",
+  "PASSWORD",
+  "API_KEY",
+];
+
+const SENSITIVE_EXACT_NAMES: ReadonlySet<string> = new Set([
+  "DATABASE_URL",
+  "DSN",
+  ...DANGEROUS_ENV_KEYS,
+]);
+
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const PASSTHROUGH_ENV_KEY = "CODEX_CLAUDE_ENV_PASSTHROUGH";
+
+function parsePassthroughEnv(): string[] {
+  const raw = process.env[PASSTHROUGH_ENV_KEY];
+  if (!raw) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const part of raw.split(",")) {
+    const name = part.trim();
+    if (!name || seen.has(name)) continue;
+    const upper = name.toUpperCase();
+    if (!ENV_NAME_RE.test(name)) continue;
+    if (upper === PASSTHROUGH_ENV_KEY) continue;
+    if (SENSITIVE_EXACT_NAMES.has(upper)) continue;
+    if (SENSITIVE_KEYWORDS.some((kw) => upper.includes(kw))) continue;
+    seen.add(name);
+    result.push(name);
+  }
+  return result;
+}
 
 export function sanitizeEnv(): Record<string, string> {
   const safe: Record<string, string> = {};
+  const passthrough = parsePassthroughEnv();
 
-  // Keep known-safe vars
   for (const key of ALLOWED_ENV_KEYS) {
     if (process.env[key] !== undefined) {
-      safe[key] = process.env[key];
+      safe[key] = process.env[key]!;
     }
   }
 
-  // Strip dangerous secrets
-  for (const key of Object.keys(process.env)) {
-    const upper = key.toUpperCase();
-    if (
-      DANGEROUS_ENV_KEYS.includes(upper) ||
-      upper.includes("SECRET") ||
-      upper.includes("TOKEN") ||
-      upper.includes("CREDENTIAL") ||
-      upper.includes("PASSWORD") ||
-      upper.includes("API_KEY")
-    ) {
-      continue;
-    }
-    if (!(key in safe)) {
+  for (const key of passthrough) {
+    if (key !== PASSTHROUGH_ENV_KEY && process.env[key] !== undefined) {
       safe[key] = process.env[key]!;
     }
+  }
+
+  // Keep known-dangerous keys stripped even if someone added them to ALLOWED_ENV_KEYS
+  for (const key of DANGEROUS_ENV_KEYS) {
+    delete safe[key];
   }
 
   safe.BRIDGE_DEPTH = String(Math.min(checkRecursion() + 1, MAX_BRIDGE_DEPTH));
 
   return safe;
+}
+
+export interface EnvSanitizationDiagnostics {
+  allowlisted_present: number;
+  allowlisted_names: string[];
+  passthrough_present: number;
+  passthrough_names: string[];
+  blocked_passthrough_count: number;
+  blocked_passthrough_names: string[];
+}
+
+function isSensitiveName(name: string): boolean {
+  const upper = name.toUpperCase();
+  if (SENSITIVE_EXACT_NAMES.has(upper)) return true;
+  return SENSITIVE_KEYWORDS.some((kw) => upper.includes(kw));
+}
+
+export function getEnvSanitizationDiagnostics(): EnvSanitizationDiagnostics {
+  const rawPassthrough = (process.env[PASSTHROUGH_ENV_KEY] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+
+  const allowlistedNames = ALLOWED_ENV_KEYS.filter((k) => process.env[k] !== undefined);
+  const passthroughNames: string[] = [];
+  const blockedNames: string[] = [];
+
+  for (const name of rawPassthrough) {
+    const upper = name.toUpperCase();
+    if (!ENV_NAME_RE.test(name)) {
+      blockedNames.push(name);
+      continue;
+    }
+    if (upper === PASSTHROUGH_ENV_KEY || isSensitiveName(name)) {
+      blockedNames.push(name);
+      continue;
+    }
+    passthroughNames.push(name);
+  }
+
+  return {
+    allowlisted_present: allowlistedNames.length,
+    allowlisted_names: allowlistedNames,
+    passthrough_present: passthroughNames.length,
+    passthrough_names: passthroughNames,
+    blocked_passthrough_count: blockedNames.length,
+    blocked_passthrough_names: blockedNames,
+  };
 }
 
 // ---- Cli execution helper ----

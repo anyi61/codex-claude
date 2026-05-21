@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   assertCanDelegate,
   dangerousRoot,
+  getEnvSanitizationDiagnostics,
   isDelegatedWorktreePath,
   sanitizeEnv,
   validateCwd,
@@ -64,7 +65,7 @@ describe("guard safety checks", () => {
     await expect(validateFilesWithinCwd(repo, ["../outside.ts"])).resolves.toMatchObject({ ok: false });
   });
 
-  it("strips sensitive environment variables", () => {
+  it("strips non-allowlisted environment variables by default", () => {
     for (const key of [
       "OPENAI_API_KEY",
       "ANTHROPIC_API_KEY",
@@ -80,15 +81,33 @@ describe("guard safety checks", () => {
       "CUSTOM_PASSWORD",
       "CUSTOM_API_KEY",
       "CUSTOM_CREDENTIAL",
+      "DATABASE_URL",
+      "MY_COOKIE",
     ]) {
       process.env[key] = "secret";
     }
 
     const env = sanitizeEnv();
-    expect(Object.keys(env).filter((key) => key.includes("CUSTOM"))).toEqual([]);
-    expect(env.OPENAI_API_KEY).toBeUndefined();
-    expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
-    expect(env.SSH_AUTH_SOCK).toBeUndefined();
+    for (const key of [
+      "OPENAI_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_AUTH_TOKEN",
+      "GITHUB_TOKEN",
+      "GH_TOKEN",
+      "AWS_ACCESS_KEY_ID",
+      "AWS_SECRET_ACCESS_KEY",
+      "CLOUDFLARE_API_TOKEN",
+      "SSH_AUTH_SOCK",
+      "CUSTOM_TOKEN",
+      "CUSTOM_SECRET",
+      "CUSTOM_PASSWORD",
+      "CUSTOM_API_KEY",
+      "CUSTOM_CREDENTIAL",
+      "DATABASE_URL",
+      "MY_COOKIE",
+    ]) {
+      expect(env[key]).toBeUndefined();
+    }
   });
 
   it("guards recursive delegation and increments child depth", () => {
@@ -202,5 +221,222 @@ describe("isDelegatedWorktreePath", () => {
 
   it("returns false when .claude and worktrees appear but codex-delegated-* is missing", () => {
     expect(isDelegatedWorktreePath("/repo/.claude/worktrees/other-branch")).toBe(false);
+  });
+});
+
+describe("env allowlist sanitization", () => {
+  const DEFAULT_ALLOWLIST = [
+    "PATH", "HOME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "USER",
+    "TMPDIR", "TEMP", "TMP", "NODE_ENV",
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ANTHROPIC_BASE_URL",
+  ];
+
+  it("only forwards allowlisted vars by default", () => {
+    process.env.PATH = "/usr/bin";
+    process.env.HOME = "/home/test";
+    process.env.EXTRA_VAR = "should-be-stripped";
+    process.env.NOT_IN_LIST = "also-stripped";
+
+    const env = sanitizeEnv();
+    expect(env.PATH).toBe("/usr/bin");
+    expect(env.HOME).toBe("/home/test");
+    expect(env.EXTRA_VAR).toBeUndefined();
+    expect(env.NOT_IN_LIST).toBeUndefined();
+  });
+
+  it("includes all default allowlist entries when present", () => {
+    for (const key of DEFAULT_ALLOWLIST) {
+      process.env[key] = `val_${key}`;
+    }
+    const env = sanitizeEnv();
+    for (const key of DEFAULT_ALLOWLIST) {
+      expect(env[key]).toBe(`val_${key}`);
+    }
+  });
+
+  it("forwards passthrough vars via CODEX_CLAUDE_ENV_PASSTHROUGH", () => {
+    process.env.PATH = "/usr/bin";
+    process.env.CODEX_CLAUDE_ENV_PASSTHROUGH = "MY_CUSTOM_VAR,ANOTHER_VAR";
+    process.env.MY_CUSTOM_VAR = "value1";
+    process.env.ANOTHER_VAR = "value2";
+
+    const env = sanitizeEnv();
+    expect(env.MY_CUSTOM_VAR).toBe("value1");
+    expect(env.ANOTHER_VAR).toBe("value2");
+
+    delete process.env.CODEX_CLAUDE_ENV_PASSTHROUGH;
+    delete process.env.MY_CUSTOM_VAR;
+    delete process.env.ANOTHER_VAR;
+  });
+
+  it("never forwards CODEX_CLAUDE_ENV_PASSTHROUGH itself", () => {
+    process.env.PATH = "/usr/bin";
+    process.env.CODEX_CLAUDE_ENV_PASSTHROUGH = "MY_VAR";
+    process.env.MY_VAR = "val";
+
+    const env = sanitizeEnv();
+    expect(env.CODEX_CLAUDE_ENV_PASSTHROUGH).toBeUndefined();
+    expect(env.MY_VAR).toBe("val");
+
+    delete process.env.CODEX_CLAUDE_ENV_PASSTHROUGH;
+    delete process.env.MY_VAR;
+  });
+
+  it("case-sensitive passthrough lookup", () => {
+    process.env.PATH = "/usr/bin";
+    process.env.CODEX_CLAUDE_ENV_PASSTHROUGH = "my_var";
+    process.env.my_var = "lowercase";
+    process.env.MY_VAR = "uppercase";
+
+    const env = sanitizeEnv();
+    expect(env.my_var).toBe("lowercase");
+    expect(env.MY_VAR).toBeUndefined();
+
+    delete process.env.CODEX_CLAUDE_ENV_PASSTHROUGH;
+    delete process.env.my_var;
+    delete process.env.MY_VAR;
+  });
+
+  it("deduplicates passthrough entries", () => {
+    process.env.PATH = "/usr/bin";
+    process.env.CODEX_CLAUDE_ENV_PASSTHROUGH = "MY_VAR,MY_VAR,MY_VAR";
+    process.env.MY_VAR = "val";
+
+    const env = sanitizeEnv();
+    expect(env.MY_VAR).toBe("val");
+
+    delete process.env.CODEX_CLAUDE_ENV_PASSTHROUGH;
+    delete process.env.MY_VAR;
+  });
+
+  it("rejects passthrough names with invalid characters", () => {
+    process.env.PATH = "/usr/bin";
+    process.env.CODEX_CLAUDE_ENV_PASSTHROUGH = "VALID,has space,also-valid=,path/traversal";
+    process.env.VALID = "ok";
+    process.env["has space"] = "bad";
+    process.env["also-valid="] = "bad";
+    process.env["path/traversal"] = "bad";
+
+    const env = sanitizeEnv();
+    expect(env.VALID).toBe("ok");
+    expect(env["has space"]).toBeUndefined();
+    expect(env["also-valid="]).toBeUndefined();
+    expect(env["path/traversal"]).toBeUndefined();
+
+    delete process.env.CODEX_CLAUDE_ENV_PASSTHROUGH;
+    delete process.env.VALID;
+    delete process.env["has space"];
+    delete process.env["also-valid="];
+    delete process.env["path/traversal"];
+  });
+
+  it("blocks passthrough of exact sensitive names", () => {
+    process.env.PATH = "/usr/bin";
+    process.env.CODEX_CLAUDE_ENV_PASSTHROUGH = "DATABASE_URL,database_url,DSN,dsn,GITHUB_TOKEN,ANTHROPIC_API_KEY,CODEX_CLAUDE_ENV_PASSTHROUGH";
+    process.env.DATABASE_URL = "postgres://...";
+    process.env.database_url = "postgres://lower...";
+    process.env.DSN = "mysql://...";
+    process.env.dsn = "mysql://lower...";
+    process.env.GITHUB_TOKEN = "ghp_...";
+    process.env.ANTHROPIC_API_KEY = "sk-ant-...";
+
+    const env = sanitizeEnv();
+    expect(env.DATABASE_URL).toBeUndefined();
+    expect(env.database_url).toBeUndefined();
+    expect(env.DSN).toBeUndefined();
+    expect(env.dsn).toBeUndefined();
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.CODEX_CLAUDE_ENV_PASSTHROUGH).toBeUndefined();
+
+    delete process.env.CODEX_CLAUDE_ENV_PASSTHROUGH;
+    delete process.env.DATABASE_URL;
+    delete process.env.database_url;
+    delete process.env.DSN;
+    delete process.env.dsn;
+    delete process.env.GITHUB_TOKEN;
+    delete process.env.ANTHROPIC_API_KEY;
+  });
+
+  it("blocks passthrough of names containing sensitive keywords", () => {
+    process.env.PATH = "/usr/bin";
+    process.env.CODEX_CLAUDE_ENV_PASSTHROUGH = [
+      "MY_AUTH_HANDLER", "SESSION_STORE", "PRIVATE_CONFIG",
+      "ENCRYPTION_KEY", "API_SECRET", "BEARER_TOKEN",
+      "USER_CREDENTIAL", "DB_PASSWORD", "MY_API_KEY_CONFIG",
+      "COOKIE_PREFS",
+    ].join(",");
+    for (const name of [
+      "MY_AUTH_HANDLER", "SESSION_STORE", "PRIVATE_CONFIG",
+      "ENCRYPTION_KEY", "API_SECRET", "BEARER_TOKEN",
+      "USER_CREDENTIAL", "DB_PASSWORD", "MY_API_KEY_CONFIG",
+      "COOKIE_PREFS",
+    ]) {
+      process.env[name] = "val";
+    }
+
+    const env = sanitizeEnv();
+    for (const name of [
+      "MY_AUTH_HANDLER", "SESSION_STORE", "PRIVATE_CONFIG",
+      "ENCRYPTION_KEY", "API_SECRET", "BEARER_TOKEN",
+      "USER_CREDENTIAL", "DB_PASSWORD", "MY_API_KEY_CONFIG",
+      "COOKIE_PREFS",
+    ]) {
+      expect(env[name]).toBeUndefined();
+    }
+
+    delete process.env.CODEX_CLAUDE_ENV_PASSTHROUGH;
+    for (const name of [
+      "MY_AUTH_HANDLER", "SESSION_STORE", "PRIVATE_CONFIG",
+      "ENCRYPTION_KEY", "API_SECRET", "BEARER_TOKEN",
+      "USER_CREDENTIAL", "DB_PASSWORD", "MY_API_KEY_CONFIG",
+      "COOKIE_PREFS",
+    ]) {
+      delete process.env[name];
+    }
+  });
+
+  it("getEnvSanitizationDiagnostics reports categories without values", () => {
+    process.env.PATH = "/usr/bin";
+    process.env.HOME = "/home/test";
+    process.env.SHELL = "/bin/bash";
+    process.env.NODE_ENV = "test";
+    process.env.HTTP_PROXY = "http://proxy:8080";
+    process.env.CUSTOM_NON_SENSITIVE = "should-be-stripped";
+    process.env.CODEX_CLAUDE_ENV_PASSTHROUGH = "MY_VAR,BLOCKED_TOKEN";
+    process.env.MY_VAR = "my-value";
+    process.env.BLOCKED_TOKEN = "secret";
+
+    const diag = getEnvSanitizationDiagnostics();
+    expect(diag.allowlisted_present).toBeGreaterThanOrEqual(4);
+    expect(diag.allowlisted_names).toEqual(expect.arrayContaining(["PATH", "HOME", "SHELL", "NODE_ENV", "HTTP_PROXY"]));
+    expect(diag.passthrough_present).toBe(1);
+    expect(diag.passthrough_names).toEqual(["MY_VAR"]);
+    expect(diag.blocked_passthrough_count).toBe(1);
+    expect(diag.blocked_passthrough_names).toEqual(["BLOCKED_TOKEN"]);
+    // Must not leak values
+    const diagStr = JSON.stringify(diag);
+    expect(diagStr).not.toContain("my-value");
+    expect(diagStr).not.toContain("secret");
+    expect(diagStr).not.toContain("/usr/bin");
+    expect(diagStr).not.toContain("http://proxy");
+
+    delete process.env.CODEX_CLAUDE_ENV_PASSTHROUGH;
+    delete process.env.MY_VAR;
+    delete process.env.BLOCKED_TOKEN;
+    delete process.env.CUSTOM_NON_SENSITIVE;
+  });
+
+  it("getEnvSanitizationDiagnostics without passthrough", () => {
+    process.env.PATH = "/usr/bin";
+    process.env.SECRET = "123";
+
+    const diag = getEnvSanitizationDiagnostics();
+    expect(diag.passthrough_present).toBe(0);
+    expect(diag.passthrough_names).toEqual([]);
+    expect(diag.blocked_passthrough_count).toBe(0);
+    expect(diag.blocked_passthrough_names).toEqual([]);
+
+    delete process.env.SECRET;
   });
 });

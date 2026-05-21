@@ -76,6 +76,16 @@ export interface DoctorCheckActiveClaudeProcesses {
   jobs: Array<{ job_id: string; pid: number; type: string }>;
 }
 
+export interface DoctorCheckEnvSanitization {
+  ok: boolean;
+  allowlisted_count: number;
+  allowlisted_names: string[];
+  passthrough_count: number;
+  passthrough_names: string[];
+  blocked_passthrough_count: number;
+  blocked_passthrough_names: string[];
+}
+
 export interface DoctorResult {
   ready: boolean;
   status: DoctorStatus;
@@ -89,6 +99,7 @@ export interface DoctorResult {
     default_tools: DoctorCheckDefaultTools;
     allow_roots: DoctorCheckAllowRoots;
     active_claude_processes: DoctorCheckActiveClaudeProcesses;
+    env_sanitization: DoctorCheckEnvSanitization;
   };
   warnings: string[];
   problems: Array<{ problem: string; fix: string; next_step: string }>;
@@ -267,6 +278,7 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
       default_tools: { ok: false, enabled_count: 0, enabled: [] },
       allow_roots: { ok: false },
       active_claude_processes: { ok: true, count: 0, jobs: [] },
+      env_sanitization: { ok: true, allowlisted_count: 0, allowlisted_names: [], passthrough_count: 0, passthrough_names: [], blocked_passthrough_count: 0, blocked_passthrough_names: [] },
     },
     warnings: [],
     problems: [],
@@ -495,6 +507,24 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
     result.checks.active_claude_processes = { ok: true, count: 0, jobs: [] };
   }
 
+  // Environment sanitization diagnostics (never leaks values)
+  try {
+    const { getEnvSanitizationDiagnostics } = await import("./guard.js");
+    const envDiag = getEnvSanitizationDiagnostics();
+    result.checks.env_sanitization = {
+      ok: true,
+      allowlisted_count: envDiag.allowlisted_present,
+      allowlisted_names: envDiag.allowlisted_names,
+      passthrough_count: envDiag.passthrough_present,
+      passthrough_names: envDiag.passthrough_names,
+      blocked_passthrough_count: envDiag.blocked_passthrough_count,
+      blocked_passthrough_names: envDiag.blocked_passthrough_names,
+    };
+    // Blocked passthrough entries are informational only — do not make doctor not_ready
+  } catch {
+    result.checks.env_sanitization = { ok: true, allowlisted_count: 0, allowlisted_names: [], passthrough_count: 0, passthrough_names: [], blocked_passthrough_count: 0, blocked_passthrough_names: [] };
+  }
+
   // Determine overall status
   if (notReady) {
     result.status = "not_ready";
@@ -544,6 +574,21 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
     emit(`Active Claude processes: ${result.checks.active_claude_processes.count}`, true);
     if (result.checks.allow_roots.ok !== undefined) {
       emit(`Allow roots: ${result.checks.allow_roots.current_repo_allowed ? "current repo allowed" : "current repo is not included"}`, result.checks.allow_roots.ok);
+    }
+
+    const es = result.checks.env_sanitization;
+    const esParts = [`allowlisted: ${es.allowlisted_count}`];
+    if (es.passthrough_count > 0) esParts.push(`passthrough: ${es.passthrough_count}`);
+    if (es.blocked_passthrough_count > 0) esParts.push(`blocked passthrough: ${es.blocked_passthrough_count}`);
+    emit(`Env sanitization: ${esParts.join(", ")}`, es.ok);
+    if (es.allowlisted_names.length > 0) {
+      deps.writeOut(`  Allowlisted: ${es.allowlisted_names.join(", ")}\n`);
+    }
+    if (es.passthrough_names.length > 0) {
+      deps.writeOut(`  Passthrough: ${es.passthrough_names.join(", ")}\n`);
+    }
+    if (es.blocked_passthrough_names.length > 0) {
+      deps.writeOut(`  Blocked passthrough: ${es.blocked_passthrough_names.join(", ")}\n`);
     }
 
     deps.writeOut(`\nStatus: ${result.status}\n`);

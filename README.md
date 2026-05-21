@@ -244,6 +244,32 @@ CODEX_CLAUDE_ALLOW_ROOTS = "/Users/you/projects:/Users/you/work:/Users/you/my-re
 codex-claude setup --write --allow-root "$(pwd)"
 ```
 
+### 环境变量透传（Env Passthrough）
+
+`sanitizeEnv()` 使用严格白名单，仅转发以下 16 个默认变量：
+
+```
+PATH, HOME, SHELL, LANG, LC_ALL, LC_CTYPE, TERM, USER,
+TMPDIR, TEMP, TMP, NODE_ENV, HTTP_PROXY, HTTPS_PROXY, NO_PROXY, ANTHROPIC_BASE_URL
+```
+
+如需额外透传自定义环境变量，设置 `CODEX_CLAUDE_ENV_PASSTHROUGH`（逗号分隔，大小写敏感）：
+
+```toml
+# ~/.codex/config.toml
+[shell_environment_policy.set]
+CODEX_CLAUDE_ENV_PASSTHROUGH = "MY_ORG_API_URL,CI_PIPELINE_ID"
+```
+
+**安全限制：**
+- 名称匹配 `[A-Za-z_][A-Za-z0-9_]*`，无效字符自动忽略
+- 精确敏感名称（`DATABASE_URL`、`DSN` 及所有已知密钥）被拦截
+- 名称包含 `AUTH`、`COOKIE`、`SESSION`、`PRIVATE`、`KEY`、`SECRET`、`TOKEN`、`CREDENTIAL`、`PASSWORD`、`API_KEY` 的变量被拦截
+- `CODEX_CLAUDE_ENV_PASSTHROUGH` 本身从不转发
+- 重复名称自动去重
+
+`codex-claude doctor` 报告环境净化诊断（allowlisted/passthrough/blocked 计数和名称，不暴露任何变量值）。
+
 ### 开发 / 维护
 
 从源码构建：
@@ -289,7 +315,7 @@ npm uninstall -g @anyi61/codex-claude-delegate-mcp
 - `spawn("claude", args[])` — 无 shell 注入
 - `--tools` / `--allowedTools` / `--disallowedTools` — 三层工具控制
 - `--permission-mode dontAsk` — 非交互式安全模式
-- `sanitizeEnv()` — 最佳努力脱敏（剥离常见 API 密钥、令牌、SSH agent；未命中关键词的变量可能透传）
+- `sanitizeEnv()` — 严格环境白名单：仅转发 16 个默认安全变量和 `CODEX_CLAUDE_ENV_PASSTHROUGH` 中声明的额外变量；敏感名称（AUTH/COOKIE/SESSION/PRIVATE/KEY/SECRET/TOKEN/CREDENTIAL/PASSWORD/API_KEY/DATABASE_URL/DSN）在 passthrough 中也被拦截；`CODEX_CLAUDE_ENV_PASSTHROUGH` 本身从不转发
 - `BRIDGE_DEPTH` — 递归保护（≥2 时拒绝）
 - `validateCwd()` — realpath + allow roots 白名单
 - `dangerousRoot()` — 拒绝 15 个系统目录（`/`, `/bin`, `/boot`, `/dev`, `/etc`, `/lib`, `/lib64`, `/opt`, `/proc`, `/root`, `/sbin`, `/sys`, `/tmp`, `/usr`, `/var`）及其子目录；`$HOME` 本身拒绝，但子目录如 `~/projects` 安全

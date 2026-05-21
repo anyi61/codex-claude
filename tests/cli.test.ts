@@ -675,4 +675,103 @@ describe("codex-claude CLI", () => {
     expect(io.stdout).toContain("Active Claude processes: 1");
     expect(io.stdout).toContain("Status: ready");
   });
+
+  it("doctor --json includes env_sanitization check", async () => {
+    await setupDoctorMocks({
+      execCapture: async () => "1.0.0",
+      scanResult: {
+        configPath: "/fake/.codex/config.toml",
+        exists: true,
+        hasAllowRoots: false,
+        allowRootsValue: null,
+        mcpClassification: { origin: "manual", hasCommand: true, hasArgs: true, hasEnv: false },
+        mcpServerKeys: ["command", "enabled_tools"],
+        envKeys: [],
+        mcpCommand: "codex-claude",
+        mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"],
+        mcpToolTimeoutSec: 600,
+      },
+    });
+
+    const io = makeIo();
+    await runCli(["node", "codex-claude", "doctor", "--json"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+    const parsed = JSON.parse(io.stdout);
+    expect(parsed.checks).toHaveProperty("env_sanitization");
+    expect(parsed.checks.env_sanitization).toHaveProperty("ok");
+    expect(parsed.checks.env_sanitization).toHaveProperty("allowlisted_count");
+    expect(parsed.checks.env_sanitization).toHaveProperty("allowlisted_names");
+    expect(parsed.checks.env_sanitization).toHaveProperty("passthrough_count");
+    expect(parsed.checks.env_sanitization).toHaveProperty("passthrough_names");
+    expect(parsed.checks.env_sanitization).toHaveProperty("blocked_passthrough_count");
+    expect(parsed.checks.env_sanitization).toHaveProperty("blocked_passthrough_names");
+    // Must not leak values
+    const jsonStr = JSON.stringify(parsed.checks.env_sanitization);
+    expect(jsonStr).not.toMatch(/\/usr\//);
+    expect(jsonStr).not.toContain("=");
+  });
+
+  it("doctor text output includes env sanitization info", async () => {
+    await setupDoctorMocks({
+      execCapture: async () => "1.0.0",
+      scanResult: {
+        configPath: "/fake/.codex/config.toml",
+        exists: true,
+        hasAllowRoots: false,
+        allowRootsValue: null,
+        mcpClassification: { origin: "manual", hasCommand: true, hasArgs: true, hasEnv: false },
+        mcpServerKeys: ["command", "enabled_tools"],
+        envKeys: [],
+        mcpCommand: "codex-claude",
+        mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"],
+        mcpToolTimeoutSec: 600,
+      },
+    });
+
+    const io = makeIo();
+    await runCli(["node", "codex-claude", "doctor"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+    expect(io.stdout).toContain("Env sanitization:");
+    expect(io.stdout).toContain("allowlisted:");
+  });
+
+  it("doctor blocked passthrough does not make status not_ready", async () => {
+    vi.stubEnv("CODEX_CLAUDE_ENV_PASSTHROUGH", "MY_SAFE_VAR,GITHUB_TOKEN,DB_PASSWORD");
+    vi.stubEnv("MY_SAFE_VAR", "ok");
+
+    await setupDoctorMocks({
+      execCapture: async () => "1.0.0",
+      scanResult: {
+        configPath: "/fake/.codex/config.toml",
+        exists: true,
+        hasAllowRoots: false,
+        allowRootsValue: null,
+        mcpClassification: { origin: "manual", hasCommand: true, hasArgs: true, hasEnv: false },
+        mcpServerKeys: ["command", "enabled_tools"],
+        envKeys: [],
+        mcpCommand: "codex-claude",
+        mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"],
+        mcpToolTimeoutSec: 600,
+      },
+    });
+
+    const io = makeIo();
+    await runCli(["node", "codex-claude", "doctor", "--json"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+    const parsed = JSON.parse(io.stdout);
+    expect(parsed.checks.env_sanitization.blocked_passthrough_count).toBe(2);
+    expect(parsed.checks.env_sanitization.blocked_passthrough_names).toEqual(["GITHUB_TOKEN", "DB_PASSWORD"]);
+    expect(parsed.checks.env_sanitization.passthrough_names).toEqual(["MY_SAFE_VAR"]);
+    // Blocked passthrough should NOT make status not_ready
+    expect(parsed.status).not.toBe("not_ready");
+  });
 });
