@@ -75,6 +75,25 @@ export interface ClaudeTaskInput {
 
 export type SecurityProfile = "strict" | "default" | "permissive";
 
+export type ModeInferenceReason =
+  | "explicit"
+  | "diff"
+  | "constraints"
+  | "query_prefix_override"
+  | "write_hints"
+  | "review_hints"
+  | "read_hints"
+  | "files_fallback"
+  | "default_read";
+
+export interface ModeInference {
+  requested_mode: ClaudeTaskMode;
+  delegated_mode: Exclude<ClaudeTaskMode, "auto">;
+  reason: ModeInferenceReason;
+  confidence: "high" | "medium" | "low";
+  matched_hints: string[];
+}
+
 export type BackgroundJobType = "query" | "review" | "implement" | "apply" | "cleanup";
 export type BackgroundJobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export type BackgroundJobStaleState = "fresh" | "stale_candidate" | "stale";
@@ -314,6 +333,7 @@ export interface ClaudeSetupResult {
 
 export interface ClaudeTaskResult {
   delegated_mode: Exclude<ClaudeTaskMode, "auto">;
+  mode_inference?: ModeInference;
   status?: string;
   summary: string;
   job?: BackgroundJobSummary;

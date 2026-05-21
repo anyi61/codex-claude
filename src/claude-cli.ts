@@ -52,6 +52,7 @@ import type {
   ClaudeTaskResult,
   CleanupEntry,
   ExecutionMetadata,
+  ModeInference,
   ServerObserved,
   SessionLog,
   ToolEnvelope,
@@ -180,37 +181,122 @@ async function findImplementJobForWorktree(worktreePath: string, cwd: string): P
   return jobs.find((job) => job.worktree_name === wtName && terminalStatuses.has(job.status)) ?? null;
 }
 
-function inferClaudeTaskMode(input: ClaudeTaskInput): Exclude<ClaudeTaskMode, "auto"> {
+// ---- Mode inference helpers ----
+
+/** English write keywords (used with \b word boundary). */
+const EN_WRITE_RE = /\b(fix|change|implement|write|edit|modify|update|refactor|patch|add|create)\b/;
+/** Chinese write keywords — no \b since JS \b is unreliable for CJK. */
+const ZH_WRITE_RE = /修复|实现|修改|添加|重构|补充|提交|更新|创建|编写|删除|移除|调整|优化|改造/;
+/** English review keywords. */
+const EN_REVIEW_RE = /\b(review|audit|inspect|check|find bugs|look for issues|critique)\b/;
+/** Chinese review keywords. */
+const ZH_REVIEW_RE = /审查|检查|评审|看看有没有问题|找一下风险|找\s?bug|找问题/;
+/** English read keywords. */
+const EN_READ_RE = /\b(explain|analyse|analyze|why|how|what|summarize|describe|read-only|understand)\b/;
+/** Chinese read keywords. */
+const ZH_READ_RE = /解释|分析|总结|为什么|怎么|如何|说明|描述|理解/;
+/** Chinese query prefixes — checked at start of task only. */
+const ZH_QUERY_PREFIX_RE = /^(解释|说明|为什么|怎么|如何|怎样|分析|总结|描述|理解|搞清楚)/;
+
+export function inferClaudeTaskMode(input: ClaudeTaskInput): { mode: Exclude<ClaudeTaskMode, "auto">; inference: ModeInference } {
+  const requestedMode: ClaudeTaskMode = input.mode ?? "auto";
+
+  // Priority 1: explicit mode
   if (input.mode && input.mode !== "auto") {
-    return input.mode;
+    return {
+      mode: input.mode,
+      inference: { requested_mode: requestedMode, delegated_mode: input.mode, reason: "explicit", confidence: "high", matched_hints: ["explicit"] },
+    };
   }
 
-  if (!input.task) return "read";
-  const text = input.task.toLowerCase();
+  const text = (input.task ?? "").toLowerCase();
+
+  // Priority 2: diff present → review
   if (typeof input.diff === "string" && input.diff.trim().length > 0) {
-    return "review";
+    return {
+      mode: "review",
+      inference: { requested_mode: "auto", delegated_mode: "review", reason: "diff", confidence: "high", matched_hints: ["diff"] },
+    };
   }
 
-  const writeHints = /\b(fix|change|implement|write|edit|modify|update|refactor|patch|add|create)\b/;
-  const reviewHints = /\b(review|audit|inspect|check|find bugs|look for issues|critique)\b/;
-  const readHints = /\b(explain|analyze|analyse|why|how|what|summarize|describe|read-only|understand)\b/;
-
+  // Priority 3: constraints → write
   if ((input.constraints?.length ?? 0) > 0) {
-    return "write";
+    return {
+      mode: "write",
+      inference: { requested_mode: "auto", delegated_mode: "write", reason: "constraints", confidence: "high", matched_hints: ["constraints"] },
+    };
   }
-  if (writeHints.test(text)) {
-    return "write";
+
+  // Priority 4: query prefix at task start → read (overrides write hints)
+  if (input.task) {
+    const taskText = input.task.trimStart();
+    if (ZH_QUERY_PREFIX_RE.test(taskText)) {
+      const matched = taskText.match(ZH_QUERY_PREFIX_RE)?.[0] ?? "query_prefix";
+      return {
+        mode: "read",
+        inference: { requested_mode: "auto", delegated_mode: "read", reason: "query_prefix_override", confidence: "medium", matched_hints: [matched] },
+      };
+    }
   }
-  if (reviewHints.test(text)) {
-    return "review";
+
+  // Priority 5: write hints (English uses \b; Chinese does not)
+  if (input.task) {
+    const enMatch = text.match(EN_WRITE_RE);
+    const zhMatch = input.task.match(ZH_WRITE_RE);
+    if (enMatch || zhMatch) {
+      const hints: string[] = [];
+      if (enMatch) hints.push(enMatch[0]);
+      if (zhMatch) hints.push(zhMatch[0]);
+      return {
+        mode: "write",
+        inference: { requested_mode: "auto", delegated_mode: "write", reason: "write_hints", confidence: "high", matched_hints: hints },
+      };
+    }
   }
-  if (readHints.test(text)) {
-    return "read";
+
+  // Priority 6: review hints
+  if (input.task) {
+    const enMatch = text.match(EN_REVIEW_RE);
+    const zhMatch = input.task.match(ZH_REVIEW_RE);
+    if (enMatch || zhMatch) {
+      const hints: string[] = [];
+      if (enMatch) hints.push(enMatch[0]);
+      if (zhMatch) hints.push(zhMatch[0]);
+      return {
+        mode: "review",
+        inference: { requested_mode: "auto", delegated_mode: "review", reason: "review_hints", confidence: "high", matched_hints: hints },
+      };
+    }
   }
+
+  // Priority 7: read hints
+  if (input.task) {
+    const enMatch = text.match(EN_READ_RE);
+    const zhMatch = input.task.match(ZH_READ_RE);
+    if (enMatch || zhMatch) {
+      const hints: string[] = [];
+      if (enMatch) hints.push(enMatch[0]);
+      if (zhMatch) hints.push(zhMatch[0]);
+      return {
+        mode: "read",
+        inference: { requested_mode: "auto", delegated_mode: "read", reason: "read_hints", confidence: "high", matched_hints: hints },
+      };
+    }
+  }
+
+  // Priority 8: files → review
   if ((input.files?.length ?? 0) > 0) {
-    return "review";
+    return {
+      mode: "review",
+      inference: { requested_mode: "auto", delegated_mode: "review", reason: "files_fallback", confidence: "medium", matched_hints: ["files"] },
+    };
   }
-  return "read";
+
+  // Priority 9: default read
+  return {
+    mode: "read",
+    inference: { requested_mode: "auto", delegated_mode: "read", reason: "default_read", confidence: "low", matched_hints: [] },
+  };
 }
 
 function summarizeTaskDispatch(mode: Exclude<ClaudeTaskMode, "auto">, isBackground: boolean): string {
@@ -264,8 +350,9 @@ async function buildClaudeTaskInlineResult(input: {
   completedInline: boolean;
   waiting?: boolean;
   staled?: boolean;
+  modeInference?: ModeInference;
 }): Promise<ClaudeTaskResult> {
-  const { cwd, job, jobRecord, delegatedMode, completedInline, waiting, staled } = input;
+  const { cwd, job, jobRecord, delegatedMode, completedInline, waiting, staled, modeInference } = input;
 
   // For completed inline results: reuse getClaudeResult for standardized aggregation
   if (completedInline && !staled) {
@@ -273,6 +360,7 @@ async function buildClaudeTaskInlineResult(input: {
     if (claudeResult) {
       return {
         delegated_mode: delegatedMode,
+        mode_inference: modeInference,
         status: deriveClaudeTaskTopStatus(job, jobRecord.result),
         summary: claudeResult.summary,
         job: claudeResult.job,
@@ -318,6 +406,7 @@ async function buildClaudeTaskInlineResult(input: {
 
   return {
     delegated_mode: delegatedMode,
+    mode_inference: modeInference,
     status: topStatus,
     summary: job.summary ?? `${delegatedMode} job ${job.status}`,
     job,
@@ -441,7 +530,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
   }
 
   // --- new task path ---
-  const delegatedMode = inferClaudeTaskMode(input);
+  const { mode: delegatedMode, inference: modeInference } = inferClaudeTaskMode(input);
   const { instructionFiles, warnings } = resolveTaskInstructionFiles(input);
   // wait_strategy takes precedence over legacy background alias
   const effectiveWaitStrategy = input.wait_strategy ?? (input.background === true ? "background" : "block");
@@ -483,6 +572,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
       if (!("job" in implementResult)) {
         return {
           delegated_mode: delegatedMode,
+          mode_inference: modeInference,
           status: "needs_user",
           summary: "Write task needs a dirty-workspace decision before it can be delegated.",
           result: toResultRecord(implementResult),
@@ -502,6 +592,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
     if (!("job" in queued)) {
       return {
         delegated_mode: delegatedMode,
+        mode_inference: modeInference,
         status: "failed",
         summary: "Failed to create background job.",
         wait: buildWaitMetadata({
@@ -518,6 +609,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
     if (isBackground) {
       return {
         delegated_mode: delegatedMode,
+        mode_inference: modeInference,
         status: "running",
         summary: queued.message ?? summarizeTaskDispatch(delegatedMode, true),
         job: queued.job,
@@ -550,6 +642,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
     if (inlineResult.status === "not_found") {
       return {
         delegated_mode: delegatedMode,
+        mode_inference: modeInference,
         status: "failed",
         summary: `Job ${queued.job.job_id} not found during inline wait.`,
         job: queued.job,
@@ -572,6 +665,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         jobRecord: inlineResult.jobRecord,
         delegatedMode,
         completedInline: true,
+        modeInference,
       });
     }
 
@@ -580,6 +674,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
       if (!staleRecord) {
         return {
           delegated_mode: delegatedMode,
+          mode_inference: modeInference,
           status: "failed",
           summary: `Job ${queued.job.job_id} disappeared during inline wait.`,
           wait: buildWaitMetadata({
@@ -599,12 +694,14 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         delegatedMode,
         completedInline: false,
         staled: true,
+        modeInference,
       });
     }
 
     const stillRunning = await jobStore.get(queued.job.job_id);
     return {
       delegated_mode: delegatedMode,
+      mode_inference: modeInference,
       status: "running",
       summary: `Job ${queued.job.job_id} is still running.`,
       job: stillRunning ? toJobSummary(stillRunning) : queued.job,

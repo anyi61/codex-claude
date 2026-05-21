@@ -498,3 +498,70 @@ describe("schema-to-tool-definition contract", () => {
       .toMatch(/^Advanced \/ Recovery/);
   });
 });
+
+describe("ModeInference type and mode_inference field", () => {
+  it("accepts valid ModeInference object on ClaudeTaskResult", () => {
+    const result: import("../src/schema.js").ClaudeTaskResult = {
+      delegated_mode: "write",
+      mode_inference: {
+        requested_mode: "auto",
+        delegated_mode: "write",
+        reason: "write_hints",
+        confidence: "high",
+        matched_hints: ["修复"],
+      },
+      summary: "test",
+      next_actions: [],
+    };
+    expect(result.mode_inference?.reason).toBe("write_hints");
+    expect(result.mode_inference?.confidence).toBe("high");
+    expect(result.mode_inference?.matched_hints).toEqual(["修复"]);
+  });
+
+  it("accepts ClaudeTaskResult without mode_inference (optional)", () => {
+    const result: import("../src/schema.js").ClaudeTaskResult = {
+      delegated_mode: "read",
+      summary: "test",
+      next_actions: [],
+    };
+    expect(result.mode_inference).toBeUndefined();
+  });
+
+  it("accepts all valid ModeInferenceReason values", () => {
+    const validReasons: import("../src/schema.js").ModeInferenceReason[] = [
+      "explicit",
+      "diff",
+      "constraints",
+      "query_prefix_override",
+      "write_hints",
+      "review_hints",
+      "read_hints",
+      "files_fallback",
+      "default_read",
+    ];
+    for (const reason of validReasons) {
+      const inference: import("../src/schema.js").ModeInference = {
+        requested_mode: "auto",
+        delegated_mode: "read",
+        reason,
+        confidence: "medium",
+        matched_hints: [],
+      };
+      expect(inference.reason).toBe(reason);
+    }
+  });
+
+  it("accepts high, medium, low confidence values", () => {
+    const validConfidence: Array<"high" | "medium" | "low"> = ["high", "medium", "low"];
+    for (const confidence of validConfidence) {
+      const inference: import("../src/schema.js").ModeInference = {
+        requested_mode: "auto",
+        delegated_mode: "read",
+        reason: "default_read",
+        confidence,
+        matched_hints: [],
+      };
+      expect(inference.confidence).toBe(confidence);
+    }
+  });
+});

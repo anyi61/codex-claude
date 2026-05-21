@@ -11,6 +11,7 @@ import {
   buildQueryArgs,
   buildReviewArgs,
   buildSafeEnv,
+  inferClaudeTaskMode,
   parseStatusPorcelainZ,
   truncateTail,
 } from "../src/claude-cli.js";
@@ -4397,5 +4398,148 @@ describe("review gate metadata integration", () => {
 
     delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
     vi.resetModules();
+  });
+});
+
+// ---- Mode inference unit tests ----
+
+describe("inferClaudeTaskMode — Chinese/mixed-language keyword routing", () => {
+  it("routes auto mode to write for Chinese write hints", () => {
+    const cases = [
+      "修复这个 bug",
+      "实现登录功能",
+      "修改 README",
+      "添加测试",
+      "重构 apply 流程",
+      "补充文档",
+      "提交更改",
+      "更新配置",
+    ];
+    for (const task of cases) {
+      const { mode, inference } = inferClaudeTaskMode({ cwd: "/repo", task });
+      expect(mode, `task: ${task}`).toBe("write");
+      expect(inference.reason).toBe("write_hints");
+    }
+  });
+
+  it("routes auto mode to review for Chinese review hints", () => {
+    const cases = ["审查这个补丁", "检查这段 diff", "找一下风险", "看看有没有问题"];
+    for (const task of cases) {
+      const { mode, inference } = inferClaudeTaskMode({ cwd: "/repo", task });
+      expect(mode, `task: ${task}`).toBe("review");
+      expect(inference.reason).toBe("review_hints");
+    }
+  });
+
+  it("routes auto mode to read for Chinese read hints", () => {
+    const cases = ["你能总结一下这个 PR 吗", "explain this module"];
+    for (const task of cases) {
+      const { mode, inference } = inferClaudeTaskMode({ cwd: "/repo", task });
+      expect(mode, `task: ${task}`).toBe("read");
+      expect(inference.reason).toBe("read_hints");
+    }
+  });
+
+  it("routes Chinese query prefix tasks to read with query_prefix_override", () => {
+    const cases = ["解释这个模块", "分析架构", "总结 README", "为什么这里失败", "怎么工作"];
+    for (const task of cases) {
+      const { mode, inference } = inferClaudeTaskMode({ cwd: "/repo", task });
+      expect(mode, `task: ${task}`).toBe("read");
+      expect(inference.reason).toBe("query_prefix_override");
+    }
+  });
+
+  it("routes auto mode to review when diff is provided even with Chinese write hints", () => {
+    const { mode, inference } = inferClaudeTaskMode({
+      cwd: "/repo",
+      task: "修复这个 bug",
+      diff: "diff --git a/README.md b/README.md",
+    });
+    expect(mode).toBe("review");
+    expect(inference.reason).toBe("diff");
+    expect(inference.confidence).toBe("high");
+  });
+
+  it("returns mode inference metadata for auto and explicit modes", () => {
+    const autoResult = inferClaudeTaskMode({ cwd: "/repo", task: "修复这个 bug" });
+    expect(autoResult.inference).toEqual({
+      requested_mode: "auto",
+      delegated_mode: "write",
+      reason: "write_hints",
+      confidence: "high",
+      matched_hints: expect.arrayContaining(["修复"]),
+    });
+
+    const explicitResult = inferClaudeTaskMode({ cwd: "/repo", task: "anything", mode: "read" });
+    expect(explicitResult.inference).toEqual({
+      requested_mode: "read",
+      delegated_mode: "read",
+      reason: "explicit",
+      confidence: "high",
+      matched_hints: ["explicit"],
+    });
+  });
+
+  it("does not route explanatory Chinese repair question to write", () => {
+    const { mode, inference } = inferClaudeTaskMode({ cwd: "/repo", task: "解释如何修复 bug" });
+    expect(mode).toBe("read");
+    expect(inference.reason).toBe("query_prefix_override");
+  });
+
+  it("routes Chinese write followed by explanation to write", () => {
+    const { mode, inference } = inferClaudeTaskMode({ cwd: "/repo", task: "修复这个 bug 然后解释一下" });
+    expect(mode).toBe("write");
+    expect(inference.reason).toBe("write_hints");
+  });
+
+  it("routes mixed English Chinese write hint to write", () => {
+    const { mode, inference } = inferClaudeTaskMode({ cwd: "/repo", task: "fix 这个 bug" });
+    expect(mode).toBe("write");
+    expect(inference.reason).toBe("write_hints");
+  });
+
+  it("routes auto mode to read when no hints match", () => {
+    const { mode, inference } = inferClaudeTaskMode({ cwd: "/repo", task: "tell me about the codebase" });
+    expect(mode).toBe("read");
+    expect(inference.reason).toBe("default_read");
+    expect(inference.confidence).toBe("low");
+  });
+
+  it("routes auto mode to write when constraints are provided", () => {
+    const { mode, inference } = inferClaudeTaskMode({
+      cwd: "/repo",
+      task: "do something",
+      constraints: ["do not modify tests"],
+    });
+    expect(mode).toBe("write");
+    expect(inference.reason).toBe("constraints");
+    expect(inference.confidence).toBe("high");
+  });
+
+  it("routes English write hints to write", () => {
+    const { mode } = inferClaudeTaskMode({ cwd: "/repo", task: "fix the login bug" });
+    expect(mode).toBe("write");
+  });
+
+  it("prefers write_hints over read_hints when both match", () => {
+    const { mode, inference } = inferClaudeTaskMode({ cwd: "/repo", task: "修复这个 bug 然后解释一下" });
+    expect(mode).toBe("write");
+    expect(inference.reason).toBe("write_hints");
+    expect(inference.matched_hints).toContain("修复");
+  });
+
+  it("returns matched_hints for Chinese keywords", () => {
+    const { inference } = inferClaudeTaskMode({ cwd: "/repo", task: "实现登录功能" });
+    expect(inference.matched_hints).toEqual(["实现"]);
+  });
+
+  it("returns matched_hints for review keywords", () => {
+    const { inference } = inferClaudeTaskMode({ cwd: "/repo", task: "审查这个补丁" });
+    expect(inference.matched_hints).toEqual(["审查"]);
+  });
+
+  it("returns empty matched_hints for default read", () => {
+    const { inference } = inferClaudeTaskMode({ cwd: "/repo", task: "hello world" });
+    expect(inference.matched_hints).toEqual([]);
   });
 });

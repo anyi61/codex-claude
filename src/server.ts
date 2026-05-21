@@ -18,6 +18,7 @@ import {
   getClaudeResult,
   getBackgroundJobResult,
   getRunLogById,
+  inferClaudeTaskMode,
   manageClaudeReviewGate,
   runClaudeSetup,
   runClaudeTask,
@@ -593,11 +594,6 @@ export function buildTaskInteraction(result: ClaudeTaskResult): InteractionBlock
   };
 }
 
-/**
- * Replicates the write-detection portion of inferClaudeTaskMode in claude-cli.ts
- * without importing it directly, to avoid module coupling. Keep in sync with
- * inferClaudeTaskMode when the mode-inference rules change.
- */
 function wouldBeWriteTask(args: {
   mode?: string;
   task?: string;
@@ -608,19 +604,16 @@ function wouldBeWriteTask(args: {
   if (args.mode === "write") return true;
   if (args.mode === "read" || args.mode === "review") return false;
 
-  // mode is "auto" or omitted
+  // mode is "auto" or omitted — delegate to the single source of truth
   if (args.resume_latest === true) return true;
-  if (!args.task) return false;
-
-  // diff → review (checked BEFORE writeHints in inferClaudeTaskMode)
-  if (typeof args.diff === "string" && args.diff.trim().length > 0) return false;
-
-  if ((args.constraints?.length ?? 0) > 0) return true;
-
-  // same regex as inferClaudeTaskMode writeHints
-  if (/\b(fix|change|implement|write|edit|modify|update|refactor|patch|add|create)\b/.test(args.task.toLowerCase())) return true;
-
-  return false;
+  const { mode } = inferClaudeTaskMode({
+    cwd: "/dev/null",
+    task: args.task,
+    mode: "auto",
+    diff: args.diff,
+    constraints: args.constraints,
+  });
+  return mode === "write";
 }
 
 export function registerToolDefinitions(server: Server): void {

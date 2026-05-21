@@ -84,6 +84,14 @@ vi.mock("../src/claude-cli.js", () => ({
   startBackgroundQuery: startBackgroundQueryMock,
   startBackgroundReview: startBackgroundReviewMock,
   waitForBackgroundJob: waitForBackgroundJobMock,
+  inferClaudeTaskMode: vi.fn((input: { task?: string; diff?: string; constraints?: string[] }) => {
+    const text = (input.task ?? "").toLowerCase();
+    if (typeof input.diff === "string" && input.diff.trim().length > 0) return { mode: "review", inference: { reason: "diff" } };
+    if ((input.constraints?.length ?? 0) > 0) return { mode: "write", inference: { reason: "constraints" } };
+    if (/\b(fix|change|implement|write|edit|modify|update|refactor|patch|add|create)\b/.test(text)) return { mode: "write", inference: { reason: "write_hints" } };
+    if (/修复|实现|修改|添加|重构|补充|提交|更新|创建|编写|删除|移除|调整|优化|改造/.test(input.task ?? "")) return { mode: "write", inference: { reason: "write_hints" } };
+    return { mode: "read", inference: { reason: "default_read" } };
+  }),
 }));
 
 const { handleToolCall, registerToolDefinitions, TOOL_DEFINITIONS, buildTaskInteraction } = await import("../src/server.js");
@@ -1050,6 +1058,20 @@ describe("server background job handlers", () => {
     const result = await handleToolCall("claude_task", {
       cwd: "/repo/.claude/worktrees/codex-delegated-abc123",
       task: "implement this feature",
+    });
+    const payload = parsePayload(result);
+
+    expect(result.isError).toBe(true);
+    expect(String(payload.error)).toContain("Refusing to start delegated write work from inside an existing delegated worktree");
+    expect(runClaudeTaskMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects claude_task mode omitted with Chinese write-keyword task when cwd is inside a delegated worktree", async () => {
+    isDelegatedWorktreePathMock.mockReturnValue(true);
+
+    const result = await handleToolCall("claude_task", {
+      cwd: "/repo/.claude/worktrees/codex-delegated-abc123",
+      task: "修复这个 bug",
     });
     const payload = parsePayload(result);
 

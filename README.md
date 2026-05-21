@@ -209,6 +209,7 @@ enabled_tools = ["claude_status", "claude_runs", "claude_run_inspect", "claude_w
 
 ## 重要说明
 
+- **`mode_inference` 返回字段：** `claude_task` 结果包含可选的 `mode_inference` 对象，记录自动模式推断详情。字段：`requested_mode`（原始请求 mode）、`delegated_mode`（最终 read/review/write）、`reason`（推断原因，如 `write_hints`/`review_hints`/`read_hints`/`query_prefix_override`/`diff`/`constraints`/`explicit`/`files_fallback`/`default_read`）、`confidence`（`high`/`medium`/`low`）、`matched_hints`（命中的关键词数组，如 `["修复"]`）。支持中文/混合语言关键词自动路由。旧客户端可忽略此字段。
 - **安全 profile：** 写入任务默认使用 `security_profile="default"`，不允许 `npx *` 这类远程包执行路径。`strict` 更收窄；只有在明确需要并理解风险时才使用 `permissive`，它会恢复更宽的本地命令 allowlist。
 - **instruction_files vs `files`：** 对普通 `claude_task`，计划、清单、规格文档必须放在 `instruction_files`，或直接在 `task` 中提到。`claude_task.files` 已废弃，只作为兼容的上下文文件处理，不是 apply 范围限制。
 - **`claude_implement.files`** 是严格的范围控制，用于需要精确文件约束的场景。
