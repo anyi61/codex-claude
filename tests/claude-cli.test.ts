@@ -384,6 +384,27 @@ describe("claude cli argument construction", () => {
     await mkdir(logDir, { recursive: true });
     const repo = path.join(root, "repo-a");
     await mkdir(repo, { recursive: true });
+
+    // Session store entry so resolveLatestImplementSession can validate the session
+    const sessionDir = path.join(repo, ".codex-claude-delegate");
+    await mkdir(sessionDir, { recursive: true });
+    const sessionMod = await import("../src/session.js");
+    const repoKey = await sessionMod.computeRepoKey(repo);
+    await writeFile(path.join(sessionDir, "sessions.json"), JSON.stringify({
+      version: 1,
+      sessions: [{
+        session_id: "sess-latest",
+        type: "implement",
+        repo_key: repoKey,
+        repo_path: repo,
+        created_at: new Date().toISOString(),
+        last_used: new Date().toISOString(),
+        use_count: 1,
+        summary: "new",
+        expired: false,
+      }],
+    }, null, 2));
+
     await writeFile(path.join(logDir, "implement-old.json"), JSON.stringify({
       type: "implement",
       input: { cwd: repo },
@@ -412,6 +433,461 @@ describe("claude cli argument construction", () => {
       reloaded.resolveLatestImplementSession({ cwd: path.join(root, "repo-b") })
     ).resolves.toBeNull();
     delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  // --- resolveLatestImplementSession with session store filtering ---
+
+  it("resolveLatestImplementSession skips sessions marked expired in store", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-resolve-expired-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo-a");
+    const logDir = path.join(root, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+
+    // Run log with a session that is expired in store
+    await writeFile(path.join(logDir, "implement-expired.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "success" },
+      session: { returned_session_id: "sess-expired" },
+    }));
+
+    // Session store: mark as expired
+    const sessionDir = path.join(repo, ".codex-claude-delegate");
+    await mkdir(sessionDir, { recursive: true });
+    const sessionMod = await import("../src/session.js");
+    const repoKey = await sessionMod.computeRepoKey(repo);
+    await writeFile(path.join(sessionDir, "sessions.json"), JSON.stringify({
+      version: 1,
+      sessions: [{
+        session_id: "sess-expired",
+        type: "implement",
+        repo_key: repoKey,
+        repo_path: repo,
+        created_at: new Date().toISOString(),
+        last_used: new Date().toISOString(),
+        use_count: 1,
+        summary: "",
+        expired: true,
+      }],
+    }, null, 2));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const resolved = await reloaded.resolveLatestImplementSession({ cwd: repo });
+    expect(resolved).toBeNull();
+
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("resolveLatestImplementSession skips stale sessions older than RECENT_WINDOW_MINUTES", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-resolve-stale-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo-a");
+    const logDir = path.join(root, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+
+    const staleDate = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+
+    await writeFile(path.join(logDir, "implement-stale.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "success" },
+      session: { returned_session_id: "sess-stale" },
+    }));
+
+    const sessionDir = path.join(repo, ".codex-claude-delegate");
+    await mkdir(sessionDir, { recursive: true });
+    const sessionMod = await import("../src/session.js");
+    const repoKey = await sessionMod.computeRepoKey(repo);
+    await writeFile(path.join(sessionDir, "sessions.json"), JSON.stringify({
+      version: 1,
+      sessions: [{
+        session_id: "sess-stale",
+        type: "implement",
+        repo_key: repoKey,
+        repo_path: repo,
+        created_at: staleDate,
+        last_used: staleDate,
+        use_count: 1,
+        summary: "",
+        expired: false,
+      }],
+    }, null, 2));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const resolved = await reloaded.resolveLatestImplementSession({ cwd: repo });
+    expect(resolved).toBeNull();
+
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("resolveLatestImplementSession returns recent valid session with store filtering", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-resolve-recent-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo-a");
+    const logDir = path.join(root, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+
+    await writeFile(path.join(logDir, "implement-recent.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "success" },
+      session: { returned_session_id: "sess-recent" },
+    }));
+
+    const sessionDir = path.join(repo, ".codex-claude-delegate");
+    await mkdir(sessionDir, { recursive: true });
+    const sessionMod = await import("../src/session.js");
+    const repoKey = await sessionMod.computeRepoKey(repo);
+    await writeFile(path.join(sessionDir, "sessions.json"), JSON.stringify({
+      version: 1,
+      sessions: [{
+        session_id: "sess-recent",
+        type: "implement",
+        repo_key: repoKey,
+        repo_path: repo,
+        created_at: new Date().toISOString(),
+        last_used: new Date().toISOString(),
+        use_count: 1,
+        summary: "recent work",
+        expired: false,
+      }],
+    }, null, 2));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const resolved = await reloaded.resolveLatestImplementSession({ cwd: repo });
+    expect(resolved?.run_id).toBe("implement-recent");
+    expect(resolved?.session_id).toBe("sess-recent");
+
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  // --- SEC-009: bounded fresh retry on session-not-found ---
+
+  it("session-not-found fallback: fresh retry succeeds with warning", async () => {
+    const { repo, logDir, stateDir } = await createGitRepoFixture("codex-impl-fallback-");
+
+    // Set up session store so resolveLatestImplementSession can find the session
+    const sessionDir = path.join(repo, ".codex-claude-delegate");
+    await mkdir(sessionDir, { recursive: true });
+    const sessionMod = await import("../src/session.js");
+    const repoKey = await sessionMod.computeRepoKey(repo);
+    await writeFile(path.join(sessionDir, "sessions.json"), JSON.stringify({
+      version: 1,
+      sessions: [{
+        session_id: "sess-resume",
+        type: "implement",
+        repo_key: repoKey,
+        repo_path: repo,
+        created_at: new Date().toISOString(),
+        last_used: new Date().toISOString(),
+        use_count: 1,
+        summary: "Previous work",
+        expired: false,
+      }],
+    }, null, 2));
+
+    // Run log for resume_latest to discover the session_id
+    await writeFile(path.join(logDir, "run-prev.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "success", summary: "Previous implementation" },
+      session: { returned_session_id: "sess-resume" },
+    }));
+
+    let spawnCallCount = 0;
+    const capturedClaudeArgs: string[][] = [];
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return {
+        ...actual,
+        spawn: vi.fn((bin: string, args: string[], options: Record<string, unknown>) => {
+          if (bin !== "claude") return actual.spawn(bin, args, options);
+          spawnCallCount++;
+          capturedClaudeArgs.push([...args]);
+          if (spawnCallCount === 1) {
+            return createClaudeSpawnResult("", "No conversation found with session ID: sess-resume\n", 1);
+          }
+          const stdout = JSON.stringify({
+            session_id: "sess-fresh",
+            structured_output: {
+              status: "success",
+              summary: "Fresh implement succeeded",
+              changed_files: ["README.md"],
+              commands_run: ["git status"],
+              tests: { ran: false },
+              risks: [],
+              next_steps: [],
+            },
+          });
+          return createClaudeSpawnResult(stdout, "", 0);
+        }),
+      };
+    });
+
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+
+    const result = await reloaded.runClaudeImplement({
+      cwd: repo,
+      task: "Continue latest implementation.",
+      resume_latest: true,
+      worktreeName: "codex-delegated-fallback",
+      max_turns: 2,
+      dirty_policy: "committed",
+    }, "run-fallback-ok");
+
+    expect(result.status).not.toBe("failed");
+    expect(spawnCallCount).toBe(2);
+
+    // First call: should include -r flag with session id
+    expect(capturedClaudeArgs[0]).toContain("-r");
+    expect(capturedClaudeArgs[0]).toContain("sess-resume");
+
+    // Second call (fresh retry): should NOT include -r flag
+    expect(capturedClaudeArgs[1]).not.toContain("-r");
+
+    // Result warnings should mention fallback / resume_latest
+    expect(result.warnings.some(
+      (w: string) => /session.*unavailable|fell back|resume.*fail/i.test(w)
+    )).toBe(true);
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  });
+
+  it("session-not-found fallback: does not create a second worktree", async () => {
+    const { repo, logDir, stateDir } = await createGitRepoFixture("codex-impl-fallback-wt-");
+
+    const sessionDir = path.join(repo, ".codex-claude-delegate");
+    await mkdir(sessionDir, { recursive: true });
+    const sessionMod = await import("../src/session.js");
+    const repoKey = await sessionMod.computeRepoKey(repo);
+    await writeFile(path.join(sessionDir, "sessions.json"), JSON.stringify({
+      version: 1,
+      sessions: [{
+        session_id: "sess-resume-wt",
+        type: "implement",
+        repo_key: repoKey,
+        repo_path: repo,
+        created_at: new Date().toISOString(),
+        last_used: new Date().toISOString(),
+        use_count: 1,
+        summary: "Previous work",
+        expired: false,
+      }],
+    }, null, 2));
+
+    await writeFile(path.join(logDir, "run-prev-wt.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "success", summary: "Previous" },
+      session: { returned_session_id: "sess-resume-wt" },
+    }));
+
+    let claudeSpawnCount = 0;
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return {
+        ...actual,
+        spawn: vi.fn((bin: string, args: string[], options: Record<string, unknown>) => {
+          if (bin !== "claude") return actual.spawn(bin, args, options);
+          claudeSpawnCount++;
+          if (claudeSpawnCount === 1) {
+            return createClaudeSpawnResult("", "No conversation found with session ID: sess-resume-wt\n", 1);
+          }
+          const stdout = JSON.stringify({
+            session_id: "sess-fresh-wt",
+            structured_output: {
+              status: "success",
+              summary: "Fresh retry ok",
+              changed_files: ["README.md"],
+              commands_run: [],
+              tests: { ran: false },
+              risks: [],
+              next_steps: [],
+            },
+          });
+          return createClaudeSpawnResult(stdout, "", 0);
+        }),
+      };
+    });
+
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+
+    const wtName = "codex-delegated-fallback-wt";
+    const result = await reloaded.runClaudeImplement({
+      cwd: repo,
+      task: "Continue.",
+      resume_latest: true,
+      worktreeName: wtName,
+      max_turns: 2,
+      dirty_policy: "committed",
+    }, "run-fallback-wt");
+
+    expect(result.status).not.toBe("failed");
+    expect(claudeSpawnCount).toBe(2);
+
+    // Only the single worktree should exist — no second worktree
+    const worktreePath = path.join(repo, ".claude", "worktrees", wtName);
+    expect(existsSync(worktreePath)).toBe(true);
+    // Verify that only one codex-delegated worktree was created
+    const wtDir = path.join(repo, ".claude", "worktrees");
+    const { readdirSync } = await import("node:fs");
+    const entries = readdirSync(wtDir).filter((d) => d.startsWith("codex-delegated-"));
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toBe(wtName);
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  });
+
+  it("session-not-found fallback: fresh retry fails without second retry", async () => {
+    const { repo, logDir, stateDir } = await createGitRepoFixture("codex-impl-fallback-fail-");
+
+    const sessionDir = path.join(repo, ".codex-claude-delegate");
+    await mkdir(sessionDir, { recursive: true });
+    const sessionMod = await import("../src/session.js");
+    const repoKey = await sessionMod.computeRepoKey(repo);
+    await writeFile(path.join(sessionDir, "sessions.json"), JSON.stringify({
+      version: 1,
+      sessions: [{
+        session_id: "sess-double-fail",
+        type: "implement",
+        repo_key: repoKey,
+        repo_path: repo,
+        created_at: new Date().toISOString(),
+        last_used: new Date().toISOString(),
+        use_count: 1,
+        summary: "Previous work",
+        expired: false,
+      }],
+    }, null, 2));
+
+    await writeFile(path.join(logDir, "run-prev-df.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "success", summary: "Previous" },
+      session: { returned_session_id: "sess-double-fail" },
+    }));
+
+    let claudeSpawnCount = 0;
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return {
+        ...actual,
+        spawn: vi.fn((bin: string, args: string[], options: Record<string, unknown>) => {
+          if (bin !== "claude") return actual.spawn(bin, args, options);
+          claudeSpawnCount++;
+          // Both calls fail with session not found
+          return createClaudeSpawnResult("", "No conversation found with session ID: sess-double-fail\n", 1);
+        }),
+      };
+    });
+
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+
+    const result = await reloaded.runClaudeImplement({
+      cwd: repo,
+      task: "Continue.",
+      resume_latest: true,
+      worktreeName: "codex-delegated-double-fail",
+      max_turns: 2,
+      dirty_policy: "committed",
+    }, "run-double-fail");
+
+    // Should NOT have retried more than once
+    expect(claudeSpawnCount).toBe(2);
+    expect(result.status).toBe("failed");
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  });
+
+  it("non-session-not-found error does not trigger fallback", async () => {
+    const { repo, logDir, stateDir } = await createGitRepoFixture("codex-impl-no-fallback-");
+
+    const sessionDir = path.join(repo, ".codex-claude-delegate");
+    await mkdir(sessionDir, { recursive: true });
+    const sessionMod = await import("../src/session.js");
+    const repoKey = await sessionMod.computeRepoKey(repo);
+    await writeFile(path.join(sessionDir, "sessions.json"), JSON.stringify({
+      version: 1,
+      sessions: [{
+        session_id: "sess-other-err",
+        type: "implement",
+        repo_key: repoKey,
+        repo_path: repo,
+        created_at: new Date().toISOString(),
+        last_used: new Date().toISOString(),
+        use_count: 1,
+        summary: "Previous work",
+        expired: false,
+      }],
+    }, null, 2));
+
+    await writeFile(path.join(logDir, "run-prev-other.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "success", summary: "Previous" },
+      session: { returned_session_id: "sess-other-err" },
+    }));
+
+    let claudeSpawnCount = 0;
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return {
+        ...actual,
+        spawn: vi.fn((bin: string, args: string[], options: Record<string, unknown>) => {
+          if (bin !== "claude") return actual.spawn(bin, args, options);
+          claudeSpawnCount++;
+          // Non session-not-found error: timeout / network issue
+          return createClaudeSpawnResult("", "Connection timed out\n", 1);
+        }),
+      };
+    });
+
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+
+    await expect(
+      reloaded.runClaudeImplement({
+        cwd: repo,
+        task: "Continue.",
+        resume_latest: true,
+        worktreeName: "codex-delegated-no-fb",
+        max_turns: 2,
+        dirty_policy: "committed",
+      }, "run-no-fallback")
+    ).rejects.toThrow();
+
+    // Only one spawn call — no fallback retry
+    expect(claudeSpawnCount).toBe(1);
+
+    vi.doUnmock("node:child_process");
     vi.resetModules();
   });
 
@@ -1284,6 +1760,26 @@ describe("claude cli argument construction", () => {
       report: { status: "success", summary: "Previous implementation" },
       session: { returned_session_id: "sess-missing" },
     }));
+
+    // Session store entry so resolveLatestImplementSession can find it
+    const sessionDir = path.join(repo, ".codex-claude-delegate");
+    await mkdir(sessionDir, { recursive: true });
+    const sessionMod = await import("../src/session.js");
+    const repoKey = await sessionMod.computeRepoKey(repo);
+    await writeFile(path.join(sessionDir, "sessions.json"), JSON.stringify({
+      version: 1,
+      sessions: [{
+        session_id: "sess-missing",
+        type: "implement",
+        repo_key: repoKey,
+        repo_path: repo,
+        created_at: new Date().toISOString(),
+        last_used: new Date().toISOString(),
+        use_count: 1,
+        summary: "Previous implementation",
+        expired: false,
+      }],
+    }, null, 2));
 
     vi.doMock("node:child_process", async () => {
       const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
@@ -2160,6 +2656,26 @@ describe("claude cli argument construction", () => {
     await mkdir(repoA, { recursive: true });
     await mkdir(repoB, { recursive: true });
     await mkdir(logDir, { recursive: true });
+
+    // Session store for repoA so resolveLatestImplementSession can validate
+    const sessionDirA = path.join(repoA, ".codex-claude-delegate");
+    await mkdir(sessionDirA, { recursive: true });
+    const sessionMod = await import("../src/session.js");
+    const repoKeyA = await sessionMod.computeRepoKey(repoA);
+    await writeFile(path.join(sessionDirA, "sessions.json"), JSON.stringify({
+      version: 1,
+      sessions: [{
+        session_id: "sess-repo-a",
+        type: "implement",
+        repo_key: repoKeyA,
+        repo_path: repoA,
+        created_at: new Date().toISOString(),
+        last_used: new Date().toISOString(),
+        use_count: 1,
+        summary: "Repo A partial",
+        expired: false,
+      }],
+    }, null, 2));
 
     await writeFile(path.join(logDir, "run-repo-a.json"), JSON.stringify({
       type: "implement",

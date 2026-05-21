@@ -806,15 +806,20 @@ export async function cleanupDelegateArtifacts(
 
 export async function resolveLatestImplementSession(input: { cwd: string }): Promise<{ run_id: string; session_id: string } | null> {
   const runs = await listRunLogs({ cwd: input.cwd, type: "implement", limit: 50 });
+  const store = await getStore(input.cwd);
+  const cutoff = Date.now() - RECENT_WINDOW_MINUTES * 60 * 1000;
   for (const run of runs.entries) {
     const raw = await readRunLogFile(run.run_id, input.cwd);
     const sessionId =
       raw && typeof raw.session?.returned_session_id === "string"
         ? raw.session.returned_session_id
         : null;
-    if (sessionId) {
-      return { run_id: run.run_id, session_id: sessionId };
-    }
+    if (!sessionId) continue;
+    const session = await store.getById(sessionId);
+    if (!session) continue;
+    if (session.expired) continue;
+    if (new Date(session.last_used).getTime() <= cutoff) continue;
+    return { run_id: run.run_id, session_id: sessionId };
   }
   return null;
 }
@@ -1618,6 +1623,7 @@ export async function runClaudeImplement(
   let report: Record<string, unknown>;
   let returnedSessionId: string | null = null;
   let execution: ExecutionMetadata;
+  let fallbackFreshRetry = false;
   const startTime = Date.now();
 
   try {
@@ -1630,56 +1636,76 @@ export async function runClaudeImplement(
 
     if (resumeSessionId && isSessionNotFoundError(errorMsg)) {
       await store.markExpired(resumeSessionId);
-      log(`Session ${resumeSessionId} not found, marked expired`);
-      const durationMs = Date.now() - startTime;
-      const failedExecution: ExecutionMetadata = {
-        exit_code: 1,
-        duration_ms: durationMs,
-        timed_out: false,
-        stdout_tail: "",
-        stderr_tail: errorMsg.slice(-4000),
-      };
-      const warnings = [
-        `Claude session ${resumeSessionId} is unavailable and was marked expired. Start a fresh claude_implement run instead of resume_latest.`,
-      ];
-      const failedReport = {
-        status: "failed",
-        summary: `Claude session ${resumeSessionId} is unavailable.`,
-        changed_files: [],
-        commands_run: [],
-        tests: { ran: false },
-        risks: ["The delegated worktree may still exist and should be inspected or cleaned up."],
-        next_steps: [
-          "Inspect the failed run with claude_run_inspect.",
-          "Start a fresh claude_implement run if the task still needs to continue.",
-          "Clean up the delegated worktree if it is not useful.",
-        ],
-      };
-      const observed = await observeResult(implementInput.cwd, worktreeName, baseCommit, requestedFiles).catch(() => undefined);
-      const sessionLog: SessionLog = {
-        requested_session_id: resumeSessionId,
-        resumed: true,
-        forked,
-        returned_session_id: null,
-      };
-      await logRun(runId, {
-        type: "implement",
-        input: implementInput,
-        report: failedReport,
-        observed,
-        execution: failedExecution,
-        session: sessionLog,
-        error: errorMsg,
-        duration_ms: durationMs,
-      }, implementInput.cwd);
-      return makeEnvelope("failed", undefined, failedExecution, warnings, {
-        claude_report: failedReport,
-        server_observed: observed,
-      });
-    }
+      log(`Session ${resumeSessionId} not found, marked expired; falling back to fresh implement`);
 
-    await logRun(runId, { type: "implement", input: implementInput, error: errorMsg, duration_ms: Date.now() - startTime }, implementInput.cwd);
-    throw err;
+      // Bounded fresh retry: one shot in the same worktree, no recursion.
+      const { session_key: _, ...inputWithoutSession } = implementInput;
+      const freshInput: ClaudeImplementInput = {
+        ...inputWithoutSession,
+        cwd: worktreePath,
+        files: requestedFiles.length > 0 ? requestedFiles : undefined,
+      };
+      const freshOpts = createImplementOptions(freshInput, undefined, forked);
+
+      try {
+        const freshResult = await spawnClaude(freshOpts);
+        report = freshResult.report;
+        returnedSessionId = freshResult.session_id;
+        execution = freshResult.execution;
+        fallbackFreshRetry = true;
+      } catch (retryErr) {
+        const retryErrorMsg = (retryErr as Error).message;
+        const durationMs = Date.now() - startTime;
+        const failedExecution: ExecutionMetadata = {
+          exit_code: 1,
+          duration_ms: durationMs,
+          timed_out: false,
+          stdout_tail: "",
+          stderr_tail: retryErrorMsg.slice(-4000),
+        };
+        const failureWarnings = [
+          `Claude session ${resumeSessionId} is unavailable and was marked expired. A fresh implement retry also failed: ${retryErrorMsg.slice(0, 200)}`,
+        ];
+        const failedReport = {
+          status: "failed",
+          summary: `Claude session ${resumeSessionId} is unavailable and fresh retry also failed.`,
+          changed_files: [],
+          commands_run: [],
+          tests: { ran: false },
+          risks: ["The delegated worktree may still exist and should be inspected or cleaned up."],
+          next_steps: [
+            "Inspect the failed run with claude_run_inspect.",
+            "Start a fresh claude_implement run if the task still needs to continue.",
+            "Clean up the delegated worktree if it is not useful.",
+          ],
+        };
+        const observed = await observeResult(implementInput.cwd, worktreeName, baseCommit, requestedFiles).catch(() => undefined);
+        const sessionLog: SessionLog = {
+          requested_session_id: resumeSessionId,
+          resumed: true,
+          forked,
+          returned_session_id: null,
+        };
+        await logRun(runId, {
+          type: "implement",
+          input: implementInput,
+          report: failedReport,
+          observed,
+          execution: failedExecution,
+          session: sessionLog,
+          error: retryErrorMsg,
+          duration_ms: durationMs,
+          fallback_fresh_retry_failed: true,
+        }, implementInput.cwd);
+        return makeEnvelope("failed", undefined, failedExecution, failureWarnings, {
+          claude_report: failedReport,
+          server_observed: observed,
+        });
+      }
+    } else {
+      await logRun(runId, { type: "implement", input: implementInput, error: errorMsg, duration_ms: Date.now() - startTime }, implementInput.cwd);
+      throw err;
+    }
   }
 
   // Persist session (record only, never auto-resume implement)
@@ -1717,7 +1743,7 @@ export async function runClaudeImplement(
 
   const sessionLog: SessionLog = {
     requested_session_id: resumeSessionId ?? null,
-    resumed: !!resumeSessionId,
+    resumed: fallbackFreshRetry ? false : !!resumeSessionId,
     forked,
     returned_session_id: returnedSessionId,
   };
@@ -1730,6 +1756,7 @@ export async function runClaudeImplement(
     execution,
     session: sessionLog,
     duration_ms: Date.now() - startTime,
+    ...(fallbackFreshRetry ? { fallback_fresh_retry: true } : {}),
   }, implementInput.cwd);
 
   await store.prune();
@@ -1743,7 +1770,11 @@ export async function runClaudeImplement(
           "Claude ended before a clean completion and no changed files were observed. Inspect diagnostics, then retry or resume instead of applying this worktree.",
         ]
       : [];
+  const fallbackWarning = fallbackFreshRetry && resumeSessionId
+    ? `resume_latest session ${resumeSessionId} is unavailable on Claude's side and was marked expired. The delegated worktree fell back to a fresh implement — inspect results carefully.`
+    : null;
   const warnings = [
+    ...(fallbackWarning ? [fallbackWarning] : []),
     ...(observed.resource_limits?.warnings ?? []),
     ...(observed.scope?.warnings ?? []),
     ...recoveryWarnings,
