@@ -2952,9 +2952,132 @@ describe("claude cli argument construction", () => {
     expect(stored?.payload.files).toBeUndefined();
     expect(stored?.payload.instruction_files).toEqual(["README.md"]);
     expect(result.warnings).toEqual([
-      "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use advanced claude_implement allowed_files/scope options for strict file modification limits.",
+      "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use allowed_files for strict file modification limits.",
     ]);
     expect(Array.isArray(result.next_actions)).toBe(true);
+  });
+
+  it("passes claude_task allowed_files to implement files for write mode", async () => {
+    const { repo, jobStore } = await createWorkflowFixture();
+    const spawned = createDetachedSpawnResult(6010);
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => spawned) };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      task: "Implement feature in src/a.ts.",
+      mode: "write",
+      allowed_files: ["src/a.ts", "src/b.ts"],
+      dirty_policy: "committed",
+      wait_strategy: "background",
+    }, "run-task-allowed-files");
+
+    expect(result.delegated_mode).toBe("write");
+    expect(result.job?.type).toBe("implement");
+    const stored = await jobStore.get(result.job!.job_id);
+    expect(stored?.payload.files).toEqual(["src/a.ts", "src/b.ts"]);
+  });
+
+  it("passes claude_task max_changed_files to implement", async () => {
+    const { repo, jobStore } = await createWorkflowFixture();
+    const spawned = createDetachedSpawnResult(6011);
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => spawned) };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      task: "Implement feature.",
+      mode: "write",
+      max_changed_files: 10,
+      dirty_policy: "committed",
+      wait_strategy: "background",
+    }, "run-task-max-changed");
+
+    expect(result.delegated_mode).toBe("write");
+    const stored = await jobStore.get(result.job!.job_id);
+    expect(stored?.payload.max_changed_files).toBe(10);
+  });
+
+  it("keeps claude_task files as instruction files, not implement scope, when allowed_files is absent", async () => {
+    const { repo, jobStore } = await createWorkflowFixture();
+    const spawned = createDetachedSpawnResult(6012);
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => spawned) };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      task: "Execute plan.",
+      mode: "write",
+      files: ["PLAN.md"],
+      dirty_policy: "committed",
+      wait_strategy: "background",
+    }, "run-task-files-instruction");
+
+    const stored = await jobStore.get(result.job!.job_id);
+    expect(stored?.payload.files).toBeUndefined();
+    expect(stored?.payload.instruction_files).toEqual(["PLAN.md"]);
+  });
+
+  it("keeps deprecated files separate from allowed_files when both are provided", async () => {
+    const { repo, jobStore } = await createWorkflowFixture();
+    const spawned = createDetachedSpawnResult(6013);
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => spawned) };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      task: "Execute plan.",
+      mode: "write",
+      files: ["PLAN.md"],
+      allowed_files: ["src/a.ts"],
+      dirty_policy: "committed",
+      wait_strategy: "background",
+    }, "run-task-both-files");
+
+    const stored = await jobStore.get(result.job!.job_id);
+    expect(stored?.payload.files).toEqual(["src/a.ts"]);
+    expect(stored?.payload.instruction_files).toEqual(["PLAN.md"]);
+    expect(result.warnings).toEqual([
+      "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use allowed_files for strict file modification limits.",
+    ]);
+  });
+
+  it("does not warn when read mode receives allowed_files", async () => {
+    const { repo } = await createWorkflowFixture();
+    const spawned = createDetachedSpawnResult(6014);
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => spawned) };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      task: "Explain src/a.ts.",
+      mode: "read",
+      allowed_files: ["src/a.ts"],
+      wait_strategy: "background",
+    }, "run-task-read-allowed");
+
+    expect(result.delegated_mode).toBe("read");
+    expect(result.warnings).toEqual([]);
   });
 
   it("routes claude_task write mode to a background implement job with explicit background", async () => {

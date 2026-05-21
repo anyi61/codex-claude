@@ -170,6 +170,8 @@ const BASE_TOOL_DEFINITIONS = [
         resume_latest: { type: "boolean", description: "For write mode, resume the latest implement session for this repository." },
         instruction_files: { type: "array", items: { type: "string" }, description: "Task instruction/context files. These are not apply scope limits." },
         files: { type: "array", items: { type: "string" }, description: "Deprecated for claude_task: treated as instruction_files, not apply scope." },
+        allowed_files: { type: "array", items: { type: "string" }, description: "Hard file modification scope. Only these files may be changed in write mode. Files changed outside this list will be rejected." },
+        max_changed_files: { type: "number", description: "Warn if Claude changes more than this many files. Must be a positive integer <= 100." },
         constraints: { type: "array", items: { type: "string" }, description: "Implementation constraints for write mode" },
         diff: { type: "string", description: "Diff to review. Presence strongly biases auto mode toward review." },
         dirty_policy: { type: "string", enum: ["ask", "committed", "snapshot"], description: "Write-mode handling for uncommitted main-workspace changes: ask (default), committed (ignore dirty changes and use HEAD), or snapshot (copy dirty files into the delegated worktree)." },
@@ -741,7 +743,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
       case "claude_task": {
         const parsed = claudeTaskInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { cwd: inputCwd, mode, files, instruction_files, job_id } = parsed.data;
+        const { cwd: inputCwd, mode, files, instruction_files, allowed_files, job_id } = parsed.data;
         const check = await validateCwd(inputCwd);
         if (!check.ok) return errorResult(check.error!);
 
@@ -749,6 +751,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
           const fileCheck = await validateFilesWithinCwd(check.resolved, [
             ...(instruction_files ?? []),
             ...(files ?? []),
+            ...(allowed_files ?? []),
           ]);
           if (!fileCheck.ok) return errorResult(fileCheck.error!);
 

@@ -65,6 +65,8 @@ export interface ClaudeTaskInput {
   instruction_files?: string[];
   /** @deprecated claude_task treats files as instruction_files, not apply scope. */
   files?: string[];
+  allowed_files?: string[];
+  max_changed_files?: number;
   constraints?: string[];
   diff?: string;
   dirty_policy?: "ask" | "committed" | "snapshot";
@@ -679,6 +681,8 @@ export const claudeTaskInputSchema = z.object({
   resume_latest: z.boolean().optional(),
   instruction_files: filesSchema,
   files: filesSchema,
+  allowed_files: filesSchema,
+  max_changed_files: z.number().int().positive().max(100).optional(),
   constraints: constraintsSchema,
   diff: z.string().optional(),
   dirty_policy: dirtyPolicySchema,
@@ -866,7 +870,7 @@ export function buildImplementPrompt(input: ClaudeImplementInput): string {
   }
 
   if (input.files?.length) {
-    prompt += `## Relevant Files\n\n${input.files.map((f) => `- \`${f}\``).join("\n")}\n\n`;
+    prompt += `## Allowed Files\n\nModify only these files. Files changed outside this list will be rejected by the scope checker.\n\n${input.files.map((f) => `- \`${f}\``).join("\n")}\n\n`;
   }
 
   prompt += `## Constraints\n\n`;

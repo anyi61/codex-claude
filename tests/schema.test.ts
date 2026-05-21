@@ -277,6 +277,58 @@ describe("schema definitions", () => {
     expect(prompt).not.toContain("## Relevant Files");
   });
 
+  it("accepts allowed_files and max_changed_files on claude_task", () => {
+    const parsed = claudeTaskInputSchema.safeParse({
+      cwd: "/repo",
+      task: "write docs",
+      mode: "write",
+      allowed_files: ["src/a.ts", "src/b.ts"],
+      max_changed_files: 5,
+    });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) throw new Error("unexpected parse failure");
+    expect(parsed.data.allowed_files).toEqual(["src/a.ts", "src/b.ts"]);
+    expect(parsed.data.max_changed_files).toBe(5);
+  });
+
+  it("rejects invalid claude_task max_changed_files", () => {
+    expect(claudeTaskInputSchema.safeParse({
+      cwd: "/repo",
+      task: "write docs",
+      max_changed_files: 0,
+    }).success).toBe(false);
+    expect(claudeTaskInputSchema.safeParse({
+      cwd: "/repo",
+      task: "write docs",
+      max_changed_files: 101,
+    }).success).toBe(false);
+    expect(claudeTaskInputSchema.safeParse({
+      cwd: "/repo",
+      task: "write docs",
+      max_changed_files: -1,
+    }).success).toBe(false);
+  });
+
+  it("buildImplementPrompt labels files as allowed files scope", () => {
+    const prompt = buildImplementPrompt({
+      cwd: "/repo",
+      task: "implement feature",
+      files: ["src/a.ts"],
+    });
+    expect(prompt).toContain("## Allowed Files");
+    expect(prompt).toContain("Modify only these files");
+    expect(prompt).not.toContain("## Relevant Files");
+  });
+
+  it("buildImplementPrompt omits allowed files section when files are absent", () => {
+    const prompt = buildImplementPrompt({
+      cwd: "/repo",
+      task: "implement feature",
+    });
+    expect(prompt).not.toContain("## Allowed Files");
+    expect(prompt).not.toContain("## Relevant Files");
+  });
+
   it("accepts high-level result inputs and rejects ambiguous selectors", () => {
     expect(claudeResultInputSchema.safeParse({ cwd: "/repo" }).success).toBe(true);
     expect(claudeResultInputSchema.safeParse({ cwd: "/repo", job_id: "job-1" }).success).toBe(true);

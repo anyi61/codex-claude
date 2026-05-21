@@ -307,7 +307,7 @@ function summarizeTaskDispatch(mode: Exclude<ClaudeTaskMode, "auto">, isBackgrou
 }
 
 const CLAUDE_TASK_FILES_DEPRECATED_WARNING =
-  "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use advanced claude_implement allowed_files/scope options for strict file modification limits.";
+  "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use allowed_files for strict file modification limits.";
 
 function resolveTaskInstructionFiles(input: ClaudeTaskInput): { instructionFiles?: string[]; warnings: string[] } {
   const merged = [...(input.instruction_files ?? []), ...(input.files ?? [])]
@@ -563,11 +563,13 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         cwd: input.cwd,
         task: input.task!,
         instruction_files: instructionFiles,
+        files: input.allowed_files,
         constraints: input.constraints,
         timeout_sec: INTERNAL_CLAUDE_TIMEOUT_SEC,
         resume_latest: input.resume_latest,
         dirty_policy: input.dirty_policy,
         security_profile: input.security_profile,
+        max_changed_files: input.max_changed_files,
       });
       if (!("job" in implementResult)) {
         return {

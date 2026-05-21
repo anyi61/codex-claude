@@ -355,7 +355,7 @@ describe("server background job handlers", () => {
       summary: "Delegated write task as a background job.",
       job: { job_id: "job-write", type: "implement", status: "queued" },
       warnings: [
-        "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use advanced claude_implement allowed_files/scope options for strict file modification limits.",
+        "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use allowed_files for strict file modification limits.",
       ],
       next_actions: [],
     });
@@ -383,7 +383,7 @@ describe("server background job handlers", () => {
       dirty_policy: "committed",
     }), expect.any(String));
     expect(payload.warnings).toEqual([
-      "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use advanced claude_implement allowed_files/scope options for strict file modification limits.",
+      "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use allowed_files for strict file modification limits.",
     ]);
   });
 
@@ -914,6 +914,69 @@ describe("server background job handlers", () => {
   it("exposes confirmed_by_user on claude_apply input schema", () => {
     const applyTool = TOOL_DEFINITIONS.find((tool) => tool.name === "claude_apply");
     expect(applyTool?.inputSchema.properties).toHaveProperty("confirmed_by_user");
+  });
+
+  it("documents allowed_files and max_changed_files in claude_task metadata", () => {
+    const taskTool = TOOL_DEFINITIONS.find((tool) => tool.name === "claude_task");
+    expect(taskTool?.inputSchema.properties).toHaveProperty("allowed_files");
+    expect(taskTool?.inputSchema.properties).toHaveProperty("max_changed_files");
+  });
+
+  it("rejects claude_task allowed_files outside cwd", async () => {
+    validateFilesWithinCwdMock.mockResolvedValue({ ok: false, error: "File is outside allowed roots" });
+
+    const result = await handleToolCall("claude_task", {
+      cwd: "/repo/input",
+      task: "write docs",
+      mode: "write",
+      allowed_files: ["../secret"],
+      dirty_policy: "committed",
+    });
+    const payload = parsePayload(result);
+
+    expect(result.isError).toBe(true);
+    expect(String(payload.error)).toContain("outside allowed roots");
+    expect(validateFilesWithinCwdMock).toHaveBeenCalledWith("/repo/resolved", ["../secret"]);
+    expect(runClaudeTaskMock).not.toHaveBeenCalled();
+  });
+
+  it("does not treat allowed_files alone as write-mode nested guard signal", async () => {
+    runClaudeTaskMock.mockResolvedValue({
+      delegated_mode: "read",
+      summary: "read ok",
+      status: "success",
+      completed_inline: true,
+      next_actions: [],
+    });
+
+    const result = await handleToolCall("claude_task", {
+      cwd: "/repo/input",
+      task: "explain src/a.ts",
+      mode: "auto",
+      allowed_files: ["src/a.ts"],
+    });
+    const payload = parsePayload(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(payload.delegated_mode).toBe("read");
+    expect(runClaudeTaskMock).toHaveBeenCalled();
+    expect(supportsWorktreeMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects nested claude_task when write intent uses allowed_files", async () => {
+    isDelegatedWorktreePathMock.mockReturnValue(true);
+
+    const result = await handleToolCall("claude_task", {
+      cwd: "/repo/.claude/worktrees/codex-delegated-abc123",
+      task: "implement feature",
+      mode: "write",
+      allowed_files: ["src/a.ts"],
+    });
+    const payload = parsePayload(result);
+
+    expect(result.isError).toBe(true);
+    expect(String(payload.error)).toContain("Refusing to start delegated write work from inside an existing delegated worktree");
+    expect(runClaudeTaskMock).not.toHaveBeenCalled();
   });
 
   it("exposes include_patch and patch_max_bytes in TOOL_DEFINITIONS for claude_apply", () => {
