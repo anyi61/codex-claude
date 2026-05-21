@@ -2920,6 +2920,8 @@ describe("claude cli argument construction", () => {
       stale_worktrees: 0,
       orphan_worktrees: 0,
       apply_blocked_runs: 0,
+      active_implement_jobs: 0,
+      active_claude_processes: 0,
     });
     expect(result.attention_items).toEqual([]);
   });

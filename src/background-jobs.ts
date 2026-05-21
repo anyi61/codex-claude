@@ -27,6 +27,7 @@ import type {
   RunLogStatus,
   WorkflowNextAction,
 } from "./schema.js";
+import { MAX_CONCURRENT_IMPLEMENTS } from "./schema.js";
 
 export const JOB_STATE_DIR_ENV = "CODEX_CLAUDE_BACKGROUND_STATE_DIR";
 const JOB_HEARTBEAT_INTERVAL_MS = 15000;
@@ -396,6 +397,21 @@ function buildBackgroundJobResponse(input: { cwd: string; job: BackgroundJobSumm
   };
 }
 
+function buildBusyJobResponse(input: { cwd: string; job: BackgroundJobSummary }): BackgroundJobEnqueueResult {
+  return {
+    job: input.job,
+    deduped: false,
+    do_not_start_duplicate_job: true,
+    message: `Another implement job is already active in this repo: ${input.job.job_id} (${input.job.status}). Wait for it to finish or cancel it before starting a new implement task.`,
+    next_actions: buildJobNextActions(input.cwd, input.job),
+    concurrency: {
+      busy: true,
+      max_concurrent_implements: MAX_CONCURRENT_IMPLEMENTS,
+      active_implements: 1,
+    },
+  };
+}
+
 export async function enqueueBackgroundJob(input: {
   cwd: string;
   type: BackgroundJobType;
@@ -407,6 +423,11 @@ export async function enqueueBackgroundJob(input: {
   if (fingerprint) {
     const existing = await jobStore.findActiveByFingerprint({ cwd: input.cwd, type: input.type, fingerprint });
     if (existing) return buildBackgroundJobResponse({ cwd: input.cwd, job: toJobSummary(existing), deduped: true });
+  }
+
+  if (input.type === "implement" && MAX_CONCURRENT_IMPLEMENTS > 0) {
+    const activeImplement = await jobStore.findActiveImplementInRepo({ cwd: input.cwd });
+    if (activeImplement) return buildBusyJobResponse({ cwd: input.cwd, job: toJobSummary(activeImplement) });
   }
 
   const now = new Date().toISOString();

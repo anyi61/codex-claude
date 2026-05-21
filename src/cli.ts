@@ -70,6 +70,12 @@ export interface DoctorCheckAllowRoots {
   current_repo_allowed?: boolean;
 }
 
+export interface DoctorCheckActiveClaudeProcesses {
+  ok: boolean;
+  count: number;
+  jobs: Array<{ job_id: string; pid: number; type: string }>;
+}
+
 export interface DoctorResult {
   ready: boolean;
   status: DoctorStatus;
@@ -82,6 +88,7 @@ export interface DoctorResult {
     mcp_server: DoctorCheckMcpServer;
     default_tools: DoctorCheckDefaultTools;
     allow_roots: DoctorCheckAllowRoots;
+    active_claude_processes: DoctorCheckActiveClaudeProcesses;
   };
   warnings: string[];
   problems: Array<{ problem: string; fix: string; next_step: string }>;
@@ -259,6 +266,7 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
       mcp_server: { ok: false, name: "claude_delegate" },
       default_tools: { ok: false, enabled_count: 0, enabled: [] },
       allow_roots: { ok: false },
+      active_claude_processes: { ok: true, count: 0, jobs: [] },
     },
     warnings: [],
     problems: [],
@@ -464,6 +472,29 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
     addProblem("Could not verify CODEX_CLAUDE_ALLOW_ROOTS", "Check that the current directory exists and Codex config is readable.", "codex-claude doctor --json");
   }
 
+  // Active background job runner PIDs (persisted state, not live Claude CLI children)
+  try {
+    const { existsSync } = await import("node:fs");
+    const { getBackgroundStateDir, getJobStore } = await import("./background-jobs.js");
+    const stateDir = getBackgroundStateDir();
+    if (existsSync(stateDir)) {
+      const store = await getJobStore();
+      const runningJobs = await store.list({ limit: 10, status: "running" });
+      if (runningJobs.length > 0) {
+        const activeProcesses = runningJobs
+          .filter((job) => typeof job.pid === "number")
+          .map((job) => ({ job_id: job.job_id, pid: job.pid!, type: job.type }));
+        result.checks.active_claude_processes = {
+          ok: true,
+          count: activeProcesses.length,
+          jobs: activeProcesses,
+        };
+      }
+    }
+  } catch {
+    result.checks.active_claude_processes = { ok: true, count: 0, jobs: [] };
+  }
+
   // Determine overall status
   if (notReady) {
     result.status = "not_ready";
@@ -510,6 +541,7 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
     }
     emit(`MCP server: ${result.checks.mcp_server.ok ? "claude_delegate configured" : "claude_delegate not configured"}`, result.checks.mcp_server.ok);
     emit(`Default tools: ${result.checks.default_tools.enabled_count} enabled`, result.checks.default_tools.ok);
+    emit(`Active Claude processes: ${result.checks.active_claude_processes.count}`, true);
     if (result.checks.allow_roots.ok !== undefined) {
       emit(`Allow roots: ${result.checks.allow_roots.current_repo_allowed ? "current repo allowed" : "current repo is not included"}`, result.checks.allow_roots.ok);
     }

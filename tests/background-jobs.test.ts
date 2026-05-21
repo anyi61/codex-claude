@@ -1,4 +1,5 @@
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
@@ -414,5 +415,141 @@ describe("background jobs module", () => {
     const module = await import("../src/background-jobs.js");
     const count = await module.recoverCrashedJobs();
     expect(count).toBe(0);
+  });
+
+  it("returns busy when a concurrent implement job already exists in the same repo", async () => {
+    const { repo } = await createJobFixture();
+    const spawnMock = vi.fn(() => createDetachedSpawnResult(7001));
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: spawnMock };
+    });
+    const module = await import("../src/background-jobs.js");
+    const first = await module.enqueueBackgroundJob({ cwd: repo, type: "implement", payload: { cwd: repo, task: "implement feature A" }, dedupe: true });
+    expect(first.job.status).toBe("queued");
+    const second = await module.enqueueBackgroundJob({ cwd: repo, type: "implement", payload: { cwd: repo, task: "implement feature B" }, dedupe: true });
+    expect(second.concurrency).toEqual({
+      busy: true,
+      max_concurrent_implements: 1,
+      active_implements: 1,
+    });
+    expect(second.job.job_id).toBe(first.job.job_id);
+    expect(second.do_not_start_duplicate_job).toBe(true);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not block concurrent read or review jobs when an implement job is running", async () => {
+    const { repo } = await createJobFixture();
+    const spawnMock = vi.fn(() => createDetachedSpawnResult(7100));
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: spawnMock };
+    });
+    const module = await import("../src/background-jobs.js");
+    await module.enqueueBackgroundJob({ cwd: repo, type: "implement", payload: { cwd: repo, task: "implement X" }, dedupe: true });
+    const review = await module.enqueueBackgroundJob({ cwd: repo, type: "review", payload: { cwd: repo, task: "review X" } });
+    expect(review.concurrency).toBeUndefined();
+    expect(review.job.status).toBe("queued");
+    const query = await module.enqueueBackgroundJob({ cwd: repo, type: "query", payload: { cwd: repo, task: "explain X" } });
+    expect(query.concurrency).toBeUndefined();
+    expect(query.job.status).toBe("queued");
+  });
+
+  it("fingerprint dedupe takes precedence over busy concurrency check for implement", async () => {
+    const { repo } = await createJobFixture();
+    const spawnMock = vi.fn(() => createDetachedSpawnResult(7200));
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: spawnMock };
+    });
+    const module = await import("../src/background-jobs.js");
+    const payload = { cwd: repo, task: "implement same task" };
+    const first = await module.enqueueBackgroundJob({ cwd: repo, type: "implement", payload, dedupe: true });
+    const second = await module.enqueueBackgroundJob({ cwd: repo, type: "implement", payload, dedupe: true });
+    expect(second.job.job_id).toBe(first.job.job_id);
+    expect(second.deduped).toBe(true);
+    expect(second.concurrency).toBeUndefined();
+  });
+
+  it("does not let terminal implement jobs consume implement concurrency", async () => {
+    const { repo, store } = await createJobFixture();
+    await store.create({
+      job_id: `job-done-${randomUUID()}`,
+      type: "implement",
+      status: "succeeded",
+      cwd: repo,
+      created_at: "2026-05-01T00:00:00.000Z",
+      updated_at: "2026-05-01T00:01:00.000Z",
+      payload: { cwd: repo, task: "old task" },
+    });
+    const spawnMock = vi.fn(() => createDetachedSpawnResult(7300));
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: spawnMock };
+    });
+    const module = await import("../src/background-jobs.js");
+
+    const result = await module.enqueueBackgroundJob({ cwd: repo, type: "implement", payload: { cwd: repo, task: "new task" }, dedupe: true });
+
+    expect(result.job.job_id).not.toContain("job-done-");
+    expect(result.concurrency).toBeUndefined();
+    expect(result.job.status).toBe("queued");
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows implement jobs in different repos while one repo is busy", async () => {
+    const { repo: repoA } = await createJobFixture();
+    const { repo: repoB } = await createJobFixture();
+    const spawnMock = vi.fn(() => createDetachedSpawnResult(7400));
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: spawnMock };
+    });
+    const module = await import("../src/background-jobs.js");
+    const first = await module.enqueueBackgroundJob({ cwd: repoA, type: "implement", payload: { cwd: repoA, task: "repo A" }, dedupe: true });
+    const second = await module.enqueueBackgroundJob({ cwd: repoB, type: "implement", payload: { cwd: repoB, task: "repo B" }, dedupe: true });
+
+    expect(first.job.cwd).toBe(repoA);
+    expect(second.job.cwd).toBe(repoB);
+    expect(second.concurrency).toBeUndefined();
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("JobStore.findActiveImplementInRepo returns null when no active implement exists", async () => {
+    const { repo, store } = await createJobFixture();
+    await store.create({
+      job_id: `job-${randomUUID()}`,
+      type: "review",
+      status: "running",
+      cwd: repo,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      payload: { cwd: repo, task: "review" },
+    });
+    expect(await store.findActiveImplementInRepo({ cwd: repo })).toBeNull();
+  });
+
+  it("JobStore.findActiveImplementInRepo returns running implement and ignores succeeded", async () => {
+    const { repo, store } = await createJobFixture();
+    await store.create({
+      job_id: `job-done-${randomUUID()}`,
+      type: "implement",
+      status: "succeeded",
+      cwd: repo,
+      created_at: "2026-05-01T00:00:00.000Z",
+      updated_at: "2026-05-01T00:01:00.000Z",
+      payload: { cwd: repo, task: "old task" },
+    });
+    const activeId = `job-active-${randomUUID()}`;
+    await store.create({
+      job_id: activeId,
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      created_at: "2026-05-05T00:00:00.000Z",
+      updated_at: "2026-05-05T00:01:00.000Z",
+      payload: { cwd: repo, task: "current task" },
+    });
+    expect((await store.findActiveImplementInRepo({ cwd: repo }))?.job_id).toBe(activeId);
   });
 });

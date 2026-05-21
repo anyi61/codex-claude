@@ -402,6 +402,14 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
 
   const activeJobs = [...runningJobs.entries, ...queuedJobs.entries]
     .sort((a, b) => compareRecency(b.updated_at, a.updated_at));
+  const activeImplementJobs = activeJobs.filter((job) => job.type === "implement");
+  const activeProcesses = runningJobs.entries
+    .filter((job): job is typeof job & { pid: number } => typeof job.pid === "number")
+    .map((job) => ({
+      job_id: job.job_id,
+      type: job.type,
+      pid: job.pid,
+    }));
   const workspaceNextActions = activeJobs.slice(0, limit).map((job) => ({
     tool: "claude_task",
     reason: "Workspace has an active delegated job. Continue waiting for this job_id instead of starting a duplicate task.",
@@ -428,6 +436,7 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
     running_jobs: runningJobs.entries,
     queued_jobs: queuedJobs.entries,
     crashed_jobs: crashedJobs.entries,
+    active_processes: activeProcesses,
     recent_terminal_jobs: terminalJobs,
     recent_runs: recentRuns.entries,
     latest_sessions: latestSessions,
@@ -442,6 +451,8 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
       stale_worktrees: summarizedWorktrees.filter((worktree) => worktree.stale).length,
       orphan_worktrees: summarizedWorktrees.filter((worktree) => worktree.orphaned).length,
       apply_blocked_runs: recentRuns.entries.filter((run) => run.lifecycle === "apply_blocked").length,
+      active_implement_jobs: activeImplementJobs.length,
+      active_claude_processes: activeProcesses.length,
     },
     do_not_start_duplicate_job: activeJobs.length > 0 ? true : undefined,
     next_actions: workspaceNextActions.length > 0 ? workspaceNextActions : crashedNextActions.length > 0 ? crashedNextActions : undefined,

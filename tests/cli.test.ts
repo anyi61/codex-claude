@@ -1,5 +1,5 @@
 import { chmodSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -578,5 +578,101 @@ describe("codex-claude CLI", () => {
     expect(parsed.status).toBe("needs_attention");
     expect(parsed.checks.codex_config.tool_timeout_ok).toBe(false);
     expect(parsed.problems.some((p: { problem: string }) => p.problem.includes("tool_timeout_sec"))).toBe(true);
+  });
+
+  it("doctor reports active background job runner PIDs from persisted state", async () => {
+    const stateDir = await mkdtemp(path.join(os.tmpdir(), "codex-doctor-pids-"));
+    cleanupPaths.push(stateDir);
+    const jobsDir = path.join(stateDir, "jobs");
+    await mkdir(jobsDir, { recursive: true });
+    await writeFile(path.join(jobsDir, "job-active-implement.json"), JSON.stringify({
+      job_id: "job-active-implement",
+      type: "implement",
+      status: "running",
+      cwd: "/tmp/repo",
+      created_at: "2026-05-20T00:00:00.000Z",
+      updated_at: "2026-05-20T00:01:00.000Z",
+      pid: 4242,
+      payload: { cwd: "/tmp/repo", task: "implement something" },
+    }));
+    vi.stubEnv("CODEX_CLAUDE_BACKGROUND_STATE_DIR", stateDir);
+
+    await setupDoctorMocks({
+      execCapture: async (_cmd, args) => args[0] === "auth" ? "logged in" : "1.0.0",
+      allowRoots: [process.cwd()],
+      scanResult: {
+        configPath: "/fake/.codex/config.toml",
+        exists: true,
+        hasAllowRoots: false,
+        allowRootsValue: null,
+        mcpClassification: { origin: "manual", hasCommand: true, hasArgs: true, hasEnv: false },
+        mcpServerKeys: ["command", "enabled_tools"],
+        envKeys: [],
+        mcpCommand: "codex-claude",
+        mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"],
+        mcpToolTimeoutSec: 600,
+      },
+    });
+
+    const io = makeIo();
+    const exitCode = await runCli(["node", "codex-claude", "doctor", "--json"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+    const parsed = JSON.parse(io.stdout);
+    expect(parsed.checks.active_claude_processes).toMatchObject({ ok: true, count: 1 });
+    expect(parsed.checks.active_claude_processes.jobs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ job_id: "job-active-implement", pid: 4242 }),
+      ]),
+    );
+    expect(parsed.status).toBe("ready");
+  });
+
+  it("doctor text output includes active background job runner PID count", async () => {
+    const stateDir = await mkdtemp(path.join(os.tmpdir(), "codex-doctor-pids-"));
+    cleanupPaths.push(stateDir);
+    const jobsDir = path.join(stateDir, "jobs");
+    await mkdir(jobsDir, { recursive: true });
+    await writeFile(path.join(jobsDir, "job-active-implement.json"), JSON.stringify({
+      job_id: "job-active-implement",
+      type: "implement",
+      status: "running",
+      cwd: "/tmp/repo",
+      created_at: "2026-05-20T00:00:00.000Z",
+      updated_at: "2026-05-20T00:01:00.000Z",
+      pid: 4242,
+      payload: { cwd: "/tmp/repo", task: "implement something" },
+    }));
+    vi.stubEnv("CODEX_CLAUDE_BACKGROUND_STATE_DIR", stateDir);
+
+    await setupDoctorMocks({
+      execCapture: async (_cmd, args) => args[0] === "auth" ? "logged in" : "1.0.0",
+      allowRoots: [process.cwd()],
+      scanResult: {
+        configPath: "/fake/.codex/config.toml",
+        exists: true,
+        hasAllowRoots: false,
+        allowRootsValue: null,
+        mcpClassification: { origin: "manual", hasCommand: true, hasArgs: true, hasEnv: false },
+        mcpServerKeys: ["command", "enabled_tools"],
+        envKeys: [],
+        mcpCommand: "codex-claude",
+        mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"],
+        mcpToolTimeoutSec: 600,
+      },
+    });
+
+    const io = makeIo();
+    const exitCode = await runCli(["node", "codex-claude", "doctor"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+
+    expect(exitCode).toBe(0);
+    expect(io.stdout).toContain("Active Claude processes: 1");
+    expect(io.stdout).toContain("Status: ready");
   });
 });

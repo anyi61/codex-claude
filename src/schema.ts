@@ -119,12 +119,19 @@ export interface BackgroundJobSummary {
   error?: string;
 }
 
+export const MAX_CONCURRENT_IMPLEMENTS = 1;
+
 export interface BackgroundJobEnqueueResult {
   job: BackgroundJobSummary;
   deduped?: boolean;
   do_not_start_duplicate_job?: boolean;
   message?: string;
   next_actions?: WorkflowNextAction[];
+  concurrency?: {
+    busy: boolean;
+    max_concurrent_implements: number;
+    active_implements: number;
+  };
 }
 
 export interface ClaudeJobsInput {
@@ -274,6 +281,11 @@ export interface ClaudeWorkspaceStatusResult {
   running_jobs: BackgroundJobSummary[];
   queued_jobs: BackgroundJobSummary[];
   crashed_jobs: BackgroundJobSummary[];
+  active_processes?: Array<{
+    job_id: string;
+    type: BackgroundJobType;
+    pid: number;
+  }>;
   recent_terminal_jobs: BackgroundJobSummary[];
   recent_runs: RunLogEntrySummary[];
   latest_sessions: WorkflowSessionSummary[];
@@ -288,6 +300,8 @@ export interface ClaudeWorkspaceStatusResult {
     stale_worktrees: number;
     orphan_worktrees: number;
     apply_blocked_runs: number;
+    active_implement_jobs: number;
+    active_claude_processes: number;
   };
   do_not_start_duplicate_job?: boolean;
   next_actions?: WorkflowNextAction[];
