@@ -533,7 +533,8 @@ describe("claude cli argument construction", () => {
       preview: true,
     }, "apply-locked");
 
-    expect(result.error).toContain("Another operation is already using delegated worktree codex-delegated-locked");
+    expect(result.error).toContain("(implement/apply/cleanup)");
+    expect(result.error).toContain("codex-delegated-locked");
     await lock.release();
   });
 
@@ -764,6 +765,218 @@ describe("claude cli argument construction", () => {
 
     expect(result.failed_count).toBe(1);
     expect(result.entries[0]?.error).toContain("Another cleanup operation is already running");
+    await lock.release();
+  });
+
+  it("skips cleanup for a worktree with an active implement job and returns active_job_id", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-cleanup-active-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const jobsDir = path.join(stateDir, "jobs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(jobsDir, { recursive: true });
+    await mkdir(path.join(repo, ".claude", "worktrees", "codex-delegated-activejob"), { recursive: true });
+
+    // Create a running implement job referencing this worktree
+    const now = new Date().toISOString();
+    await writeFile(path.join(jobsDir, "job-active-impl.json"), JSON.stringify({
+      job_id: "job-active-impl",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      worktree_name: "codex-delegated-activejob",
+      created_at: now,
+      updated_at: now,
+      payload: { cwd: repo, task: "implement feature" },
+    }));
+
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeCleanup({
+      cwd: repo,
+      dry_run: false,
+      older_than_hours: 0,
+    }, "cleanup-active");
+
+    expect(result.removed_count).toBe(0);
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]?.worktree_name).toBe("codex-delegated-activejob");
+    expect(result.entries[0]?.removed).toBe(false);
+    expect(result.entries[0]?.active_job_id).toBe("job-active-impl");
+    expect(result.entries[0]?.safe_to_remove).toBe(false);
+    expect(result.entries[0]?.error).toContain("active implement job");
+  });
+
+  it("cleanup dry_run returns active_job_id for worktree with active implement job", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-cleanup-dryrun-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const jobsDir = path.join(stateDir, "jobs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(jobsDir, { recursive: true });
+    await mkdir(path.join(repo, ".claude", "worktrees", "codex-delegated-dryrun-wt"), { recursive: true });
+
+    const now = new Date().toISOString();
+    await writeFile(path.join(jobsDir, "job-queued-impl.json"), JSON.stringify({
+      job_id: "job-queued-impl",
+      type: "implement",
+      status: "queued",
+      cwd: repo,
+      worktree_name: "codex-delegated-dryrun-wt",
+      created_at: now,
+      updated_at: now,
+      payload: { cwd: repo, task: "implement feature" },
+    }));
+
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeCleanup({
+      cwd: repo,
+      dry_run: true,
+      older_than_hours: 0,
+    }, "cleanup-dryrun");
+
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]?.active_job_id).toBe("job-queued-impl");
+    expect(result.entries[0]?.safe_to_remove).toBe(false);
+  });
+
+  it("cleanup can remove a worktree whose implement job has succeeded", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-cleanup-success-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const jobsDir = path.join(stateDir, "jobs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(jobsDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# test\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-succeeded";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+
+    const now = new Date().toISOString();
+    await writeFile(path.join(jobsDir, "job-succeeded-impl.json"), JSON.stringify({
+      job_id: "job-succeeded-impl",
+      type: "implement",
+      status: "succeeded",
+      cwd: repo,
+      worktree_name: "codex-delegated-succeeded",
+      created_at: now,
+      updated_at: now,
+      run_id: "run-succeeded-impl",
+      payload: { cwd: repo, task: "implement feature" },
+    }));
+
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeCleanup({
+      cwd: repo,
+      dry_run: true,
+      older_than_hours: 0,
+    }, "cleanup-succeeded-dry");
+
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]?.safe_to_remove).toBe(true);
+    expect(result.entries[0]?.active_job_id).toBeUndefined();
+
+    // Actual removal
+    const actualResult = await reloaded.runClaudeCleanup({
+      cwd: repo,
+      dry_run: false,
+      older_than_hours: 0,
+    }, "cleanup-succeeded");
+
+    expect(actualResult.removed_count).toBe(1);
+    expect(actualResult.entries[0]?.removed).toBe(true);
+  });
+
+  it("cleanup with active job and older_than_hours > 0 returns active_job_id, not skipped within time window", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-cleanup-active-age-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const jobsDir = path.join(stateDir, "jobs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(jobsDir, { recursive: true });
+    const wtPath = path.join(repo, ".claude", "worktrees", "codex-delegated-active-age");
+    await mkdir(wtPath, { recursive: true });
+    // Set directory mtime to now so it would be "within time window" if age
+    // check ran before the active-job check.
+    const now = new Date();
+    await utimes(wtPath, now, now);
+
+    const nowIso = now.toISOString();
+    await writeFile(path.join(jobsDir, "job-active-age.json"), JSON.stringify({
+      job_id: "job-active-age",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      worktree_name: "codex-delegated-active-age",
+      created_at: nowIso,
+      updated_at: nowIso,
+      payload: { cwd: repo, task: "implement feature" },
+    }));
+
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeCleanup({
+      cwd: repo,
+      dry_run: false,
+      older_than_hours: 24,
+    }, "cleanup-active-age");
+
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]?.worktree_name).toBe("codex-delegated-active-age");
+    expect(result.entries[0]?.removed).toBe(false);
+    expect(result.entries[0]?.active_job_id).toBe("job-active-age");
+    expect(result.entries[0]?.safe_to_remove).toBe(false);
+    expect(result.entries[0]?.error).toContain("active implement job");
+    expect(result.entries[0]?.error).not.toContain("within time window");
+  });
+
+  it("apply is blocked when another holder has the worktree lock", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-locked-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    await mkdir(repo, { recursive: true });
+    await mkdir(stateDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# test\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-locked";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktreePath = path.join(repo, worktreeRel);
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+
+    const [{ acquireFileLock }, reloaded] = await Promise.all([
+      import("../src/lock.js"),
+      import("../src/claude-cli.js"),
+    ]);
+    const lock = await acquireFileLock({ cwd: repo, resource: "worktree:codex-delegated-locked" });
+
+    const result = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreePath,
+    }, "apply-locked");
+
+    expect(result.error).toContain("already using");
+
     await lock.release();
   });
 

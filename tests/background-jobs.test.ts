@@ -230,6 +230,27 @@ describe("background jobs module", () => {
     expect((await store.get("job-running"))?.job_id).toBe("job-running");
   });
 
+  it("finds active implement job by worktree_name and returns null when not found", async () => {
+    const { repo, store } = await createJobFixture();
+    const now = new Date().toISOString();
+    await store.create({
+      job_id: "job-wt-active",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      worktree_name: "codex-delegated-testwt00",
+      created_at: now,
+      updated_at: now,
+      payload: { cwd: repo, task: "implement feature" },
+    });
+    const module = await import("../src/background-jobs.js");
+    const match = await module.findActiveImplementByWorktree({ cwd: repo, worktree_name: "codex-delegated-testwt00" });
+    expect(match?.job_id).toBe("job-wt-active");
+
+    const miss = await module.findActiveImplementByWorktree({ cwd: repo, worktree_name: "codex-delegated-nonexist" });
+    expect(miss).toBeNull();
+  });
+
   it("returns not found when canceling a missing job", async () => {
     const { repo } = await createJobFixture();
     const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);

@@ -162,6 +162,18 @@ export class JobStore {
     };
   }
 
+  async findActiveImplementByWorktree(input: { cwd: string; worktree_name: string }): Promise<BackgroundJobRecord | null> {
+    const jobs = await this.readAllRecords();
+    const match = jobs
+      .filter((entry): entry is BackgroundJobRecord => entry !== null)
+      .filter((entry) => entry.cwd === input.cwd)
+      .filter((entry) => entry.type === "implement")
+      .filter((entry) => entry.worktree_name === input.worktree_name)
+      .filter((entry) => ACTIVE_JOB_STATUSES.has(entry.status))
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
+    return match ?? null;
+  }
+
   async findActiveByFingerprint(input: ActiveFingerprintInput): Promise<BackgroundJobRecord | null> {
     const jobs = await this.readAllRecords();
     const match = jobs

@@ -566,6 +566,11 @@ export async function cancelBackgroundJob(input: ClaudeJobCancelInput): Promise<
   return { cancelled: true, job: updated ? toJobSummary(updated) : undefined };
 }
 
+export async function findActiveImplementByWorktree(input: { cwd: string; worktree_name: string }): Promise<BackgroundJobRecord | null> {
+  const jobStore = await getJobStore();
+  return jobStore.findActiveImplementByWorktree(input);
+}
+
 export async function cleanupBackgroundJobs(input: ClaudeJobCleanupInput): Promise<ClaudeJobCleanupResult> {
   const jobStore = await getJobStore();
   return jobStore.cleanup({ cwd: input.cwd, older_than_hours: input.older_than_hours ?? 24, dry_run: input.dry_run ?? true, limit: input.limit ?? 20 });

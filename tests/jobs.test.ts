@@ -133,6 +133,69 @@ describe("JobStore", () => {
   });
 
 
+  it("finds active implement job by worktree_name", async () => {
+    const { repo, store } = await createStoreFixture();
+    await store.create({
+      job_id: "job-running-wt",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      worktree_name: "codex-delegated-abc12345",
+      created_at: "2026-05-06T00:00:00.000Z",
+      updated_at: "2026-05-06T00:00:10.000Z",
+      payload: { cwd: repo, task: "ship it" },
+    });
+
+    const match = await store.findActiveImplementByWorktree({
+      cwd: repo,
+      worktree_name: "codex-delegated-abc12345",
+    });
+
+    expect(match?.job_id).toBe("job-running-wt");
+  });
+
+  it("does not match terminal implement jobs by worktree_name", async () => {
+    const { repo, store } = await createStoreFixture();
+    await store.create({
+      job_id: "job-succeeded-wt",
+      type: "implement",
+      status: "succeeded",
+      cwd: repo,
+      worktree_name: "codex-delegated-xyz98765",
+      created_at: "2026-05-06T00:00:00.000Z",
+      updated_at: "2026-05-06T00:00:10.000Z",
+      payload: { cwd: repo, task: "ship it" },
+    });
+
+    const match = await store.findActiveImplementByWorktree({
+      cwd: repo,
+      worktree_name: "codex-delegated-xyz98765",
+    });
+
+    expect(match).toBeNull();
+  });
+
+  it("does not match different worktree names in active implement lookup", async () => {
+    const { repo, store } = await createStoreFixture();
+    await store.create({
+      job_id: "job-running-wt2",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      worktree_name: "codex-delegated-aaa11111",
+      created_at: "2026-05-06T00:00:00.000Z",
+      updated_at: "2026-05-06T00:00:10.000Z",
+      payload: { cwd: repo, task: "ship it" },
+    });
+
+    const match = await store.findActiveImplementByWorktree({
+      cwd: repo,
+      worktree_name: "codex-delegated-bbb22222",
+    });
+
+    expect(match).toBeNull();
+  });
+
   it("cleanup does not delete running jobs", async () => {
     const { repo, store } = await createStoreFixture();
     await store.create({

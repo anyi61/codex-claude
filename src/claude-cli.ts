@@ -110,6 +110,7 @@ import {
   cleanupBackgroundJobs as cleanupBackgroundJobsCore,
   enqueueBackgroundJob as enqueueBackgroundJobCore,
   extractBackgroundResultStatus as extractBackgroundResultStatusCore,
+  findActiveImplementByWorktree as findActiveImplementByWorktreeCore,
   getBackgroundJobResult as getBackgroundJobResultCore,
   getBackgroundStateDir as getBackgroundStateDirCore,
   getBackgroundWorktreeName as getBackgroundWorktreeNameCore,
@@ -150,9 +151,14 @@ const waitForJobCompletionInline = waitForJobCompletionInlineCore;
 const startJobHeartbeat = startJobHeartbeatCore;
 const summarizeBackgroundResult = summarizeBackgroundResultCore;
 const getBackgroundWorktreeName = getBackgroundWorktreeNameCore;
+const findActiveImplementByWorktree = findActiveImplementByWorktreeCore;
 
 export async function runClaudeSetup(input: ClaudeSetupInput): Promise<ClaudeSetupResult> {
   return executeReviewGateSetup(input, checkClaudeStatus);
+}
+
+export function deriveImplementWorktreeName(input: { worktreeName?: string }, runId: string): string {
+  return input.worktreeName ?? `codex-delegated-${runId.slice(0, 8)}`;
 }
 
 // ---- Logging (stderr only, never stdout) ----
@@ -1473,7 +1479,10 @@ export async function executeBackgroundJob(jobId: string): Promise<void> {
     } else if (running.type === "review") {
       result = toResultRecord(await runClaudeReview(payload as ClaudeReviewInput, runId));
     } else if (running.type === "implement") {
-      result = toResultRecord(await runClaudeImplement(payload as ClaudeImplementInput, runId));
+      const implPayload = payload as ClaudeImplementInput;
+      const worktreeName = deriveImplementWorktreeName(implPayload, runId);
+      await jobStore.update(jobId, { worktree_name: worktreeName, run_id: runId });
+      result = toResultRecord(await runClaudeImplement(implPayload, runId));
     } else if (running.type === "apply") {
       result = toResultRecord(await runClaudeApply(payload as ClaudeApplyInput, runId));
     } else {
@@ -1540,13 +1549,11 @@ export async function runClaudeImplement(
     implementInput = { ...implementInput, session_key: latest.session_id };
   }
 
-  const worktreeName = implementInput.worktreeName ?? `codex-delegated-${runId.slice(0, 8)}`;
+  const worktreeName = deriveImplementWorktreeName(implementInput, runId);
   const worktreeRelPath = path.join(".claude", "worktrees", worktreeName);
   const worktreePath = path.join(implementInput.cwd, worktreeRelPath);
   const requestedFiles = normalizeRequestedFiles(implementInput.cwd, implementInput.files);
   const dirtyPolicy = implementInput.dirty_policy ?? "ask";
-  let baseCommit: string | undefined;
-
   const dirtyFiles = await findDirtyImplementFiles(implementInput.cwd, requestedFiles);
   if (dirtyPolicy === "ask" && dirtyFiles.length > 0) {
     const message = formatDirtyImplementMessage(dirtyFiles, requestedFiles);
@@ -1565,29 +1572,38 @@ export async function runClaudeImplement(
     return result;
   }
 
+  const worktreeLock = await acquireFileLock({
+    cwd: implementInput.cwd,
+    resource: `worktree:${worktreeName}`,
+    staleMs: 5 * 60 * 1000,
+  });
+
   try {
-    if (!existsSync(worktreePath)) {
-      await mkdir(path.dirname(worktreePath), { recursive: true });
-      await execCapture("git", ["worktree", "add", "--detach", worktreeRelPath, "HEAD"], {
-        cwd: implementInput.cwd,
-        timeoutMs: 30000,
-      });
-    }
-    const resolvedBase = await execCapture("git", ["rev-parse", "HEAD"], { cwd: worktreePath });
-    baseCommit = resolvedBase.trim() || undefined;
-    if (dirtyPolicy === "snapshot") {
-      await applyDirtySnapshotToWorktree(implementInput.cwd, worktreePath);
-    }
-    await ensureImplementWorkspaceScaffold(worktreePath);
-  } catch (err) {
-    await logRun(runId, {
-      type: "implement",
-      input: implementInput,
-      error: `Failed to prepare worktree/base commit: ${err instanceof Error ? err.message : String(err)}`,
-      duration_ms: 0,
-    }, implementInput.cwd);
+    let baseCommit: string | undefined;
+
+    try {
+      if (!existsSync(worktreePath)) {
+        await mkdir(path.dirname(worktreePath), { recursive: true });
+        await execCapture("git", ["worktree", "add", "--detach", worktreeRelPath, "HEAD"], {
+          cwd: implementInput.cwd,
+          timeoutMs: 30000,
+        });
+      }
+      const resolvedBase = await execCapture("git", ["rev-parse", "HEAD"], { cwd: worktreePath });
+      baseCommit = resolvedBase.trim() || undefined;
+      if (dirtyPolicy === "snapshot") {
+        await applyDirtySnapshotToWorktree(implementInput.cwd, worktreePath);
+      }
+      await ensureImplementWorkspaceScaffold(worktreePath);
+    } catch (err) {
+      await logRun(runId, {
+        type: "implement",
+        input: implementInput,
+        error: `Failed to prepare worktree/base commit: ${err instanceof Error ? err.message : String(err)}`,
+        duration_ms: 0,
+      }, implementInput.cwd);
       throw err;
-  }
+    }
 
   const resumeSessionId = implementInput.session_key ?? undefined;
   const forked = implementInput.fork_session ?? false;
@@ -1738,6 +1754,9 @@ export async function runClaudeImplement(
     claude_report: report,
     server_observed: observed,
   });
+  } finally {
+    await worktreeLock.release();
+  }
 }
 
 // ---- Apply worktree diff to main workspace ----
@@ -1802,7 +1821,7 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
       diff_stat: "",
       cleanup_performed: false,
       conflicts: [],
-      error: `Another operation is already using delegated worktree ${path.basename(wtReal)}. Retry after the current apply or cleanup finishes.`,
+      error: `Another operation (implement/apply/cleanup) is already using delegated worktree ${path.basename(wtReal)}. Retry after the current operation finishes.`,
       preview: input.preview === true,
       planned_changes: [],
     });
@@ -2049,6 +2068,20 @@ export async function runClaudeCleanup(input: ClaudeCleanupInput, runId: string)
       const dirPath = path.join(worktreeDir, name);
       const wtRelPath = path.join(".claude", "worktrees", name);
 
+      // Check for active implement jobs first — always report active_job_id
+      // regardless of age window.
+      const activeJob = await findActiveImplementByWorktree({ cwd: input.cwd, worktree_name: name });
+      if (activeJob) {
+        entries.push({
+          worktree_name: name,
+          removed: false,
+          active_job_id: activeJob.job_id,
+          safe_to_remove: false,
+          error: `Worktree ${name} has an active implement job (${activeJob.job_id}) and cannot be cleaned up yet.`,
+        });
+        continue;
+      }
+
       // Check age if filter set
       if (olderThanHours > 0) {
         try {
@@ -2063,7 +2096,7 @@ export async function runClaudeCleanup(input: ClaudeCleanupInput, runId: string)
       }
 
       if (dryRun) {
-        entries.push({ worktree_name: name, removed: false });
+        entries.push({ worktree_name: name, removed: false, safe_to_remove: true });
         continue;
       }
 
@@ -2080,7 +2113,7 @@ export async function runClaudeCleanup(input: ClaudeCleanupInput, runId: string)
         entries.push({
           worktree_name: name,
           removed: false,
-          error: `Another operation is already using delegated worktree ${name}. Retry after it finishes.`,
+          error: `Another operation (implement/apply/cleanup) is already using delegated worktree ${name}. Retry after the current operation finishes.`,
         });
         continue;
       }

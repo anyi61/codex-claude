@@ -496,6 +496,8 @@ export interface CleanupEntry {
   worktree_name: string;
   removed: boolean;
   error?: string;
+  active_job_id?: string;
+  safe_to_remove?: boolean;
 }
 
 export interface ClaudeCleanupResult {
