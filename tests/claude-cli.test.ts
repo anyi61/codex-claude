@@ -4666,3 +4666,401 @@ describe("inferClaudeTaskMode — Chinese/mixed-language keyword routing", () =>
     expect(inference.matched_hints).toEqual([]);
   });
 });
+
+describe("runClaudeApply — nested delegated worktree path detection", () => {
+  it("rejects nested delegated worktree paths with clear error", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-nested-apply-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+
+    const nestedPath = path.join(".claude", "worktrees", "codex-delegated-a", ".claude", "worktrees", "codex-delegated-b");
+    const result = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: nestedPath,
+      preview: true,
+    }, "nested-test");
+
+    expect(result.error).toBeDefined();
+    expect(result.error).toContain("Nested delegated worktrees are not supported");
+    expect(result.error).toContain("original repository");
+    expect(result.applied_files).toEqual([]);
+    expect(result.planned_changes).toEqual([]);
+  });
+
+  it("rejects absolute nested delegated worktree paths with clear error", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-nested-abs-apply-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+
+    const nestedAbs = path.join(repo, ".claude", "worktrees", "codex-delegated-a", ".claude", "worktrees", "codex-delegated-b");
+    const result = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: nestedAbs,
+      preview: true,
+    }, "nested-abs-test");
+
+    expect(result.error).toBeDefined();
+    expect(result.error).toContain("Nested delegated worktrees are not supported");
+    expect(result.applied_files).toEqual([]);
+  });
+
+  it("does not report nested error for single delegated worktree paths", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-single-apply-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = path.join(".claude", "worktrees", "codex-delegated-single");
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+    await writeFile(path.join(logDir, "single-run.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: [],
+        scope: { requested_files: undefined, out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+
+    const result = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+    }, "single-test");
+
+    // Single-level worktree should NOT produce a nested-error.
+    // It may produce a "no changed files" error or succeed — either is acceptable.
+    expect(result.error).not.toContain("Nested delegated worktrees are not supported");
+  });
+});
+
+describe("runClaudeImplement — permission_denials warnings", () => {
+  it("surfaces permission_denials as verification warning", async () => {
+    const { repo } = await createGitRepoFixture("codex-perm-denial-");
+    const stdout = JSON.stringify({
+      session_id: "sess-perm",
+      permission_denials: [
+        { tool_name: "Bash", tool_input: { command: "rm -rf /tmp/target" } },
+        { tool_name: "Bash", tool_input: { command: "sudo something" } },
+        { tool_name: "Write", tool_input: { file_path: "/etc/passwd" } },
+      ],
+      structured_output: {
+        status: "success",
+        summary: "Done.",
+        changed_files: [],
+        commands_run: [],
+        tests: { ran: true, passed: true },
+      },
+    });
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      const spawnMock = vi.fn((bin: string, args: string[], options: { cwd?: string }) => {
+        if (bin !== "claude") return actual.spawn(bin, args, options as never);
+        return createClaudeSpawnResult(stdout, "", 0);
+      });
+      return { ...actual, spawn: spawnMock };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeImplement({
+      cwd: repo,
+      task: "test permission denials",
+      worktreeName: "codex-delegated-perm",
+    }, "run-perm");
+
+    const warningsText = result.warnings.join("\n");
+    expect(warningsText).toContain("3 tool calls");
+    expect(warningsText).toContain("Bash");
+    expect(warningsText).toContain("Write");
+    expect(warningsText).toContain("rerun verification locally");
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  });
+
+  it("does not add permission warning when permission_denials is empty or absent", async () => {
+    const { repo } = await createGitRepoFixture("codex-no-perm-");
+    const stdout = JSON.stringify({
+      session_id: "sess-noperm",
+      structured_output: {
+        status: "success",
+        summary: "Done.",
+        changed_files: [],
+        commands_run: [],
+        tests: { ran: false },
+      },
+    });
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      const spawnMock = vi.fn((bin: string, args: string[], options: { cwd?: string }) => {
+        if (bin !== "claude") return actual.spawn(bin, args, options as never);
+        return createClaudeSpawnResult(stdout, "", 0);
+      });
+      return { ...actual, spawn: spawnMock };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeImplement({
+      cwd: repo,
+      task: "no permission denials",
+      worktreeName: "codex-delegated-noperm",
+    }, "run-noperm");
+
+    const warningsText = result.warnings.join("\n");
+    expect(warningsText).not.toContain("permission denied");
+    expect(warningsText).not.toContain("rerun verification locally");
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  });
+
+  it("does not include denied tool input in warning", async () => {
+    const { repo } = await createGitRepoFixture("codex-perm-noinput-");
+    const stdout = JSON.stringify({
+      session_id: "sess-perm-noinput",
+      permission_denials: [
+        { tool_name: "Bash", tool_input: { command: "rm -rf /tmp/sensitive-secret-data" } },
+        { tool_name: "Write", tool_input: { file_path: "/etc/passwd", content: "malicious content" } },
+      ],
+      structured_output: {
+        status: "success",
+        summary: "Done.",
+        changed_files: [],
+        commands_run: [],
+        tests: { ran: false },
+      },
+    });
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      const spawnMock = vi.fn((bin: string, args: string[], options: { cwd?: string }) => {
+        if (bin !== "claude") return actual.spawn(bin, args, options as never);
+        return createClaudeSpawnResult(stdout, "", 0);
+      });
+      return { ...actual, spawn: spawnMock };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeImplement({
+      cwd: repo,
+      task: "test no tool input leakage",
+      worktreeName: "codex-delegated-noinput",
+    }, "run-perm-noinput");
+
+    const warningsText = result.warnings.join("\n");
+    expect(warningsText).not.toContain("rm -rf");
+    expect(warningsText).not.toContain("/tmp/sensitive-secret-data");
+    expect(warningsText).not.toContain("/etc/passwd");
+    expect(warningsText).not.toContain("malicious content");
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  });
+
+  it("status is unchanged by permission_denials", async () => {
+    const { repo } = await createGitRepoFixture("codex-perm-status-");
+    const stdout = JSON.stringify({
+      session_id: "sess-perm-status",
+      permission_denials: [
+        { tool_name: "Bash", tool_input: { command: "some cmd" } },
+      ],
+      structured_output: {
+        status: "success",
+        summary: "Done.",
+        changed_files: [],
+        commands_run: [],
+        tests: { ran: true, passed: true },
+      },
+    });
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      const spawnMock = vi.fn((bin: string, args: string[], options: { cwd?: string }) => {
+        if (bin !== "claude") return actual.spawn(bin, args, options as never);
+        return createClaudeSpawnResult(stdout, "", 0);
+      });
+      return { ...actual, spawn: spawnMock };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeImplement({
+      cwd: repo,
+      task: "test status unchanged by denials",
+      worktreeName: "codex-delegated-permstatus",
+    }, "run-perm-status");
+
+    expect(result.status).toBe("success");
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  });
+
+  it("warns even when Claude self-reports tests.passed=true but Bash denial exists", async () => {
+    const { repo } = await createGitRepoFixture("codex-perm-selfreport-");
+    const stdout = JSON.stringify({
+      session_id: "sess-selfreport",
+      permission_denials: [
+        { tool_name: "Bash", tool_input: { command: "npm test" } },
+      ],
+      structured_output: {
+        status: "success",
+        summary: "All tests pass.",
+        changed_files: [],
+        commands_run: ["npm test"],
+        tests: { ran: true, passed: true, summary: "5/5 pass" },
+      },
+    });
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      const spawnMock = vi.fn((bin: string, args: string[], options: { cwd?: string }) => {
+        if (bin !== "claude") return actual.spawn(bin, args, options as never);
+        return createClaudeSpawnResult(stdout, "", 0);
+      });
+      return { ...actual, spawn: spawnMock };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeImplement({
+      cwd: repo,
+      task: "test self-report override",
+      worktreeName: "codex-delegated-selfreport",
+    }, "run-perm-selfreport");
+
+    const warningsText = result.warnings.join("\n");
+    expect(warningsText).toContain("rerun verification locally");
+    expect(warningsText).toContain("Bash");
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  });
+
+  it("deduplicates tool names and limits to 5 in warning", async () => {
+    const { repo } = await createGitRepoFixture("codex-perm-manytools-");
+    const stdout = JSON.stringify({
+      session_id: "sess-manytools",
+      permission_denials: [
+        { tool_name: "Bash", tool_input: { command: "cmd1" } },
+        { tool_name: "Bash", tool_input: { command: "cmd2" } },
+        { tool_name: "Write", tool_input: { file_path: "/a" } },
+        { tool_name: "Edit", tool_input: { file_path: "/b" } },
+        { tool_name: "Read", tool_input: { file_path: "/c" } },
+        { tool_name: "Glob", tool_input: { pattern: "*" } },
+        { tool_name: "Grep", tool_input: { pattern: "foo" } },
+      ],
+      structured_output: {
+        status: "success",
+        summary: "Done.",
+        changed_files: [],
+        commands_run: [],
+        tests: { ran: false },
+      },
+    });
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      const spawnMock = vi.fn((bin: string, args: string[], options: { cwd?: string }) => {
+        if (bin !== "claude") return actual.spawn(bin, args, options as never);
+        return createClaudeSpawnResult(stdout, "", 0);
+      });
+      return { ...actual, spawn: spawnMock };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeImplement({
+      cwd: repo,
+      task: "test many tools",
+      worktreeName: "codex-delegated-manytools",
+    }, "run-perm-manytools");
+
+    const warningsText = result.warnings.join("\n");
+    expect(warningsText).toContain("7 tool calls");
+    expect(warningsText).toContain("and 1 more");
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  });
+
+  it("uses unknown in permission warning when denied tool names are missing", async () => {
+    const { repo } = await createGitRepoFixture("codex-perm-unknown-tool-");
+    const stdout = JSON.stringify({
+      session_id: "sess-unknown-tool",
+      permission_denials: [
+        { tool_input: { command: "npm test" } },
+      ],
+      structured_output: {
+        status: "success",
+        summary: "Done.",
+        changed_files: [],
+        commands_run: [],
+        tests: { ran: false },
+      },
+    });
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      const spawnMock = vi.fn((bin: string, args: string[], options: { cwd?: string }) => {
+        if (bin !== "claude") return actual.spawn(bin, args, options as never);
+        return createClaudeSpawnResult(stdout, "", 0);
+      });
+      return { ...actual, spawn: spawnMock };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeImplement({
+      cwd: repo,
+      task: "test missing tool name",
+      worktreeName: "codex-delegated-unknown-tool",
+    }, "run-perm-unknown-tool");
+
+    const warningsText = result.warnings.join("\n");
+    expect(warningsText).toContain("denied: unknown");
+    expect(warningsText).toContain("rerun verification locally");
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  });
+});

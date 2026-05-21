@@ -285,6 +285,17 @@ export function spawnClaude(opts: ClaudeRunOptions): Promise<ClaudeSpawnResult> 
         // Extract structured_output if present, otherwise use the whole result
         const report = (parsed.structured_output ?? parsed) as Record<string, unknown>;
 
+        // Preserve top-level permission_denials into the report when
+        // structured_output does not already carry its own copy.
+        const topLevelDenials = (parsed as Record<string, unknown>).permission_denials;
+        if (
+          Array.isArray(topLevelDenials) &&
+          topLevelDenials.length > 0 &&
+          !Array.isArray(report.permission_denials)
+        ) {
+          report.permission_denials = topLevelDenials;
+        }
+
         // Extract session_id for session management
         const sessionId = (parsed.session_id as string) ?? null;
 

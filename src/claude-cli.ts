@@ -1638,6 +1638,24 @@ export async function runClaudeReview(
   }
 }
 
+function buildPermissionDenialWarning(report: Record<string, unknown>): string | null {
+  const denials = report.permission_denials;
+  if (!Array.isArray(denials) || denials.length === 0) return null;
+  const uniqueTools = [...new Set(
+    denials
+      .map((d) => (d as Record<string, unknown>)?.tool_name)
+      .filter((name): name is string => typeof name === "string" && name.length > 0)
+  )];
+  const count = denials.length;
+  const maxTools = 5;
+  const shown = uniqueTools.slice(0, maxTools);
+  const remaining = uniqueTools.length - maxTools;
+  const toolsText = remaining > 0
+    ? `${shown.join(", ")} and ${remaining} more`
+    : shown.join(", ") || "unknown";
+  return `Claude was denied permission for ${count} tool call${count === 1 ? "" : "s"} (denied: ${toolsText}); treat any self-reported test or verification results as incomplete and rerun verification locally.`;
+}
+
 export async function runClaudeImplement(
   input: ClaudeImplementInput,
   runId: string
@@ -1873,8 +1891,13 @@ export async function runClaudeImplement(
   const fallbackWarning = fallbackFreshRetry && resumeSessionId
     ? `resume_latest session ${resumeSessionId} is unavailable on Claude's side and was marked expired. The delegated worktree fell back to a fresh implement — inspect results carefully.`
     : null;
+  const permissionDenialWarning = buildPermissionDenialWarning(report);
+  if (permissionDenialWarning) {
+    log(`Permission denials: ${Array.isArray(report.permission_denials) ? report.permission_denials.length : 0} tool calls denied`);
+  }
   const warnings = [
     ...(fallbackWarning ? [fallbackWarning] : []),
+    ...(permissionDenialWarning ? [permissionDenialWarning] : []),
     ...(observed.resource_limits?.warnings ?? []),
     ...(observed.scope?.warnings ?? []),
     ...recoveryWarnings,
@@ -1942,6 +1965,20 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   }
   if (!wtReal.startsWith(wtDir + path.sep + "codex-delegated-")) {
     return finish({ applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: "worktree_path must be a delegated worktree (codex-delegated-*)" });
+  }
+  // Reject nested delegated worktree paths (e.g. worktrees/codex-delegated-a/worktrees/codex-delegated-b)
+  const nestedMarker = `${path.sep}.claude${path.sep}worktrees${path.sep}codex-delegated-`;
+  const firstMarkerIdx = wtReal.indexOf(nestedMarker);
+  if (firstMarkerIdx >= 0 && wtReal.indexOf(nestedMarker, firstMarkerIdx + 1) >= 0) {
+    return finish({
+      applied_files: [],
+      diff_stat: "",
+      cleanup_performed: false,
+      conflicts: [],
+      preview: input.preview === true,
+      planned_changes: [],
+      error: "Nested delegated worktrees are not supported by claude_apply. Use the original repository cwd and top-level delegated worktree path instead.",
+    });
   }
   if (!existsSync(wtReal)) {
     return finish({ applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: `worktree directory not found: ${wtReal}` });

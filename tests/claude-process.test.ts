@@ -146,4 +146,88 @@ describe("claude-process", () => {
     await expect(promiseA).resolves.toMatchObject({ report: { status: "success", id: "a" } });
     await expect(promiseB).resolves.toMatchObject({ report: { status: "success", id: "b" } });
   });
+
+  it("preserves top-level permission_denials when structured_output is present", async () => {
+    const child = createMockChild(2001);
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => child) };
+    });
+
+    const mod = await import("../src/claude-process.js");
+    const promise = mod.spawnClaude(baseOpts);
+    child.stdout.emit("data", Buffer.from(JSON.stringify({
+      permission_denials: [
+        { tool_name: "Bash", tool_input: { command: "rm -rf /" } },
+      ],
+      structured_output: {
+        status: "success",
+        summary: "Done.",
+      },
+    })));
+    child.emit("close", 0, null);
+    const result = await promise;
+
+    expect(result.report).toMatchObject({
+      status: "success",
+      summary: "Done.",
+      permission_denials: [
+        { tool_name: "Bash", tool_input: { command: "rm -rf /" } },
+      ],
+    });
+  });
+
+  it("keeps structured_output permission_denials when both levels provide them", async () => {
+    const child = createMockChild(2002);
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => child) };
+    });
+
+    const mod = await import("../src/claude-process.js");
+    const promise = mod.spawnClaude(baseOpts);
+    child.stdout.emit("data", Buffer.from(JSON.stringify({
+      permission_denials: [
+        { tool_name: "Bash", tool_input: { command: "top-level" } },
+      ],
+      structured_output: {
+        status: "success",
+        summary: "Done.",
+        permission_denials: [
+          { tool_name: "Write", tool_input: { file_path: "/a" } },
+        ],
+      },
+    })));
+    child.emit("close", 0, null);
+    const result = await promise;
+
+    // structured_output.permission_denials should NOT be overwritten by top-level
+    expect(result.report).toMatchObject({
+      status: "success",
+      permission_denials: [
+        { tool_name: "Write", tool_input: { file_path: "/a" } },
+      ],
+    });
+  });
+
+  it("does not add permission_denials to report when top-level is absent", async () => {
+    const child = createMockChild(2003);
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => child) };
+    });
+
+    const mod = await import("../src/claude-process.js");
+    const promise = mod.spawnClaude(baseOpts);
+    child.stdout.emit("data", Buffer.from(JSON.stringify({
+      structured_output: {
+        status: "success",
+        summary: "Done.",
+      },
+    })));
+    child.emit("close", 0, null);
+    const result = await promise;
+
+    expect(result.report.permission_denials).toBeUndefined();
+  });
 });
