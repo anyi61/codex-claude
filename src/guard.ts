@@ -166,6 +166,31 @@ export async function isGitRepo(cwd: string): Promise<boolean> {
   }
 }
 
+// ---- Delegated worktree path detection ----
+
+/**
+ * Returns true if cwd is inside a delegated worktree path
+ * (i.e. contains consecutive segments .claude / worktrees / codex-delegated-*).
+ * Uses path-segment matching so that a directory merely named codex-delegated-*
+ * outside of .claude/worktrees/ is not falsely flagged.
+ */
+export function isDelegatedWorktreePath(cwd: string): boolean {
+  const normalized = path.normalize(path.resolve(cwd));
+  const segments = normalized.split(path.sep).filter(Boolean);
+
+  for (let i = 0; i < segments.length - 2; i++) {
+    if (
+      segments[i] === ".claude" &&
+      segments[i + 1] === "worktrees" &&
+      segments[i + 2].startsWith("codex-delegated-")
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 // ---- Worktree capability check ----
 
 export async function supportsWorktree(cwd: string): Promise<boolean> {

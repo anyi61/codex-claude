@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { validateCwd, validateFilesWithinCwd, checkRecursion, MAX_BRIDGE_DEPTH } from "./guard.js";
+import { validateCwd, validateFilesWithinCwd, isDelegatedWorktreePath, checkRecursion, MAX_BRIDGE_DEPTH } from "./guard.js";
 import { getPackageInfo } from "./package-info.js";
 import { configureCodexAllowRoot, type CodexAllowRootConfiguration } from "./codex-config.js";
 import {
@@ -587,6 +587,36 @@ export function buildTaskInteraction(result: ClaudeTaskResult): InteractionBlock
   };
 }
 
+/**
+ * Replicates the write-detection portion of inferClaudeTaskMode in claude-cli.ts
+ * without importing it directly, to avoid module coupling. Keep in sync with
+ * inferClaudeTaskMode when the mode-inference rules change.
+ */
+function wouldBeWriteTask(args: {
+  mode?: string;
+  task?: string;
+  diff?: string;
+  constraints?: string[];
+  resume_latest?: boolean;
+}): boolean {
+  if (args.mode === "write") return true;
+  if (args.mode === "read" || args.mode === "review") return false;
+
+  // mode is "auto" or omitted
+  if (args.resume_latest === true) return true;
+  if (!args.task) return false;
+
+  // diff → review (checked BEFORE writeHints in inferClaudeTaskMode)
+  if (typeof args.diff === "string" && args.diff.trim().length > 0) return false;
+
+  if ((args.constraints?.length ?? 0) > 0) return true;
+
+  // same regex as inferClaudeTaskMode writeHints
+  if (/\b(fix|change|implement|write|edit|modify|update|refactor|patch|add|create)\b/.test(args.task.toLowerCase())) return true;
+
+  return false;
+}
+
 export function registerToolDefinitions(server: Server): void {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: TOOL_DEFINITIONS,
@@ -723,8 +753,11 @@ export async function handleToolCall(name: string, args: unknown, runId = random
           ]);
           if (!fileCheck.ok) return errorResult(fileCheck.error!);
 
-          if (mode === "write" || (mode === "auto" && (parsed.data.resume_latest || (parsed.data.constraints?.length ?? 0) > 0))) {
+          if (wouldBeWriteTask(parsed.data)) {
             const { supportsWorktree } = await import("./guard.js");
+            if (isDelegatedWorktreePath(check.resolved)) {
+              return errorResult("Refusing to start delegated write work from inside an existing delegated worktree. Use the original repository cwd instead.");
+            }
             const wtCapable = await supportsWorktree(check.resolved);
             if (!wtCapable) {
               return errorResult("claude_task write mode requires a git repository with worktree support");
@@ -796,6 +829,9 @@ export async function handleToolCall(name: string, args: unknown, runId = random
         const fileCheck = await validateFilesWithinCwd(check.resolved, files);
         if (!fileCheck.ok) return errorResult(fileCheck.error!);
 
+        if (isDelegatedWorktreePath(check.resolved)) {
+          return errorResult("Refusing to start delegated write work from inside an existing delegated worktree. Use the original repository cwd instead.");
+        }
         const { supportsWorktree } = await import("./guard.js");
         const wtCapable = await supportsWorktree(check.resolved);
         if (!wtCapable) {

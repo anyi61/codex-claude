@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   assertCanDelegate,
   dangerousRoot,
+  isDelegatedWorktreePath,
   sanitizeEnv,
   validateCwd,
   validateFilesWithinCwd,
@@ -163,5 +164,43 @@ describe("guard safety checks", () => {
       error: expect.stringMatching(/dangerous root/),
     });
     delete process.env.CODEX_CLAUDE_ALLOW_ROOTS;
+  });
+});
+
+describe("isDelegatedWorktreePath", () => {
+  it("returns true for a path inside a delegated worktree subdirectory", () => {
+    expect(isDelegatedWorktreePath("/repo/.claude/worktrees/codex-delegated-abc123/src")).toBe(true);
+  });
+
+  it("returns true for the delegated worktree root itself", () => {
+    expect(isDelegatedWorktreePath("/repo/.claude/worktrees/codex-delegated-abc123")).toBe(true);
+  });
+
+  it("returns false for a directory named codex-delegated-* outside .claude/worktrees/", () => {
+    expect(isDelegatedWorktreePath("/repo/codex-delegated-demo/src")).toBe(false);
+  });
+
+  it("returns false when .claude is not followed by worktrees", () => {
+    expect(isDelegatedWorktreePath("/repo/.claude/not-worktrees/codex-delegated-abc123")).toBe(false);
+  });
+
+  it("handles trailing slashes", () => {
+    expect(isDelegatedWorktreePath("/repo/.claude/worktrees/codex-delegated-abc123/")).toBe(true);
+  });
+
+  it("handles relative paths by resolving them", () => {
+    expect(isDelegatedWorktreePath(".claude/worktrees/codex-delegated-xyz")).toBe(true);
+  });
+
+  it("returns false for a normal repo path", () => {
+    expect(isDelegatedWorktreePath("/home/user/projects/my-repo")).toBe(false);
+  });
+
+  it("returns false when codex-delegated-* appears but .claude is missing", () => {
+    expect(isDelegatedWorktreePath("/tmp/worktrees/codex-delegated-abc123")).toBe(false);
+  });
+
+  it("returns false when .claude and worktrees appear but codex-delegated-* is missing", () => {
+    expect(isDelegatedWorktreePath("/repo/.claude/worktrees/other-branch")).toBe(false);
   });
 });

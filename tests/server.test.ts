@@ -5,6 +5,7 @@ const {
   validateFilesWithinCwdMock,
   checkRecursionMock,
   supportsWorktreeMock,
+  isDelegatedWorktreePathMock,
   getClaudeResultMock,
   manageClaudeReviewGateMock,
   runClaudeSetupMock,
@@ -26,6 +27,7 @@ const {
   validateFilesWithinCwdMock: vi.fn(),
   checkRecursionMock: vi.fn(() => 0),
   supportsWorktreeMock: vi.fn(async () => true),
+  isDelegatedWorktreePathMock: vi.fn(() => false),
   getClaudeResultMock: vi.fn(),
   manageClaudeReviewGateMock: vi.fn(),
   runClaudeSetupMock: vi.fn(),
@@ -48,6 +50,7 @@ vi.mock("../src/guard.js", () => ({
   MAX_BRIDGE_DEPTH: 2,
   checkRecursion: checkRecursionMock,
   supportsWorktree: supportsWorktreeMock,
+  isDelegatedWorktreePath: isDelegatedWorktreePathMock,
   validateCwd: validateCwdMock,
   validateFilesWithinCwd: validateFilesWithinCwdMock,
 }));
@@ -906,6 +909,118 @@ describe("server background job handlers", () => {
     expect((payload.next_actions as Array<Record<string, unknown>>)[0]).toMatchObject({
       tool: "claude_task",
     });
+  });
+
+  // --- nested delegated worktree guard ---
+
+  it("rejects claude_implement when cwd is inside a delegated worktree", async () => {
+    isDelegatedWorktreePathMock.mockReturnValue(true);
+
+    const result = await handleToolCall("claude_implement", {
+      cwd: "/repo/.claude/worktrees/codex-delegated-abc123",
+      task: "implement this",
+    });
+    const payload = parsePayload(result);
+
+    expect(result.isError).toBe(true);
+    expect(String(payload.error)).toContain("Refusing to start delegated write work from inside an existing delegated worktree");
+    expect(startBackgroundImplementMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects claude_task mode=write when cwd is inside a delegated worktree", async () => {
+    isDelegatedWorktreePathMock.mockReturnValue(true);
+
+    const result = await handleToolCall("claude_task", {
+      cwd: "/repo/.claude/worktrees/codex-delegated-abc123",
+      task: "do something",
+      mode: "write",
+    });
+    const payload = parsePayload(result);
+
+    expect(result.isError).toBe(true);
+    expect(String(payload.error)).toContain("Refusing to start delegated write work from inside an existing delegated worktree");
+    expect(runClaudeTaskMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects claude_task mode omitted with write-keyword task when cwd is inside a delegated worktree", async () => {
+    isDelegatedWorktreePathMock.mockReturnValue(true);
+
+    const result = await handleToolCall("claude_task", {
+      cwd: "/repo/.claude/worktrees/codex-delegated-abc123",
+      task: "implement this feature",
+    });
+    const payload = parsePayload(result);
+
+    expect(result.isError).toBe(true);
+    expect(String(payload.error)).toContain("Refusing to start delegated write work from inside an existing delegated worktree");
+    expect(runClaudeTaskMock).not.toHaveBeenCalled();
+  });
+
+  it("allows claude_task mode=auto with diff when cwd is inside a delegated worktree (review, not write)", async () => {
+    isDelegatedWorktreePathMock.mockReturnValue(true);
+    runClaudeTaskMock.mockResolvedValue({
+      delegated_mode: "review",
+      summary: "review ok",
+      status: "success",
+      completed_inline: true,
+      next_actions: [],
+    });
+
+    const result = await handleToolCall("claude_task", {
+      cwd: "/repo/.claude/worktrees/codex-delegated-abc123",
+      task: "review this change",
+      mode: "auto",
+      diff: "diff --git a/file.txt b/file.txt",
+    });
+    const payload = parsePayload(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(payload.delegated_mode).toBe("review");
+    expect(runClaudeTaskMock).toHaveBeenCalled();
+  });
+
+  it("allows claude_task mode=read when cwd is inside a delegated worktree", async () => {
+    isDelegatedWorktreePathMock.mockReturnValue(true);
+    runClaudeTaskMock.mockResolvedValue({
+      delegated_mode: "read",
+      summary: "read ok",
+      status: "success",
+      completed_inline: true,
+      next_actions: [],
+    });
+
+    const result = await handleToolCall("claude_task", {
+      cwd: "/repo/.claude/worktrees/codex-delegated-abc123",
+      task: "explain this",
+      mode: "read",
+    });
+    const payload = parsePayload(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(payload.delegated_mode).toBe("read");
+    expect(runClaudeTaskMock).toHaveBeenCalled();
+  });
+
+  it("allows claude_task mode=write from a normal repo cwd", async () => {
+    isDelegatedWorktreePathMock.mockReturnValue(false);
+    runClaudeTaskMock.mockResolvedValue({
+      delegated_mode: "write",
+      summary: "write ok",
+      status: "success",
+      completed_inline: true,
+      next_actions: [],
+    });
+
+    const result = await handleToolCall("claude_task", {
+      cwd: "/repo/normal",
+      task: "implement this",
+      mode: "write",
+    });
+    const payload = parsePayload(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(payload.delegated_mode).toBe("write");
+    expect(runClaudeTaskMock).toHaveBeenCalled();
   });
 });
 
