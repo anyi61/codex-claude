@@ -3078,6 +3078,7 @@ describe("claude cli argument construction", () => {
       constraints: ["Only change README.md"],
       resume_latest: true,
       dirty_policy: "committed",
+      verification_commands: ["npm test"],
     }, "run-task-write");
 
     expect(result.delegated_mode).toBe("write");
@@ -3087,10 +3088,36 @@ describe("claude cli argument construction", () => {
     expect(stored?.payload.max_turns).toBeUndefined();
     expect(stored?.payload.files).toBeUndefined();
     expect(stored?.payload.instruction_files).toEqual(["README.md"]);
+    expect(stored?.payload.verification_commands).toEqual(["npm test"]);
     expect(result.warnings).toEqual([
       "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use allowed_files for strict file modification limits.",
     ]);
     expect(Array.isArray(result.next_actions)).toBe(true);
+  });
+
+  it("passes claude_task auto write verification_commands to implement", async () => {
+    const { repo, jobStore } = await createWorkflowFixture();
+    const spawned = createDetachedSpawnResult(6012);
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => spawned) };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      task: "Fix README typo.",
+      mode: "auto",
+      verification_commands: ["npm test"],
+      dirty_policy: "committed",
+      wait_strategy: "background",
+    }, "run-task-auto-verify");
+
+    expect(result.delegated_mode).toBe("write");
+    expect(result.job?.type).toBe("implement");
+    const stored = await jobStore.get(result.job!.job_id);
+    expect(stored?.payload.verification_commands).toEqual(["npm test"]);
   });
 
   it("passes claude_task allowed_files to implement files for write mode", async () => {
@@ -4912,6 +4939,133 @@ describe("runClaudeApply — nested delegated worktree path detection", () => {
 });
 
 describe("runClaudeImplement — permission_denials warnings", () => {
+  it("records passed server verification", async () => {
+    const { repo } = await createGitRepoFixture("codex-server-verify-pass-");
+    const stdout = JSON.stringify({
+      session_id: "sess-verify-pass",
+      structured_output: {
+        status: "success",
+        summary: "Done.",
+        changed_files: [],
+        commands_run: [],
+        tests: { ran: false },
+      },
+    });
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      const spawnMock = vi.fn((bin: string, args: string[], options: { cwd?: string }) => {
+        if (bin === "claude") return createClaudeSpawnResult(stdout, "", 0);
+        if (bin === "npm") return createClaudeSpawnResult("ok", "", 0);
+        return actual.spawn(bin, args, options as never);
+      });
+      return { ...actual, spawn: spawnMock };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeImplement({
+      cwd: repo,
+      task: "test server verification",
+      worktreeName: "codex-delegated-verify-pass",
+      verification_commands: ["npm test"],
+    }, "run-verify-pass");
+
+    expect(result.status).toBe("success");
+    expect(result.server_verified).toMatchObject({
+      status: "passed",
+      commands: [{ command: "npm test", status: "passed", exit_code: 0 }],
+    });
+    expect(result.warnings.join("\n")).not.toContain("Server-side verification failed");
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  });
+
+  it("downgrades successful Claude output to partial when server verification fails", async () => {
+    const { repo } = await createGitRepoFixture("codex-server-verify-fail-");
+    const stdout = JSON.stringify({
+      session_id: "sess-verify-fail",
+      structured_output: {
+        status: "success",
+        summary: "Done.",
+        changed_files: [],
+        commands_run: [],
+        tests: { ran: true, passed: true },
+      },
+    });
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      const spawnMock = vi.fn((bin: string, args: string[], options: { cwd?: string }) => {
+        if (bin === "claude") return createClaudeSpawnResult(stdout, "", 0);
+        if (bin === "npm") return createClaudeSpawnResult("", "failed tests", 1);
+        return actual.spawn(bin, args, options as never);
+      });
+      return { ...actual, spawn: spawnMock };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeImplement({
+      cwd: repo,
+      task: "test server verification failure",
+      worktreeName: "codex-delegated-verify-fail",
+      verification_commands: ["npm test"],
+    }, "run-verify-fail");
+
+    expect(result.status).toBe("partial");
+    expect(result.server_verified).toMatchObject({
+      status: "failed",
+      commands: [{ command: "npm test", status: "failed", exit_code: 1 }],
+    });
+    expect(result.warnings.join("\n")).toContain("Server-side verification failed");
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  });
+
+  it("keeps permission denial warnings even when server verification passes", async () => {
+    const { repo } = await createGitRepoFixture("codex-server-verify-perm-");
+    const stdout = JSON.stringify({
+      session_id: "sess-verify-perm",
+      permission_denials: [
+        { tool_name: "Bash", tool_input: { command: "npm test" } },
+      ],
+      structured_output: {
+        status: "success",
+        summary: "Done.",
+        changed_files: [],
+        commands_run: [],
+        tests: { ran: true, passed: true },
+      },
+    });
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      const spawnMock = vi.fn((bin: string, args: string[], options: { cwd?: string }) => {
+        if (bin === "claude") return createClaudeSpawnResult(stdout, "", 0);
+        if (bin === "npm") return createClaudeSpawnResult("ok", "", 0);
+        return actual.spawn(bin, args, options as never);
+      });
+      return { ...actual, spawn: spawnMock };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeImplement({
+      cwd: repo,
+      task: "test verification plus permission denial",
+      worktreeName: "codex-delegated-verify-perm",
+      verification_commands: ["npm test"],
+    }, "run-verify-perm");
+
+    const warningsText = result.warnings.join("\n");
+    expect(result.status).toBe("success");
+    expect(result.server_verified?.status).toBe("passed");
+    expect(warningsText).toContain("rerun verification locally");
+
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  });
+
   it("surfaces permission_denials as verification warning", async () => {
     const { repo } = await createGitRepoFixture("codex-perm-denial-");
     const stdout = JSON.stringify({

@@ -471,6 +471,33 @@ describe("background jobs module", () => {
     expect(second.concurrency).toBeUndefined();
   });
 
+  it("fingerprint includes normalized verification_commands", async () => {
+    const { repo } = await createJobFixture();
+    const spawnMock = vi.fn(() => createDetachedSpawnResult(7201));
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: spawnMock };
+    });
+    const module = await import("../src/background-jobs.js");
+
+    const first = await module.enqueueBackgroundJob({
+      cwd: repo,
+      type: "implement",
+      payload: { cwd: repo, task: "implement verified task", verification_commands: [" npm test ", "npm run typecheck"] },
+      dedupe: true,
+    });
+    const second = await module.enqueueBackgroundJob({
+      cwd: repo,
+      type: "implement",
+      payload: { cwd: repo, task: "implement verified task", verification_commands: ["npm run typecheck", "npm test"] },
+      dedupe: true,
+    });
+
+    expect(second.job.job_id).toBe(first.job.job_id);
+    expect(second.deduped).toBe(true);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
   it("does not let terminal implement jobs consume implement concurrency", async () => {
     const { repo, store } = await createJobFixture();
     await store.create({

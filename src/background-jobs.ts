@@ -136,6 +136,7 @@ function buildFingerprintPayload(input: {
     max_changed_files: input.payload.max_changed_files,
     max_cost_usd: input.payload.max_cost_usd,
     sensitive_file_policy: input.payload.sensitive_file_policy ?? "default",
+    verification_commands: normalizeStringArray(input.payload.verification_commands),
   };
 }
 

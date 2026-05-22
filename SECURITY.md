@@ -131,6 +131,19 @@ Read(./.pypirc), Read(./**/.pypirc), Read(./credentials*), Read(./**/credentials
 
 **off** 移除所有敏感文件 deny 规则，但 `rm *`/`sudo *` 等全局危险 Bash 命令的 deny 规则不受影响。
 
+#### Server-Side Verification
+
+`verification_commands` 让 server 在 delegated worktree 中独立运行验证命令，结果写入 `server_verified`。这用于补强 Claude 自报的 `commands_run` / `tests`，不是通用 shell 执行器。
+
+安全边界：
+
+- 只在 implement/write delegated worktree 中运行，不在 main workspace 中运行。
+- 命令字符串会解析为 argv，再通过 `spawn(command, args)` 执行；不使用 `shell: true`。
+- 每次最多 10 条命令，每条最长 200 字符，每条默认 120 秒超时，stdout/stderr tail 截断到 4000 字符。
+- 允许范围限于测试、类型检查、lint 类命令族：`npm test`、`npm run <script>`、`npx vitest/jest/tsc/eslint ...`、`yarn test/run ...`、`pnpm test/run ...`、`pytest ...`、`go test ...`、`cargo test ...`、`tsc ...`、`eslint ...`。
+- `install`、`publish`、`deploy`、`start`、`serve`、删除、权限提升、网络拉取、容器/集群操作等命令会被拒绝或跳过。
+- 验证失败会让 implement 返回 `partial` 并保留 worktree 供预览/检查；不会自动 apply 或自动 cleanup。
+
 #### 只读模式（query / review）允许的命令
 
 仅允许 `Read`、`Glob`、`Grep` 和只读 Bash 命令：

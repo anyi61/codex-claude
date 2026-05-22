@@ -638,6 +638,55 @@ describe("server background job handlers", () => {
     expect(result.isError).toBeUndefined();
   });
 
+  it("routes claude_implement verification_commands through to startBackgroundImplement", async () => {
+    startBackgroundImplementMock.mockResolvedValue({
+      job: { job_id: "job-verify", type: "implement", status: "queued" },
+    });
+
+    const result = await handleToolCall("claude_implement", {
+      cwd: "/repo/input",
+      task: "implement with verification",
+      verification_commands: ["npm test", "npm run typecheck"],
+    });
+    const payload = parsePayload(result);
+
+    expect(startBackgroundImplementMock).toHaveBeenCalledWith({
+      cwd: "/repo/resolved",
+      task: "implement with verification",
+      files: undefined,
+      constraints: undefined,
+      timeout_sec: 600,
+      max_turns: undefined,
+      session_key: undefined,
+      fork_session: undefined,
+      resume_latest: undefined,
+      max_cost_usd: undefined,
+      max_changed_files: undefined,
+      worktreeName: undefined,
+      dirty_policy: undefined,
+      security_profile: "default",
+      sensitive_file_policy: undefined,
+      verification_commands: ["npm test", "npm run typecheck"],
+    });
+    expect((payload.job as Record<string, unknown>).job_id).toBe("job-verify");
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("routes claude_implement with undefined verification_commands when omitted", async () => {
+    startBackgroundImplementMock.mockResolvedValue({
+      job: { job_id: "job-noverify", type: "implement", status: "queued" },
+    });
+
+    await handleToolCall("claude_implement", {
+      cwd: "/repo/input",
+      task: "no verification",
+    });
+
+    expect(startBackgroundImplementMock).toHaveBeenCalledTimes(1);
+    const callArgs = startBackgroundImplementMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(callArgs.verification_commands).toBeUndefined();
+  });
+
   it("returns validation errors for claude_job_result with empty job_id", async () => {
     const result = await handleToolCall("claude_job_result", { cwd: "/repo/input", job_id: "" });
     const payload = parsePayload(result);

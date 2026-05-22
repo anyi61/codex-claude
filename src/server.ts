@@ -180,6 +180,7 @@ const BASE_TOOL_DEFINITIONS = [
         reviewed_run_id: { type: "string", description: "Bind this review to a specific implement/apply run id for review-gate clearing." },
         reviewed_worktree_path: { type: "string", description: "Bind this review to a specific worktree path for review-gate clearing." },
         sensitive_file_policy: { type: "string", enum: ["default", "strict", "off"], description: "Controls sensitive-file deny rules. default blocks .env/.env.*/secrets/** reads; strict adds .pem/.key/.ssh/.aws/credentials and similar; off removes only sensitive-file denies (dangerous Bash denies remain)." },
+        verification_commands: { type: "array", minItems: 1, maxItems: 10, items: { type: "string", minLength: 1, maxLength: 200 }, description: "Server-side verification commands to run in the delegated worktree after a write-mode task completes. Commands are parsed into argv and executed without a shell under a conservative allowlist." },
       },
     },
   },
@@ -266,6 +267,7 @@ const BASE_TOOL_DEFINITIONS = [
         dirty_policy: { type: "string", enum: ["ask", "committed", "snapshot"], description: "Handling for uncommitted main-workspace changes: ask (default), committed (ignore dirty changes and use HEAD), or snapshot (copy dirty files into the delegated worktree)." },
         security_profile: { type: "string", enum: ["strict", "default", "permissive"], description: "Command allowlist profile for implementation tasks. default excludes remote package execution paths such as npx; permissive allows broader local project commands." },
         sensitive_file_policy: { type: "string", enum: ["default", "strict", "off"], description: "Controls sensitive-file deny rules. default blocks .env/.env.*/secrets/** reads; strict adds .pem/.key/.ssh/.aws/credentials and similar; off removes only sensitive-file denies (dangerous Bash denies remain)." },
+        verification_commands: { type: "array", minItems: 1, maxItems: 10, items: { type: "string", minLength: 1, maxLength: 200 }, description: "Server-side verification commands to run in the delegated worktree after Claude completes. Commands are parsed into argv and executed without a shell under a conservative allowlist. Results appear in the output as server_verified." },
       },
     },
   },
@@ -830,7 +832,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
       case "claude_implement": {
         const parsed = claudeImplementInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, files, constraints, timeout_sec, max_turns, session_key, fork_session, resume_latest, max_cost_usd, max_changed_files, worktreeName, dirty_policy, security_profile, sensitive_file_policy } = parsed.data;
+        const { task, cwd, files, constraints, timeout_sec, max_turns, session_key, fork_session, resume_latest, max_cost_usd, max_changed_files, worktreeName, dirty_policy, security_profile, sensitive_file_policy, verification_commands } = parsed.data;
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
@@ -862,6 +864,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
           dirty_policy,
           security_profile,
           sensitive_file_policy,
+          verification_commands,
         }));
       }
 

@@ -58,6 +58,7 @@ import type {
   ToolEnvelope,
   SecurityProfile,
   SensitiveFilePolicy,
+  ServerVerified,
 } from "./schema.js";
 import {
   QUERY_SCHEMA,
@@ -147,6 +148,7 @@ export const __test = backgroundJobsTestState;
 
 import { getStore, resolveWorkflowSessionSummary, buildNextActions, getClaudeResult } from "./workflow-results.js";
 export { getClaudeResult, getWorkspaceStatus } from "./workflow-results.js";
+import { runVerificationCommands, buildVerificationWarnings } from "./verification.js";
 
 const getBackgroundStateDir = getBackgroundStateDirCore;
 const getJobStore = getJobStoreCore;
@@ -578,6 +580,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         security_profile: input.security_profile,
         sensitive_file_policy: input.sensitive_file_policy,
         max_changed_files: input.max_changed_files,
+        verification_commands: input.verification_commands,
       });
       if (!("job" in implementResult)) {
         return {
@@ -1873,6 +1876,13 @@ export async function runClaudeImplement(
     }
   }
 
+  // Run server-side verification commands if specified
+  let serverVerified: ServerVerified | undefined;
+  if (implementInput.verification_commands && implementInput.verification_commands.length > 0) {
+    serverVerified = await runVerificationCommands(implementInput.verification_commands, worktreePath);
+    log(`Server-side verification: ${serverVerified?.status ?? "skipped"}`);
+  }
+
   const sessionLog: SessionLog = {
     requested_session_id: resumeSessionId ?? null,
     resumed: fallbackFreshRetry ? false : !!resumeSessionId,
@@ -1889,15 +1899,17 @@ export async function runClaudeImplement(
     session: sessionLog,
     duration_ms: Date.now() - startTime,
     ...(fallbackFreshRetry ? { fallback_fresh_retry: true } : {}),
+    ...(serverVerified ? { server_verified: serverVerified } : {}),
   }, implementInput.cwd);
 
   await store.prune();
-  const status = implementEnvelopeStatus(report, execution, observed);
-  const recoveryWarnings = status === "partial"
+  const baseStatus = implementEnvelopeStatus(report, execution, observed);
+  const status = serverVerified?.status === "failed" ? "partial" : baseStatus;
+  const recoveryWarnings = baseStatus === "partial"
     ? [
         "Claude ended before a clean completion, but changed files were observed. Inspect the worktree with claude_result or claude_run_inspect before preview/apply, and consider resuming with claude_implement if needed.",
       ]
-    : status === "failed"
+    : baseStatus === "failed"
       ? [
           "Claude ended before a clean completion and no changed files were observed. Inspect diagnostics, then retry or resume instead of applying this worktree.",
         ]
@@ -1912,6 +1924,7 @@ export async function runClaudeImplement(
   const warnings = [
     ...(fallbackWarning ? [fallbackWarning] : []),
     ...(permissionDenialWarning ? [permissionDenialWarning] : []),
+    ...buildVerificationWarnings(serverVerified),
     ...(observed.resource_limits?.warnings ?? []),
     ...(observed.scope?.warnings ?? []),
     ...recoveryWarnings,
@@ -1925,6 +1938,7 @@ export async function runClaudeImplement(
   return makeEnvelope(status, undefined, execution, warnings, {
     claude_report: report,
     server_observed: observed,
+    ...(serverVerified ? { server_verified: serverVerified } : {}),
   });
   } finally {
     await worktreeLock.release();

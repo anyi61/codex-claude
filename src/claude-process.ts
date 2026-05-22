@@ -142,7 +142,7 @@ export function makeEnvelope<T>(
   data: T | undefined,
   execution: ExecutionMetadata,
   warnings: string[] = [],
-  extra: Pick<ToolEnvelope<T>, "claude_report" | "server_observed"> = {}
+  extra: Pick<ToolEnvelope<T>, "claude_report" | "server_observed" | "server_verified"> = {}
 ): ToolEnvelope<T> {
   return { status, data, execution, warnings, ...extra };
 }

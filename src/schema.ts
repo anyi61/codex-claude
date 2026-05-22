@@ -52,6 +52,7 @@ export interface ClaudeImplementInput {
   dirty_policy?: "ask" | "committed" | "snapshot";
   security_profile?: SecurityProfile;
   sensitive_file_policy?: SensitiveFilePolicy;
+  verification_commands?: string[];
 }
 
 export type ClaudeTaskMode = "auto" | "read" | "review" | "write";
@@ -77,6 +78,7 @@ export interface ClaudeTaskInput {
   sensitive_file_policy?: SensitiveFilePolicy;
   reviewed_run_id?: string;
   reviewed_worktree_path?: string;
+  verification_commands?: string[];
 }
 
 export type SecurityProfile = "strict" | "default" | "permissive";
@@ -435,6 +437,22 @@ export interface ServerObserved {
   scope?: ObserveScope;
 }
 
+export interface ServerVerifiedCommand {
+  command: string;
+  status: "passed" | "failed" | "skipped";
+  exit_code: number | null;
+  duration_ms: number;
+  stdout_tail: string;
+  stderr_tail: string;
+  timed_out: boolean;
+  skipped_reason?: string;
+}
+
+export interface ServerVerified {
+  status: "passed" | "failed" | "skipped";
+  commands: ServerVerifiedCommand[];
+}
+
 export interface ExecutionMetadata {
   exit_code: number | null;
   duration_ms: number;
@@ -449,6 +467,7 @@ export interface ToolEnvelope<T> {
   data?: T;
   claude_report?: unknown;
   server_observed?: unknown;
+  server_verified?: ServerVerified;
   execution: ExecutionMetadata;
   warnings: string[];
 }
@@ -637,6 +656,13 @@ const worktreeNameSchema = z.string().regex(/^[A-Za-z0-9_-]+$/, "worktreeName ma
 const dirtyPolicySchema = z.enum(["ask", "committed", "snapshot"]).optional();
 const securityProfileSchema = z.enum(["strict", "default", "permissive"]).optional().default("default");
 const sensitiveFilePolicySchema = z.enum(["default", "strict", "off"]).optional();
+const verificationCommandsSchema = z.array(
+  z.string()
+    .trim()
+    .min(1)
+    .max(200)
+    .regex(/^[^\u0000-\u001f\u007f]+$/, "verification command may not contain control characters")
+).min(1).max(10).optional();
 
 export const claudeStatusInputSchema = z.object({
   cwd: cwdSchema,
@@ -688,6 +714,7 @@ export const claudeImplementInputSchema = z.object({
   dirty_policy: dirtyPolicySchema,
   security_profile: securityProfileSchema,
   sensitive_file_policy: sensitiveFilePolicySchema,
+  verification_commands: verificationCommandsSchema,
 }).strict().refine((value) => !value.fork_session || !!value.session_key, {
   message: "fork_session requires session_key",
   path: ["fork_session"],
@@ -716,6 +743,7 @@ export const claudeTaskInputSchema = z.object({
   sensitive_file_policy: sensitiveFilePolicySchema,
   reviewed_run_id: z.string().trim().min(1).optional(),
   reviewed_worktree_path: z.string().trim().min(1).optional(),
+  verification_commands: verificationCommandsSchema,
 }).strict().refine((value) => value.mode !== "read" || !value.resume_latest, {
   message: "resume_latest is only supported for write mode",
   path: ["resume_latest"],
