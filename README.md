@@ -94,9 +94,13 @@ codex-claude setup --write
 | 参数 | 说明 |
 |------|------|
 | `--force` | 覆盖已有的 claude_delegate 配置（会创建带时间戳的备份） |
-| `--allow-root <path>` | 将仓库添加到 `CODEX_CLAUDE_ALLOW_ROOTS` |
-| `--project` | 写入 `./.codex/config.toml` 而不是全局配置 |
+| `--allow-root <path>` | 将仓库添加到全局 Codex 配置 (`~/.codex/config.toml`) 的 `CODEX_CLAUDE_ALLOW_ROOTS` |
+| `--project` | 写入 `./.codex/config.toml` 项目级配置，不修改全局 Codex 配置 |
 | `--print` | 预览将要写入的配置 |
+
+注意：`--project` 和 `--allow-root` 不可组合使用，它们作用于不同范围的配置。
+需要同时配置时，先运行 `setup --write --allow-root <path>` 完成全局 allow-root 配置，
+再运行 `setup --write --project` 写入项目级 MCP 配置。
 
 ### 诊断
 

@@ -780,7 +780,11 @@ export async function runCli(argv = process.argv, deps: CliDependencies = {}): P
         const force = args.includes("--force");
 
         if (isProject && args.includes("--allow-root")) {
-          writeErr("--project and --allow-root cannot be combined. Use global setup for allow-root configuration.\n");
+          writeErr("--project and --allow-root cannot be combined.\n");
+          writeErr("  --project writes MCP config to ./.codex/config.toml (project-scoped).\n");
+          writeErr("  --allow-root modifies the global Codex allow-root configuration (~/.codex/config.toml).\n");
+          writeErr("To set up both: run setup --write --allow-root <path> first (global config),\n");
+          writeErr("then run setup --write --project (project config).\n");
           return 2;
         }
 
@@ -806,6 +810,15 @@ export async function runCli(argv = process.argv, deps: CliDependencies = {}): P
 
       writeErr("Usage: codex-claude setup --write [--force] [--allow-root <path>] [--project]\n");
       writeErr("       codex-claude setup --print\n");
+      writeErr("\n");
+      writeErr("  --write              Write claude_delegate MCP config\n");
+      writeErr("  --force              Overwrite existing config (creates timestamped backup)\n");
+      writeErr("  --allow-root <path>  Add path to global Codex allow-root config\n");
+      writeErr("  --project            Write to ./.codex/config.toml (project-scoped), not global config\n");
+      writeErr("  --print              Preview config without writing\n");
+      writeErr("\n");
+      writeErr("Note: --project and --allow-root affect different scopes and cannot be combined.\n");
+      writeErr("Use global setup for allow-root config, then --project for project-scoped config.\n");
       return 2;
     }
 

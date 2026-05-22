@@ -205,7 +205,7 @@ describe("codex-claude CLI", () => {
     expect(pkg.license).toBe("MIT");
   });
 
-  it("rejects --project --allow-root combination", async () => {
+  it("rejects --project --allow-root combination with clear scope explanation", async () => {
     const io = makeIo();
     const exitCode = await runCli(["node", "codex-claude", "setup", "--write", "--project", "--allow-root", "/tmp"], {
       writeOut: io.writeOut.bind(io),
@@ -214,6 +214,23 @@ describe("codex-claude CLI", () => {
     });
     expect(exitCode).toBe(2);
     expect(io.stderr).toContain("--project and --allow-root cannot be combined");
+    expect(io.stderr).toContain("./.codex/config.toml");
+    expect(io.stderr).toContain("global Codex allow-root");
+  });
+
+  it("setup with no flags prints usage describing each flag", async () => {
+    const io = makeIo();
+    const exitCode = await runCli(["node", "codex-claude", "setup"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+    expect(exitCode).toBe(2);
+    expect(io.stderr).toContain("Usage:");
+    expect(io.stderr).toContain("--project");
+    expect(io.stderr).toContain("--allow-root");
+    expect(io.stderr).toContain("--force");
+    expect(io.stderr).toContain("--print");
   });
 
   function makeArtifactCleanupResult(overrides: Partial<Awaited<ReturnType<typeof import("../src/claude-cli.js").cleanupDelegateArtifacts>>> = {}) {
