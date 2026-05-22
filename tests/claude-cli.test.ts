@@ -3090,7 +3090,7 @@ describe("claude cli argument construction", () => {
     expect(stored?.payload.instruction_files).toEqual(["README.md"]);
     expect(stored?.payload.verification_commands).toEqual(["npm test"]);
     expect(result.warnings).toEqual([
-      "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use allowed_files for strict file modification limits.",
+      "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use claude_task.allowed_files for hard file limits, or claude_implement.files for advanced use.",
     ]);
     expect(Array.isArray(result.next_actions)).toBe(true);
   });
@@ -3217,7 +3217,7 @@ describe("claude cli argument construction", () => {
     expect(stored?.payload.files).toEqual(["src/a.ts"]);
     expect(stored?.payload.instruction_files).toEqual(["PLAN.md"]);
     expect(result.warnings).toEqual([
-      "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use allowed_files for strict file modification limits.",
+      "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use claude_task.allowed_files for hard file limits, or claude_implement.files for advanced use.",
     ]);
   });
 

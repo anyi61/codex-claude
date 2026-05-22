@@ -314,7 +314,7 @@ function summarizeTaskDispatch(mode: Exclude<ClaudeTaskMode, "auto">, isBackgrou
 }
 
 const CLAUDE_TASK_FILES_DEPRECATED_WARNING =
-  "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use allowed_files for strict file modification limits.";
+  "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use claude_task.allowed_files for hard file limits, or claude_implement.files for advanced use.";
 
 function resolveTaskInstructionFiles(input: ClaudeTaskInput): { instructionFiles?: string[]; warnings: string[] } {
   const merged = [...(input.instruction_files ?? []), ...(input.files ?? [])]

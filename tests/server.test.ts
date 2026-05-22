@@ -372,7 +372,7 @@ describe("server background job handlers", () => {
       summary: "Delegated write task as a background job.",
       job: { job_id: "job-write", type: "implement", status: "queued" },
       warnings: [
-        "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use allowed_files for strict file modification limits.",
+        "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use claude_task.allowed_files for hard file limits, or claude_implement.files for advanced use.",
       ],
       next_actions: [],
     });
@@ -400,7 +400,7 @@ describe("server background job handlers", () => {
       dirty_policy: "committed",
     }), expect.any(String));
     expect(payload.warnings).toEqual([
-      "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use allowed_files for strict file modification limits.",
+      "claude_task.files is deprecated and treated as instruction_files, not apply scope. Use claude_task.allowed_files for hard file limits, or claude_implement.files for advanced use.",
     ]);
   });
 
@@ -988,6 +988,15 @@ describe("server background job handlers", () => {
     const taskTool = TOOL_DEFINITIONS.find((tool) => tool.name === "claude_task");
     expect(taskTool?.inputSchema.properties).toHaveProperty("allowed_files");
     expect(taskTool?.inputSchema.properties).toHaveProperty("max_changed_files");
+    expect(taskTool?.inputSchema.properties.files.description).toContain("Use allowed_files");
+  });
+
+  it("documents claude_implement files as hard file modification scope", () => {
+    const implementTool = TOOL_DEFINITIONS.find((tool) => tool.name === "claude_implement");
+    const filesDescription = implementTool?.inputSchema.properties.files.description;
+
+    expect(filesDescription).toContain("Hard file modification scope");
+    expect(filesDescription).toContain("claude_task.allowed_files");
   });
 
   it("exposes sensitive_file_policy on claude_task, claude_query, claude_review, and claude_implement tool definitions", () => {

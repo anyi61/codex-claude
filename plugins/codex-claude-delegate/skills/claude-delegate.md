@@ -9,7 +9,7 @@ For write tasks, `claude_task` produces an isolated git worktree result only —
 
 `preview=true` and `cleanup=true` must not be combined in a single `claude_apply` call — the server rejects this combination. Workflow `next_actions` from `claude_task` and `claude_result` only suggests `preview=true` actions; it never emits direct non-preview apply suggestions.
 
-For normal `claude_task` calls, do not pass `files`. If Claude should read a plan or checklist, use `instruction_files` or mention the file in `task`; these files are context, not modification scope. Use Advanced / Debug `claude_implement.files` only when strict file modification limits are explicitly required.
+For normal `claude_task` calls, do not pass `files`. If Claude should read a plan or checklist, use `instruction_files` or mention the file in `task`; these files are context, not modification scope. Use `claude_task.allowed_files` for hard file modification limits, or Advanced / Debug `claude_implement.files` for advanced use.
 
 ## When NOT to use claude_implement
 

@@ -67,7 +67,7 @@ export interface ClaudeTaskInput {
   job_id?: string;
   resume_latest?: boolean;
   instruction_files?: string[];
-  /** @deprecated claude_task treats files as instruction_files, not apply scope. */
+  /** @deprecated Use claude_task.allowed_files or claude_implement.files for file scope control. claude_task.files is treated as instruction_files only. */
   files?: string[];
   allowed_files?: string[];
   max_changed_files?: number;
