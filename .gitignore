@@ -13,4 +13,6 @@ debug/
 /AGENTS.md
 /CLAUDE.md
 .worktrees/
+.codegraph/
+.cursor/
 docs/
