@@ -24,6 +24,14 @@ vi.mock("../src/codex-config.js", async () => {
   };
 });
 
+vi.mock("../src/claude-cli.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/claude-cli.js")>("../src/claude-cli.js");
+  return {
+    ...actual,
+    cleanupDelegateArtifacts: vi.fn(),
+  };
+});
+
 function makeIo() {
   return {
     stdout: "",
@@ -36,6 +44,7 @@ function makeIo() {
 const cleanupPaths: string[] = [];
 
 afterEach(async () => {
+  vi.clearAllMocks();
   vi.unstubAllEnvs();
   while (cleanupPaths.length > 0) {
     await rm(cleanupPaths.pop()!, { recursive: true, force: true });
@@ -205,6 +214,228 @@ describe("codex-claude CLI", () => {
     });
     expect(exitCode).toBe(2);
     expect(io.stderr).toContain("--project and --allow-root cannot be combined");
+  });
+
+  function makeArtifactCleanupResult(overrides: Partial<Awaited<ReturnType<typeof import("../src/claude-cli.js").cleanupDelegateArtifacts>>> = {}) {
+    return {
+      jobs: {
+        dry_run: true,
+        matched_count: 2,
+        removed_count: 0,
+        failed_count: 0,
+        entries: [],
+      },
+      run_logs: {
+        dry_run: true,
+        matched_count: 3,
+        removed_count: 0,
+        failed_count: 0,
+        entries: [],
+      },
+      ...overrides,
+    };
+  }
+
+  async function mockedCleanupDelegateArtifacts() {
+    const { cleanupDelegateArtifacts } = await import("../src/claude-cli.js");
+    return vi.mocked(cleanupDelegateArtifacts);
+  }
+
+  it("cleanup-artifacts dry-runs artifacts by default", async () => {
+    const cleanupDelegateArtifacts = await mockedCleanupDelegateArtifacts();
+    cleanupDelegateArtifacts.mockResolvedValueOnce(makeArtifactCleanupResult());
+    const io = makeIo();
+
+    const exitCode = await runCli(["node", "codex-claude", "cleanup-artifacts"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+
+    expect(exitCode).toBe(0);
+    expect(cleanupDelegateArtifacts).toHaveBeenCalledWith({
+      cwd: process.cwd(),
+      older_than_hours: 720,
+      dry_run: true,
+      limit: 100,
+    });
+    expect(io.stdout).toContain("dry_run: true");
+    expect(io.stdout).toContain("Jobs: 2 matched, 0 removed, 0 failed");
+    expect(io.stdout).toContain("Run logs: 3 matched, 0 removed, 0 failed");
+    expect(io.stdout).toContain("Run again with --execute");
+    expect(io.stderr).toBe("");
+  });
+
+  it("cleanup-artifacts writes JSON output", async () => {
+    const cleanupDelegateArtifacts = await mockedCleanupDelegateArtifacts();
+    const result = makeArtifactCleanupResult({
+      run_logs: {
+        dry_run: true,
+        matched_count: 1,
+        removed_count: 0,
+        failed_count: 0,
+        entries: [{ run_id: "run-old", removed: false, updated_at: "2026-05-20T00:00:00.000Z" }],
+      },
+    });
+    cleanupDelegateArtifacts.mockResolvedValueOnce(result);
+    const io = makeIo();
+
+    const exitCode = await runCli([
+      "node",
+      "codex-claude",
+      "cleanup-artifacts",
+      "--dry-run",
+      "--json",
+      "--cwd",
+      "/tmp/repo",
+      "--older-than-hours",
+      "24",
+      "--limit",
+      "10",
+    ], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+
+    expect(exitCode).toBe(0);
+    expect(cleanupDelegateArtifacts).toHaveBeenCalledWith({
+      cwd: "/tmp/repo",
+      older_than_hours: 24,
+      dry_run: true,
+      limit: 10,
+    });
+    expect(JSON.parse(io.stdout)).toEqual(result);
+    expect(io.stderr).toBe("");
+  });
+
+  it("cleanup-artifacts executes only with explicit flag", async () => {
+    const cleanupDelegateArtifacts = await mockedCleanupDelegateArtifacts();
+    cleanupDelegateArtifacts.mockResolvedValueOnce(makeArtifactCleanupResult({
+      jobs: {
+        dry_run: false,
+        matched_count: 2,
+        removed_count: 2,
+        failed_count: 0,
+        entries: [],
+      },
+      run_logs: {
+        dry_run: false,
+        matched_count: 1,
+        removed_count: 1,
+        failed_count: 0,
+        entries: [],
+      },
+    }));
+    const io = makeIo();
+
+    const exitCode = await runCli(["node", "codex-claude", "cleanup-artifacts", "--execute", "--older-than-hours", "168"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+
+    expect(exitCode).toBe(0);
+    expect(cleanupDelegateArtifacts).toHaveBeenCalledWith({
+      cwd: process.cwd(),
+      older_than_hours: 168,
+      dry_run: false,
+      limit: 100,
+    });
+    expect(io.stdout).toContain("dry_run: false");
+    expect(io.stdout).toContain("Jobs: 2 matched, 2 removed, 0 failed");
+    expect(io.stdout).toContain("Run logs: 1 matched, 1 removed, 0 failed");
+  });
+
+  it("cleanup-artifacts exits 1 when cleanup has failures", async () => {
+    const cleanupDelegateArtifacts = await mockedCleanupDelegateArtifacts();
+    cleanupDelegateArtifacts.mockResolvedValueOnce(makeArtifactCleanupResult({
+      jobs: {
+        dry_run: false,
+        matched_count: 1,
+        removed_count: 0,
+        failed_count: 1,
+        entries: [],
+      },
+    }));
+    const io = makeIo();
+
+    const exitCode = await runCli(["node", "codex-claude", "cleanup-artifacts", "--execute"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+
+    expect(exitCode).toBe(1);
+    expect(io.stdout).toContain("failed");
+  });
+
+  it("cleanup-artifacts rejects dry-run and execute together", async () => {
+    const cleanupDelegateArtifacts = await mockedCleanupDelegateArtifacts();
+    const io = makeIo();
+
+    const exitCode = await runCli(["node", "codex-claude", "cleanup-artifacts", "--dry-run", "--execute"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+
+    expect(exitCode).toBe(2);
+    expect(cleanupDelegateArtifacts).not.toHaveBeenCalled();
+    expect(io.stderr).toContain("--dry-run and --execute cannot be combined");
+  });
+
+  it("cleanup-artifacts rejects missing option values and invalid numbers", async () => {
+    const cleanupDelegateArtifacts = await mockedCleanupDelegateArtifacts();
+    const cases = [
+      { argv: ["--cwd"], message: "--cwd requires a path argument" },
+      { argv: ["--older-than-hours", "-1"], message: "--older-than-hours must be a non-negative number" },
+      { argv: ["--limit", "0"], message: "--limit must be a positive integer" },
+    ];
+
+    for (const item of cases) {
+      cleanupDelegateArtifacts.mockClear();
+      const io = makeIo();
+      const exitCode = await runCli(["node", "codex-claude", "cleanup-artifacts", ...item.argv], {
+        writeOut: io.writeOut.bind(io),
+        writeErr: io.writeErr.bind(io),
+        startMcp: vi.fn(),
+      });
+
+      expect(exitCode).toBe(2);
+      expect(cleanupDelegateArtifacts).not.toHaveBeenCalled();
+      expect(io.stderr).toContain(item.message);
+    }
+  });
+
+  it("cleanup-artifacts rejects unknown options", async () => {
+    const cleanupDelegateArtifacts = await mockedCleanupDelegateArtifacts();
+    const io = makeIo();
+
+    const exitCode = await runCli(["node", "codex-claude", "cleanup-artifacts", "--remove-everything"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+
+    expect(exitCode).toBe(2);
+    expect(cleanupDelegateArtifacts).not.toHaveBeenCalled();
+    expect(io.stderr).toContain("Unknown cleanup-artifacts option");
+  });
+
+  it("cleanup-artifacts rejects unknown positional arguments", async () => {
+    const cleanupDelegateArtifacts = await mockedCleanupDelegateArtifacts();
+    const io = makeIo();
+
+    const exitCode = await runCli(["node", "codex-claude", "cleanup-artifacts", "leftoverarg"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+
+    expect(exitCode).toBe(2);
+    expect(cleanupDelegateArtifacts).not.toHaveBeenCalled();
+    expect(io.stderr).toContain("Unknown cleanup-artifacts argument");
   });
 
   // Doctor tests using mocked guard and codex-config modules.

@@ -608,6 +608,117 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
   return result.ready ? 0 : 1;
 }
 
+function parseNonNegativeNumber(value: string | undefined, option: string): number | string {
+  if (value === undefined || value.startsWith("--")) return `${option} requires a value`;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return `${option} must be a non-negative number`;
+  return parsed;
+}
+
+function parsePositiveInteger(value: string | undefined, option: string): number | string {
+  if (value === undefined || value.startsWith("--")) return `${option} requires a value`;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) return `${option} must be a positive integer`;
+  return parsed;
+}
+
+async function cleanupArtifactsCommand(
+  args: string[],
+  deps: Required<Pick<CliDependencies, "writeOut" | "writeErr">>
+): Promise<number> {
+  let cwd = process.cwd();
+  let olderThanHours = 720;
+  let limit = 100;
+  let dryRun = true;
+  let json = false;
+  let explicitDryRun = false;
+  let execute = false;
+
+  for (let idx = 1; idx < args.length; idx += 1) {
+    const arg = args[idx];
+    if (arg === "--dry-run") {
+      explicitDryRun = true;
+      dryRun = true;
+      continue;
+    }
+    if (arg === "--execute") {
+      execute = true;
+      dryRun = false;
+      continue;
+    }
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    if (arg === "--cwd") {
+      const value = args[idx + 1];
+      if (!value || value.startsWith("--")) {
+        deps.writeErr("--cwd requires a path argument\n");
+        return 2;
+      }
+      cwd = value;
+      idx += 1;
+      continue;
+    }
+    if (arg === "--older-than-hours") {
+      const parsed = parseNonNegativeNumber(args[idx + 1], "--older-than-hours");
+      if (typeof parsed === "string") {
+        deps.writeErr(`${parsed}\n`);
+        return 2;
+      }
+      olderThanHours = parsed;
+      idx += 1;
+      continue;
+    }
+    if (arg === "--limit") {
+      const parsed = parsePositiveInteger(args[idx + 1], "--limit");
+      if (typeof parsed === "string") {
+        deps.writeErr(`${parsed}\n`);
+        return 2;
+      }
+      limit = parsed;
+      idx += 1;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      deps.writeErr(`Unknown cleanup-artifacts option: ${arg}\n`);
+      return 2;
+    }
+    deps.writeErr(`Unknown cleanup-artifacts argument: ${arg}\n`);
+    return 2;
+  }
+
+  if (explicitDryRun && execute) {
+    deps.writeErr("--dry-run and --execute cannot be combined\n");
+    return 2;
+  }
+
+  const { cleanupDelegateArtifacts } = await import("./claude-cli.js");
+  const result = await cleanupDelegateArtifacts({
+    cwd,
+    older_than_hours: olderThanHours,
+    dry_run: dryRun,
+    limit,
+  });
+
+  if (json) {
+    deps.writeOut(`${JSON.stringify(result, null, 2)}\n`);
+  } else {
+    deps.writeOut("Codex-Claude cleanup-artifacts\n\n");
+    deps.writeOut(`cwd: ${cwd}\n`);
+    deps.writeOut(`older_than_hours: ${olderThanHours}\n`);
+    deps.writeOut(`limit: ${limit}\n`);
+    deps.writeOut(`dry_run: ${dryRun}\n\n`);
+    deps.writeOut(`Jobs: ${result.jobs.matched_count} matched, ${result.jobs.removed_count} removed, ${result.jobs.failed_count} failed\n`);
+    deps.writeOut(`Run logs: ${result.run_logs.matched_count} matched, ${result.run_logs.removed_count} removed, ${result.run_logs.failed_count} failed\n`);
+    if (dryRun) {
+      deps.writeOut("\nRun again with --execute after reviewing the preview.\n");
+    }
+  }
+
+  return result.jobs.failed_count > 0 || result.run_logs.failed_count > 0 ? 1 : 0;
+}
+
 export async function runCli(argv = process.argv, deps: CliDependencies = {}): Promise<number> {
   const writeOut = deps.writeOut ?? ((text: string) => process.stdout.write(text));
   const writeErr = deps.writeErr ?? ((text: string) => process.stderr.write(text));
@@ -704,12 +815,16 @@ export async function runCli(argv = process.argv, deps: CliDependencies = {}): P
       return doctorCommand(io, isJson);
     }
 
+    if (command === "cleanup-artifacts") {
+      return cleanupArtifactsCommand(args, { writeOut, writeErr });
+    }
+
     if (command === "uninstall") {
       return runUninstall(args.slice(1));
     }
 
     writeErr(`Unknown command: ${command}\n`);
-    writeErr("Usage: codex-claude [mcp|--version|print-config|setup|doctor|uninstall]\n");
+    writeErr("Usage: codex-claude [mcp|--version|print-config|setup|doctor|cleanup-artifacts|uninstall]\n");
     return 2;
   } catch (err) {
     writeErr(`${err instanceof Error ? err.message : String(err)}\n`);

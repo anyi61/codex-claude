@@ -122,6 +122,18 @@ codex-claude print-config --source /path/to/repo
 codex-claude print-config --project
 ```
 
+### 清理本地状态产物
+
+预览或清理本工具维护的 terminal background job records 和旧 run logs：
+
+```bash
+codex-claude cleanup-artifacts
+codex-claude cleanup-artifacts --dry-run --older-than-hours 24 --limit 50
+codex-claude cleanup-artifacts --execute
+```
+
+`cleanup-artifacts` 默认是 dry-run。只有传入 `--execute` 才会删除已结束的 job records 和匹配保留窗口的 run logs。它不会删除 delegated worktree；worktree 仍使用 `claude_cleanup(cwd="...", dry_run=true)` 预览，再用 `dry_run=false` 清理。
+
 ## 默认工具集
 
 `setup --write` 和 `print-config` 启用恰好 5 个工具：
@@ -302,6 +314,7 @@ npm run check:plugin
 | 缺少 `confirmed_by_user` | 展示预览并获得用户明确批准后再应用 |
 | `preview=true` + `cleanup=true` | 拆分为预览和已确认的应用+清理两步 |
 | 残留 worktree | `claude_cleanup(cwd="...", dry_run=true)` 然后 `dry_run=false` |
+| 旧 job/run log 状态产物 | `codex-claude cleanup-artifacts` 预览后再加 `--execute` |
 
 ## 卸载
 
