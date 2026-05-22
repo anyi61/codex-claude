@@ -198,11 +198,30 @@ claude_task(mode="write", ...)
 
 ## 高级 / 调试工具
 
-这些工具**不**在默认配置中。需要手动在 `~/.codex/config.toml` 中启用：
+这些工具**不**在默认配置中。需要手动在 `~/.codex/config.toml` 中启用时，保留默认 5 个工具，再追加需要的高级工具：
 
 ```toml
 [mcp_servers.claude_delegate]
-enabled_tools = ["claude_status", "claude_runs", "claude_run_inspect", "claude_workspace_status", "claude_review_gate", "claude_job_wait", "claude_query", "claude_review", "claude_implement", "claude_jobs", "claude_job_result", "claude_job_cancel", "claude_job_cleanup"]
+enabled_tools = [
+  "claude_setup",
+  "claude_task",
+  "claude_result",
+  "claude_apply",
+  "claude_cleanup",
+  "claude_status",
+  "claude_runs",
+  "claude_run_inspect",
+  "claude_workspace_status",
+  "claude_review_gate",
+  "claude_job_wait",
+  "claude_query",
+  "claude_review",
+  "claude_implement",
+  "claude_jobs",
+  "claude_job_result",
+  "claude_job_cancel",
+  "claude_job_cleanup",
+]
 ```
 
 | 工具 | 用途 |

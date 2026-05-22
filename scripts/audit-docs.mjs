@@ -75,6 +75,23 @@ function hasLegacyPollingSemantics(text) {
   return /poll_too_soon|next_allowed_poll_at|remaining_delay_ms|Do not call claude_job_wait again before next_allowed_poll_at|poll this same job_id/i.test(text);
 }
 
+function hasAdvancedEnabledToolsWithoutDefaults(text) {
+  const enabledToolsPattern = /enabled_tools\s*=\s*\[([\s\S]*?)\]/g;
+  const defaultTools = [
+    "claude_setup",
+    "claude_task",
+    "claude_result",
+    "claude_apply",
+    "claude_cleanup",
+  ];
+  for (const match of text.matchAll(enabledToolsPattern)) {
+    const list = match[1];
+    if (!/claude_job_wait|claude_query|claude_review|claude_implement|claude_jobs|claude_workspace_status/.test(list)) continue;
+    if (defaultTools.some((tool) => !list.includes(tool))) return true;
+  }
+  return false;
+}
+
 for (const file of files) {
   const text = await readFile(path.join(root, file), "utf8");
   if (hasStaleDefaultToolCount(text)) {
@@ -115,6 +132,10 @@ for (const tool of defaultToolMentions) {
   if (!readme.includes(tool)) {
     failures.push(`README.md: missing default tool ${tool}`);
   }
+}
+
+if (hasAdvancedEnabledToolsWithoutDefaults(readme)) {
+  failures.push("README.md: advanced enabled_tools example omits default tools");
 }
 
 if (!/claude_job_wait[\s\S]{0,80}(高级\/恢复兼容|Advanced \/ Recovery)/.test(readme)) {

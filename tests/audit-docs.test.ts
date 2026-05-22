@@ -173,4 +173,23 @@ describe("audit-docs.mjs", () => {
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain('README.md: missing required phrase "Ready means"');
   });
+
+  it("fails README advanced enabled_tools examples that omit default tools", async () => {
+    const repo = await writeFixtureRepo({
+      readme: [
+        validReadme,
+        "## 高级 / 调试工具",
+        "```toml",
+        "[mcp_servers.claude_delegate]",
+        "enabled_tools = [\"claude_job_wait\", \"claude_query\", \"claude_review\"]",
+        "```",
+      ].join("\n"),
+      productDoc: "# Current PRD\n",
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("README.md: advanced enabled_tools example omits default tools");
+  });
 });
