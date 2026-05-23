@@ -21,6 +21,7 @@ import type { BackgroundJobRecord } from "./jobs.js";
 import { acquireFileLock, LockBusyError } from "./lock.js";
 import { computeRepoKey, RECENT_WINDOW_MINUTES } from "./session.js";
 import type {
+  ApplyIgnoredChange,
   ApplyPlannedChange,
   BackgroundJobEnqueueResult,
   BackgroundJobSummary,
@@ -1007,6 +1008,49 @@ async function expandDirectoryChange(
 
   await walk(change.file);
   return expanded.sort((a, b) => a.file.localeCompare(b.file));
+}
+
+async function collectIgnoredChanges(worktreeRoot: string): Promise<ApplyIgnoredChange[]> {
+  const rawIgnored = await execCapture(
+    "git",
+    ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
+    { cwd: worktreeRoot, timeoutMs: 10000 }
+  ).catch(() => "");
+
+  const files = rawIgnored
+    .split("\0")
+    .filter(Boolean)
+    .filter((file) => !isIgnoredMainWorkspaceDirtyFile(file))
+    .sort((a, b) => a.localeCompare(b))
+    .slice(0, 100);
+
+  if (files.length === 0) return [];
+
+  const ruleOutput = await execCapture(
+    "git",
+    ["check-ignore", "-v", "--", ...files],
+    { cwd: worktreeRoot, timeoutMs: 10000 }
+  ).catch(() => "");
+
+  const ruleByFile = new Map<string, Omit<ApplyIgnoredChange, "file">>();
+  for (const line of ruleOutput.split("\n").filter(Boolean)) {
+    const tabIndex = line.indexOf("\t");
+    if (tabIndex <= 0) continue;
+    const meta = line.slice(0, tabIndex);
+    const file = line.slice(tabIndex + 1);
+    if (!file) continue;
+    const match = meta.match(/^(.+?):(\d+):(.*)$/);
+    if (!match) continue;
+    const linenum = Number.parseInt(match[2], 10);
+    if (!Number.isFinite(linenum)) continue;
+    ruleByFile.set(file, {
+      source: match[1],
+      linenum,
+      rule: match[3],
+    });
+  }
+
+  return files.map((file) => ({ file, ...ruleByFile.get(file) }));
 }
 
 // ---- Spawn Claude with structured output ----
@@ -2115,8 +2159,11 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
     diffStat = changes.map((c) => `${c.status}\t${c.file}`).join("\n");
   }
   const plannedChanges: ApplyPlannedChange[] = changes.map((c) => ({ status: c.status, file: c.file }));
+  const ignoredChanges = input.preview === true ? await collectIgnoredChanges(wtReal) : undefined;
+  const withIgnored = (result: ClaudeApplyResult): ClaudeApplyResult =>
+    input.preview === true ? { ...result, ignored_changes: ignoredChanges ?? [] } : result;
   if (changes.length === 0) {
-    return finish({ applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts: [], error: "No changed files found in worktree", preview: input.preview === true, planned_changes: plannedChanges });
+    return finish(withIgnored({ applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts: [], error: "No changed files found in worktree", preview: input.preview === true, planned_changes: plannedChanges }));
   }
 
   const resourceLimits = implementLog?.observed?.resource_limits;
@@ -2124,7 +2171,7 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
     const warnings = Array.isArray(resourceLimits.warnings)
       ? resourceLimits.warnings.filter((item): item is string => typeof item === "string")
       : [];
-    return finish({
+    return finish(withIgnored({
       applied_files: [],
       diff_stat: diffStat,
       cleanup_performed: false,
@@ -2132,7 +2179,7 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
       error: "Worktree exceeded implement resource limits; apply refused",
       preview: input.preview === true,
       planned_changes: plannedChanges,
-    });
+    }));
   }
 
   const observedScope = implementLog?.observed?.scope;
@@ -2140,7 +2187,7 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
     const warnings = Array.isArray(observedScope.warnings)
       ? observedScope.warnings.filter((item): item is string => typeof item === "string")
       : [];
-    return finish({
+    return finish(withIgnored({
       applied_files: [],
       diff_stat: diffStat,
       cleanup_performed: false,
@@ -2148,7 +2195,7 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
       error: "Worktree contains changes outside requested files; apply refused",
       preview: input.preview === true,
       planned_changes: plannedChanges,
-    });
+    }));
   }
 
   // Preflight: check for uncommitted changes in main workspace and
@@ -2170,7 +2217,7 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   }
 
   if (conflicts.length > 0) {
-    return finish({ applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts, error: "Main workspace has uncommitted or unsupported changes; apply refused", preview: input.preview === true, planned_changes: plannedChanges });
+    return finish(withIgnored({ applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts, error: "Main workspace has uncommitted or unsupported changes; apply refused", preview: input.preview === true, planned_changes: plannedChanges }));
   }
 
   // Patch generation for preview-with-patch mode
@@ -2193,7 +2240,7 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
         timeoutMs: 30000,
       });
     } catch (err) {
-      return finish({
+      return finish(withIgnored({
         applied_files: [],
         diff_stat: diffStat,
         cleanup_performed: false,
@@ -2201,7 +2248,7 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
         error: `Patch generation failed: ${err instanceof Error ? err.message : String(err)}`,
         preview: input.preview === true,
         planned_changes: plannedChanges,
-      });
+      }));
     }
 
     if (fullPatch.trim()) {
@@ -2244,7 +2291,7 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   }
 
   if (input.preview) {
-    return finish({
+    return finish(withIgnored({
       applied_files: [],
       diff_stat: diffStat,
       cleanup_performed: false,
@@ -2252,7 +2299,7 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
       preview: true,
       planned_changes: plannedChanges,
       ...patchResult,
-    });
+    }));
   }
 
   // Apply changes transactionally

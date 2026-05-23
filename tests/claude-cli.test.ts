@@ -4687,6 +4687,163 @@ describe("review gate metadata integration", () => {
   });
 });
 
+describe("runClaudeApply — ignored_changes in preview", () => {
+  it("reports git-ignored files without adding them to planned_changes", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-ignored-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, ".gitignore"), "*.log\n.claude/\n.codex-claude-delegate/\n");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-ignored";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+    await writeFile(path.join(worktree, "build.log"), "build output\n");
+    await mkdir(path.join(worktree, ".claude"), { recursive: true });
+    await writeFile(path.join(worktree, ".claude", "internal.log"), "internal\n");
+    await mkdir(path.join(worktree, ".codex-claude-delegate"), { recursive: true });
+    await writeFile(path.join(worktree, ".codex-claude-delegate", "state.log"), "state\n");
+
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(logDir, "ignored-run.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["README.md"],
+        scope: { requested_files: undefined, out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 1, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+    }, "ignored-preview-run");
+
+    expect(preview.preview).toBe(true);
+    expect(preview.planned_changes).toEqual([{ status: "M", file: "README.md" }]);
+    expect(preview.ignored_changes).toEqual([
+      { file: "build.log", rule: "*.log", source: ".gitignore", linenum: 1 },
+    ]);
+
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("returns ignored_changes for ignored-only preview errors", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-ignored-only-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, ".gitignore"), "*.log\n");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-ignored-only";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await writeFile(path.join(worktree, "build.log"), "build output\n");
+
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(logDir, "ignored-only-run.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: [],
+        scope: { requested_files: undefined, out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 0, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+    }, "ignored-only-preview-run");
+
+    expect(preview.preview).toBe(true);
+    expect(preview.error).toContain("No changed files found");
+    expect(preview.planned_changes).toEqual([]);
+    expect(preview.ignored_changes).toEqual([
+      { file: "build.log", rule: "*.log", source: ".gitignore", linenum: 1 },
+    ]);
+
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("omits ignored_changes for non-preview apply", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-ignored-non-preview-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, ".gitignore"), "*.log\n");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-ignored-non-preview";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+    await writeFile(path.join(worktree, "build.log"), "build output\n");
+
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(logDir, "ignored-non-preview-run.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["README.md"],
+        scope: { requested_files: undefined, out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 1, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      confirmed_by_user: true,
+    }, "ignored-non-preview-run");
+
+    expect(result.error).toBeUndefined();
+    expect(result.applied_files).toEqual(["README.md"]);
+    expect(result.ignored_changes).toBeUndefined();
+
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+});
+
 // ---- Mode inference unit tests ----
 
 describe("inferClaudeTaskMode — Chinese/mixed-language keyword routing", () => {
