@@ -12,6 +12,7 @@ import type {
   ClaudeWorkspaceStatusResult,
   DelegatedWorktreeSummary,
   RunLogEntrySummary,
+  VerificationArtifactSummary,
   WorkflowNextAction,
   WorkflowSessionSummary,
   WorkspaceAttentionItem,
@@ -431,6 +432,23 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
     return actions;
   });
 
+  const recentArtifacts: VerificationArtifactSummary[] = [];
+  for (const run of recentRuns.entries) {
+    if (run.server_verified) {
+      recentArtifacts.push({
+        run_id: run.run_id,
+        run_type: run.type,
+        status: run.server_verified.status,
+        command_count: run.server_verified.command_count,
+        passed_count: run.server_verified.passed_count,
+        failed_count: run.server_verified.failed_count,
+        skipped_count: run.server_verified.skipped_count,
+        created_at: run.started_at,
+        updated_at: run.updated_at,
+      });
+    }
+  }
+
   return {
     workspace_root: input.cwd,
     running_jobs: runningJobs.entries,
@@ -441,6 +459,7 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
     recent_runs: recentRuns.entries,
     latest_sessions: latestSessions,
     delegated_worktrees: summarizedWorktrees,
+    recent_artifacts: recentArtifacts.length > 0 ? recentArtifacts : undefined,
     counts: {
       running_jobs: runningJobs.entries.length,
       queued_jobs: queuedJobs.entries.length,

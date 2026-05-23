@@ -8,6 +8,7 @@ import type {
   RunLogEntrySummary,
   RunLifecycle,
   RunLogStatus,
+  ServerVerifiedSummary,
 } from "./schema.js";
 
 export function getRunLogDir(cwd?: string): string {
@@ -81,6 +82,7 @@ export interface GenericRunLog {
     returned_session_id?: unknown;
   };
   retried_after_session_expired?: unknown;
+  server_verified?: unknown;
 }
 
 export function normalizeRepoPath(cwd: string, file: string): string {
@@ -263,6 +265,34 @@ export function parseRunLifecycle(raw: GenericRunLog): RunLifecycle {
   return "unknown";
 }
 
+export function summarizeServerVerified(raw: unknown): ServerVerifiedSummary | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const obj = raw as Record<string, unknown>;
+  const status = obj.status;
+  if (status !== "passed" && status !== "failed" && status !== "skipped") return undefined;
+  if (!Array.isArray(obj.commands)) return undefined;
+
+  let passed = 0;
+  let failed = 0;
+  let skipped = 0;
+  for (const cmd of obj.commands) {
+    if (cmd && typeof cmd === "object") {
+      const cmdStatus = (cmd as Record<string, unknown>).status;
+      if (cmdStatus === "passed") passed++;
+      else if (cmdStatus === "failed") failed++;
+      else if (cmdStatus === "skipped") skipped++;
+    }
+  }
+
+  return {
+    status,
+    command_count: obj.commands.length,
+    passed_count: passed,
+    failed_count: failed,
+    skipped_count: skipped,
+  };
+}
+
 export function summarizeRunLog(runId: string, raw: GenericRunLog, updatedAt?: string): RunLogEntrySummary {
   const worktreePath =
     typeof raw.observed?.worktree_path === "string"
@@ -270,6 +300,7 @@ export function summarizeRunLog(runId: string, raw: GenericRunLog, updatedAt?: s
       : typeof raw.input?.worktree_path === "string"
         ? raw.input.worktree_path
         : undefined;
+  const verified = summarizeServerVerified(raw.server_verified);
   return {
     run_id: runId,
     type: typeof raw.type === "string" ? raw.type : "unknown",
@@ -296,6 +327,7 @@ export function summarizeRunLog(runId: string, raw: GenericRunLog, updatedAt?: s
     retried_after_session_expired: raw.retried_after_session_expired === true,
     started_at: typeof raw.started_at === "string" ? raw.started_at : updatedAt,
     updated_at: typeof raw.updated_at === "string" ? raw.updated_at : updatedAt,
+    ...(verified ? { server_verified: verified } : {}),
   };
 }
 

@@ -15,6 +15,7 @@ import {
   parseRunLifecycle,
   summarizeRunLog,
   summarizeRecentRuns,
+  summarizeServerVerified,
   readRunLogFile,
   listRunLogs,
   getRecentRunsSummary,
@@ -492,6 +493,150 @@ describe("summarizeRecentRuns", () => {
     const result = summarizeRecentRuns(entries as any);
     expect(result.lifecycle_counts).toEqual({ success: 2, failed: 1 });
     expect(result.entries).toEqual(entries);
+  });
+});
+
+describe("summarizeServerVerified", () => {
+  it("returns summary for valid server_verified with mixed results", () => {
+    const result = summarizeServerVerified({
+      status: "passed",
+      commands: [
+        { command: "test 1", status: "passed", exit_code: 0, duration_ms: 100, stdout_tail: "", stderr_tail: "", timed_out: false },
+        { command: "test 2", status: "failed", exit_code: 1, duration_ms: 50, stdout_tail: "", stderr_tail: "", timed_out: false },
+        { command: "test 3", status: "skipped", exit_code: null, duration_ms: 0, stdout_tail: "", stderr_tail: "", timed_out: false, skipped_reason: "not needed" },
+      ],
+    });
+    expect(result).toEqual({
+      status: "passed",
+      command_count: 3,
+      passed_count: 1,
+      failed_count: 1,
+      skipped_count: 1,
+    });
+  });
+
+  it("returns undefined when server_verified is null", () => {
+    expect(summarizeServerVerified(null)).toBeUndefined();
+  });
+
+  it("returns undefined when server_verified is not an object", () => {
+    expect(summarizeServerVerified("invalid")).toBeUndefined();
+    expect(summarizeServerVerified(42)).toBeUndefined();
+  });
+
+  it("returns undefined when status is invalid", () => {
+    expect(summarizeServerVerified({ status: "invalid", commands: [] })).toBeUndefined();
+  });
+
+  it("returns undefined when commands is not an array", () => {
+    expect(summarizeServerVerified({ status: "passed", commands: "not-array" })).toBeUndefined();
+  });
+
+  it("handles all passed commands", () => {
+    const result = summarizeServerVerified({
+      status: "passed",
+      commands: [
+        { command: "test 1", status: "passed", exit_code: 0, duration_ms: 100, stdout_tail: "", stderr_tail: "", timed_out: false },
+        { command: "test 2", status: "passed", exit_code: 0, duration_ms: 50, stdout_tail: "", stderr_tail: "", timed_out: false },
+      ],
+    });
+    expect(result).toEqual({
+      status: "passed",
+      command_count: 2,
+      passed_count: 2,
+      failed_count: 0,
+      skipped_count: 0,
+    });
+  });
+
+  it("handles all failed commands", () => {
+    const result = summarizeServerVerified({
+      status: "failed",
+      commands: [
+        { command: "test 1", status: "failed", exit_code: 1, duration_ms: 100, stdout_tail: "", stderr_tail: "", timed_out: false },
+      ],
+    });
+    expect(result).toEqual({
+      status: "failed",
+      command_count: 1,
+      passed_count: 0,
+      failed_count: 1,
+      skipped_count: 0,
+    });
+  });
+
+  it("handles all skipped commands", () => {
+    const result = summarizeServerVerified({
+      status: "skipped",
+      commands: [
+        { command: "test 1", status: "skipped", exit_code: null, duration_ms: 0, stdout_tail: "", stderr_tail: "", timed_out: false, skipped_reason: "not needed" },
+      ],
+    });
+    expect(result).toEqual({
+      status: "skipped",
+      command_count: 1,
+      passed_count: 0,
+      failed_count: 0,
+      skipped_count: 1,
+    });
+  });
+
+  it("ignores malformed command entries", () => {
+    const result = summarizeServerVerified({
+      status: "passed",
+      commands: [
+        { command: "test 1", status: "passed" },
+        null,
+        "not-an-object",
+        42,
+      ],
+    });
+    expect(result).toEqual({
+      status: "passed",
+      command_count: 4,
+      passed_count: 1,
+      failed_count: 0,
+      skipped_count: 0,
+    });
+  });
+
+  it("includes server_verified in summarizeRunLog when present", () => {
+    const raw: GenericRunLog = {
+      type: "implement",
+      input: { cwd: "/tmp/repo" },
+      report: { status: "success", summary: "Done" },
+      server_verified: {
+        status: "passed",
+        commands: [
+          { command: "test", status: "passed", exit_code: 0, duration_ms: 100, stdout_tail: "", stderr_tail: "", timed_out: false },
+        ],
+      },
+    };
+    const summary = summarizeRunLog("run-v", raw);
+    expect(summary.server_verified).toBeDefined();
+    expect(summary.server_verified!.status).toBe("passed");
+    expect(summary.server_verified!.command_count).toBe(1);
+    expect(summary.server_verified!.passed_count).toBe(1);
+  });
+
+  it("omits server_verified from summarizeRunLog when absent", () => {
+    const raw: GenericRunLog = {
+      type: "query",
+      input: { cwd: "/tmp/repo" },
+      report: { status: "success" },
+    };
+    const summary = summarizeRunLog("run-no-v", raw);
+    expect(summary).not.toHaveProperty("server_verified");
+  });
+
+  it("omits server_verified from summarizeRunLog when malformed", () => {
+    const raw: GenericRunLog = {
+      type: "implement",
+      input: { cwd: "/tmp/repo" },
+      server_verified: { status: "nope", commands: [] },
+    };
+    const summary = summarizeRunLog("run-bad-v", raw);
+    expect(summary).not.toHaveProperty("server_verified");
   });
 });
 

@@ -298,6 +298,7 @@ export interface ClaudeWorkspaceStatusResult {
   recent_runs: RunLogEntrySummary[];
   latest_sessions: WorkflowSessionSummary[];
   delegated_worktrees: DelegatedWorktreeSummary[];
+  recent_artifacts?: VerificationArtifactSummary[];
   counts: {
     running_jobs: number;
     queued_jobs: number;
@@ -635,6 +636,14 @@ export interface ClaudeRunInspectInput {
   run_id: string;
 }
 
+export interface ServerVerifiedSummary {
+  status: "passed" | "failed" | "skipped";
+  command_count: number;
+  passed_count: number;
+  failed_count: number;
+  skipped_count: number;
+}
+
 export interface RunLogEntrySummary {
   run_id: string;
   type: string;
@@ -649,6 +658,19 @@ export interface RunLogEntrySummary {
   returned_session_id?: string | null;
   retried_after_session_expired?: boolean;
   started_at?: string;
+  updated_at?: string;
+  server_verified?: ServerVerifiedSummary;
+}
+
+export interface VerificationArtifactSummary {
+  run_id: string;
+  run_type: string;
+  status: "passed" | "failed" | "skipped";
+  command_count: number;
+  passed_count: number;
+  failed_count: number;
+  skipped_count: number;
+  created_at?: string;
   updated_at?: string;
 }
 
