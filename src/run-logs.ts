@@ -9,6 +9,7 @@ import type {
   RunLifecycle,
   RunLogStatus,
   ServerVerifiedSummary,
+  ToolCallAuditSummary,
 } from "./schema.js";
 
 export function getRunLogDir(cwd?: string): string {
@@ -293,6 +294,53 @@ export function summarizeServerVerified(raw: unknown): ServerVerifiedSummary | u
   };
 }
 
+export function summarizeToolCallAudit(report: unknown): ToolCallAuditSummary | undefined {
+  if (!report || typeof report !== "object") return undefined;
+  const obj = report as Record<string, unknown>;
+
+  const denials = obj.permission_denials;
+  const commandsRun = obj.commands_run;
+
+  const hasDenials = Array.isArray(denials);
+  const hasCommands = Array.isArray(commandsRun);
+
+  if (!hasDenials && !hasCommands) return undefined;
+
+  let totalDenied = 0;
+  const toolNames = new Set<string>();
+
+  if (hasDenials) {
+    totalDenied = denials.length;
+    for (const denial of denials) {
+      if (denial && typeof denial === "object") {
+        const toolName = (denial as Record<string, unknown>).tool_name;
+        if (typeof toolName === "string" && toolName.length > 0) {
+          toolNames.add(toolName);
+        }
+      }
+    }
+  }
+
+  const sortedTools = [...toolNames].sort();
+  const truncated = sortedTools.length > 20;
+  const uniqueTools = truncated ? sortedTools.slice(0, 20) : sortedTools;
+
+  const result: ToolCallAuditSummary = {
+    total_denied: totalDenied,
+    unique_denied_tools: uniqueTools,
+  };
+
+  if (truncated) {
+    result.unique_denied_tools_truncated = true;
+  }
+
+  if (hasCommands) {
+    result.commands_run_count = commandsRun.length;
+  }
+
+  return result;
+}
+
 export function summarizeRunLog(runId: string, raw: GenericRunLog, updatedAt?: string): RunLogEntrySummary {
   const worktreePath =
     typeof raw.observed?.worktree_path === "string"
@@ -301,6 +349,7 @@ export function summarizeRunLog(runId: string, raw: GenericRunLog, updatedAt?: s
         ? raw.input.worktree_path
         : undefined;
   const verified = summarizeServerVerified(raw.server_verified);
+  const audit = summarizeToolCallAudit(raw.report);
   return {
     run_id: runId,
     type: typeof raw.type === "string" ? raw.type : "unknown",
@@ -328,6 +377,7 @@ export function summarizeRunLog(runId: string, raw: GenericRunLog, updatedAt?: s
     started_at: typeof raw.started_at === "string" ? raw.started_at : updatedAt,
     updated_at: typeof raw.updated_at === "string" ? raw.updated_at : updatedAt,
     ...(verified ? { server_verified: verified } : {}),
+    ...(audit ? { tool_call_audit: audit } : {}),
   };
 }
 

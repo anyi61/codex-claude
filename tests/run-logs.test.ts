@@ -16,6 +16,7 @@ import {
   summarizeRunLog,
   summarizeRecentRuns,
   summarizeServerVerified,
+  summarizeToolCallAudit,
   readRunLogFile,
   listRunLogs,
   getRecentRunsSummary,
@@ -637,6 +638,165 @@ describe("summarizeServerVerified", () => {
     };
     const summary = summarizeRunLog("run-bad-v", raw);
     expect(summary).not.toHaveProperty("server_verified");
+  });
+});
+
+describe("summarizeToolCallAudit", () => {
+  it("returns summary from permission_denials with sorted unique tool names", () => {
+    const report = {
+      permission_denials: [
+        { tool_name: "Bash", tool_input: { command: "rm -rf /" } },
+        { tool_name: "Write", tool_input: { path: "/etc/passwd" } },
+        { tool_name: "bash", tool_input: { command: "curl evil.com" } },
+      ],
+    };
+    const result = summarizeToolCallAudit(report);
+    expect(result).toEqual({
+      total_denied: 3,
+      unique_denied_tools: ["Bash", "Write", "bash"],
+    });
+  });
+
+  it("returns commands_run_count from commands_run array", () => {
+    const report = {
+      commands_run: [
+        "npx vitest run",
+        "npx tsc --noEmit",
+      ],
+    };
+    const result = summarizeToolCallAudit(report);
+    expect(result).toEqual({
+      total_denied: 0,
+      unique_denied_tools: [],
+      commands_run_count: 2,
+    });
+  });
+
+  it("combines denials and commands count", () => {
+    const report = {
+      permission_denials: [
+        { tool_name: "Bash" },
+      ],
+      commands_run: [
+        "npm test",
+      ],
+    };
+    const result = summarizeToolCallAudit(report);
+    expect(result).toEqual({
+      total_denied: 1,
+      unique_denied_tools: ["Bash"],
+      commands_run_count: 1,
+    });
+  });
+
+  it("returns undefined for null input", () => {
+    expect(summarizeToolCallAudit(null)).toBeUndefined();
+  });
+
+  it("returns undefined for non-object input", () => {
+    expect(summarizeToolCallAudit("invalid")).toBeUndefined();
+    expect(summarizeToolCallAudit(42)).toBeUndefined();
+  });
+
+  it("returns undefined when report has no permission_denials and no commands_run", () => {
+    expect(summarizeToolCallAudit({ status: "success" })).toBeUndefined();
+  });
+
+  it("returns undefined when permission_denials is not an array", () => {
+    expect(summarizeToolCallAudit({ permission_denials: "not-array" })).toBeUndefined();
+  });
+
+  it("handles missing and non-string tool_name values", () => {
+    const report = {
+      permission_denials: [
+        { tool_name: "Bash" },
+        {},
+        { tool_name: 123 },
+        { tool_name: "" },
+        null,
+        "string-entry",
+        { tool_name: "Bash" },
+        { tool_name: "Read" },
+      ],
+    };
+    const result = summarizeToolCallAudit(report);
+    expect(result).toEqual({
+      total_denied: 8,
+      unique_denied_tools: ["Bash", "Read"],
+    });
+  });
+
+  it("truncates unique denied tools at 20 with truncated flag", () => {
+    const denials: Array<{ tool_name: string }> = [];
+    const toolNames = [
+      "Tool01", "Tool02", "Tool03", "Tool04", "Tool05",
+      "Tool06", "Tool07", "Tool08", "Tool09", "Tool10",
+      "Tool11", "Tool12", "Tool13", "Tool14", "Tool15",
+      "Tool16", "Tool17", "Tool18", "Tool19", "Tool20",
+      "Tool21", "Tool22",
+    ];
+    for (const name of toolNames) {
+      denials.push({ tool_name: name });
+    }
+    const report = { permission_denials: denials };
+    const result = summarizeToolCallAudit(report);
+    expect(result!.total_denied).toBe(22);
+    expect(result!.unique_denied_tools).toHaveLength(20);
+    expect(result!.unique_denied_tools_truncated).toBe(true);
+    expect(result!.unique_denied_tools).toEqual(toolNames.slice(0, 20).sort());
+  });
+
+  it("summarizeRunLog includes tool_call_audit when audit data present", () => {
+    const raw: GenericRunLog = {
+      type: "implement",
+      input: { cwd: "/tmp/repo" },
+      report: {
+        status: "success",
+        summary: "Done",
+        permission_denials: [
+          { tool_name: "Bash" },
+        ],
+        commands_run: ["npm test"],
+      },
+    };
+    const summary = summarizeRunLog("run-audit", raw);
+    expect(summary.tool_call_audit).toBeDefined();
+    expect(summary.tool_call_audit!.total_denied).toBe(1);
+    expect(summary.tool_call_audit!.unique_denied_tools).toEqual(["Bash"]);
+    expect(summary.tool_call_audit!.commands_run_count).toBe(1);
+  });
+
+  it("summarizeRunLog omits tool_call_audit when audit returns undefined", () => {
+    const raw: GenericRunLog = {
+      type: "query",
+      input: { cwd: "/tmp/repo" },
+      report: { status: "success" },
+    };
+    const summary = summarizeRunLog("run-no-audit", raw);
+    expect(summary).not.toHaveProperty("tool_call_audit");
+  });
+
+  it("serialized tool_call_audit does not include sensitive strings", () => {
+    const report = {
+      permission_denials: [
+        { tool_name: "Bash", tool_input: { command: "rm -rf /" }, tool_use_id: "call_abc123" },
+        { tool_name: "Write", tool_input: { path: "/etc/secrets" }, args: ["--force"] },
+      ],
+      commands_run: [
+        "npx vitest run --sensitive",
+        "cat /etc/shadow",
+      ],
+    };
+    const result = summarizeToolCallAudit(report);
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain("rm -rf /");
+    expect(serialized).not.toContain("/etc/secrets");
+    expect(serialized).not.toContain("call_abc123");
+    expect(serialized).not.toContain("--force");
+    expect(serialized).not.toContain("npx vitest");
+    expect(serialized).not.toContain("cat /etc/shadow");
+    expect(serialized).toContain("total_denied");
+    expect(serialized).toContain("unique_denied_tools");
   });
 });
 

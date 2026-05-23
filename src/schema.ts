@@ -644,6 +644,13 @@ export interface ServerVerifiedSummary {
   skipped_count: number;
 }
 
+export interface ToolCallAuditSummary {
+  total_denied: number;
+  unique_denied_tools: string[];
+  unique_denied_tools_truncated?: boolean;
+  commands_run_count?: number;
+}
+
 export interface RunLogEntrySummary {
   run_id: string;
   type: string;
@@ -660,6 +667,7 @@ export interface RunLogEntrySummary {
   started_at?: string;
   updated_at?: string;
   server_verified?: ServerVerifiedSummary;
+  tool_call_audit?: ToolCallAuditSummary;
 }
 
 export interface VerificationArtifactSummary {
