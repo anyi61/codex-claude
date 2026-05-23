@@ -4443,6 +4443,205 @@ describe("claude cli argument construction", () => {
     delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
     vi.resetModules();
   });
+
+  it("new read claude_task background result exposes dedup_policy and reuse_decision created", async () => {
+    const { repo } = await createWorkflowFixture();
+    const spawned = createDetachedSpawnResult(6101);
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => spawned) };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      task: "Explain how background jobs work here.",
+      mode: "read",
+      background: true,
+      timeout_sec: 90,
+    }, "run-task-dedup-policy");
+
+    expect(result.dedup_policy).toEqual({
+      enabled: true,
+      key: "task_fingerprint",
+      applies_to: ["read", "review", "write"],
+    });
+    expect(result.reuse_decision).toBe("created");
+    expect(result.deduped).toBe(false);
+    expect(result.do_not_start_duplicate_job).toBe(true);
+  });
+
+  it("new write claude_task result dedup_policy mirrors read/review/write tasks", async () => {
+    const { repo, jobStore } = await createWorkflowFixture();
+    const spawned = createDetachedSpawnResult(6102);
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => spawned) };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      task: "Implement input validation for README updates.",
+      mode: "write",
+      background: true,
+      files: ["README.md"],
+      constraints: ["Only change README.md"],
+      dirty_policy: "committed",
+    }, "run-task-dedup-policy-write");
+
+    expect(result.dedup_policy).toEqual({
+      enabled: true,
+      key: "task_fingerprint",
+      applies_to: ["read", "review", "write"],
+    });
+    expect(result.reuse_decision).toBe("created");
+  });
+
+  it("duplicate fingerprint path exposes reuse_decision deduped", async () => {
+    const { repo, jobStore } = await createWorkflowFixture();
+    const spawned = createDetachedSpawnResult(6103);
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => spawned) };
+    });
+
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+
+    // Compute the exact fingerprint that runClaudeTask will generate
+    const dedupFingerprint = reloaded.createTaskFingerprint({
+      cwd: repo,
+      type: "query",
+      payload: { cwd: repo, task: "Explain how background jobs work here." },
+    });
+
+    // Pre-create an active job with matching fingerprint
+    await jobStore.create({
+      job_id: "job-dedup-target",
+      type: "query",
+      status: "queued",
+      cwd: repo,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      fingerprint: dedupFingerprint,
+      payload: { cwd: repo, task: "Explain how background jobs work here." },
+    });
+
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      task: "Explain how background jobs work here.",
+      mode: "read",
+      background: true,
+      timeout_sec: 90,
+    }, "run-task-deduped");
+
+    expect(result.reuse_decision).toBe("deduped");
+    expect(result.dedup_policy).toEqual({
+      enabled: true,
+      key: "task_fingerprint",
+      applies_to: ["read", "review", "write"],
+    });
+    expect(result.deduped).toBe(true);
+    expect(result.do_not_start_duplicate_job).toBe(true);
+    expect(result.summary).toContain("equivalent");
+
+    vi.doUnmock("node:child_process");
+  });
+
+  it("busy same-repo implement path exposes reuse_decision busy_existing", async () => {
+    const { repo, jobStore } = await createWorkflowFixture();
+
+    // Pre-create a running implement job to trigger concurrency block
+    await jobStore.create({
+      job_id: "busy-impl",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      pid: process.pid,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      heartbeat_at: new Date().toISOString(),
+      payload: { cwd: repo, task: "busy task" },
+      worktree_name: "codex-delegated-busy",
+    });
+
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      task: "new implement task",
+      mode: "write",
+      dirty_policy: "committed",
+      wait_strategy: "background",
+    }, "run-task-busy");
+
+    expect(result.reuse_decision).toBe("busy_existing");
+    expect(result.dedup_policy).toEqual({
+      enabled: true,
+      key: "task_fingerprint",
+      applies_to: ["read", "review", "write"],
+    });
+    expect(result.deduped).toBe(false);
+    expect(result.do_not_start_duplicate_job).toBe(true);
+  });
+
+  it("job_id continuation for completed result exposes reuse_decision job_id", async () => {
+    const { repo, logDir, jobStore } = await createWorkflowFixture();
+    await writeFile(path.join(logDir, "run-impl-job-id.json"), JSON.stringify({
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "success", summary: "Fixed bug" },
+      observed: { worktree_path: ".claude/worktrees/codex-delegated-job-id", worktree_name: "codex-delegated-job-id" },
+      session: { requested_session_id: null, returned_session_id: "sess-job-id" },
+    }));
+    await jobStore.create({
+      job_id: "job-impl-job-id",
+      type: "implement",
+      status: "succeeded",
+      cwd: repo,
+      created_at: "2026-05-05T00:00:00.000Z",
+      updated_at: "2026-05-05T00:01:00.000Z",
+      payload: { cwd: repo, task: "fix bug" },
+      run_id: "run-impl-job-id",
+      summary: "Fixed bug",
+      result: { status: "success", summary: "Fixed bug", server_observed: { worktree_path: ".claude/worktrees/codex-delegated-job-id", worktree_name: "codex-delegated-job-id" } },
+      worktree_name: "codex-delegated-job-id",
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      job_id: "job-impl-job-id",
+    }, "run-job-id-continuation");
+
+    expect(result.reuse_decision).toBe("job_id");
+    expect(result.dedup_policy).toEqual({
+      enabled: true,
+      key: "task_fingerprint",
+      applies_to: ["read", "review", "write"],
+    });
+    expect(result.completed_inline).toBe(true);
+  });
+
+  it("job_id not found exposes reuse_decision not_found and omits dedup_policy", async () => {
+    const { repo } = await createWorkflowFixture();
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      job_id: "nonexistent-job-id",
+    }, "run-job-id-not-found");
+
+    expect(result.reuse_decision).toBe("not_found");
+    expect(result.dedup_policy).toBeUndefined();
+    expect(result.status).toBe("failed");
+    expect(result.summary).toContain("not found");
+  });
 });
 
 describe("review gate metadata integration", () => {

@@ -359,8 +359,11 @@ async function buildClaudeTaskInlineResult(input: {
   waiting?: boolean;
   staled?: boolean;
   modeInference?: ModeInference;
+  reuseDecision?: ReuseDecision;
 }): Promise<ClaudeTaskResult> {
-  const { cwd, job, jobRecord, delegatedMode, completedInline, waiting, staled, modeInference } = input;
+  const { cwd, job, jobRecord, delegatedMode, completedInline, waiting, staled, modeInference, reuseDecision } = input;
+  const dedupPolicy = dedupPolicyForJobType(job.type);
+  const effectiveReuseDecision = reuseDecision ?? "job_id";
 
   // For completed inline results: reuse getClaudeResult for standardized aggregation
   if (completedInline && !staled) {
@@ -379,6 +382,8 @@ async function buildClaudeTaskInlineResult(input: {
         related_runs: claudeResult.related_runs,
         completed_inline: true,
         do_not_start_duplicate_job: false,
+        dedup_policy: dedupPolicy,
+        reuse_decision: effectiveReuseDecision,
         wait: buildWaitMetadata({
           completedInline: true,
           waiting: false,
@@ -426,6 +431,8 @@ async function buildClaudeTaskInlineResult(input: {
     completed_inline: completedInline || undefined,
     waiting: waiting || undefined,
     do_not_start_duplicate_job: staled || waiting ? true : false,
+    dedup_policy: dedupPolicy,
+    reuse_decision: effectiveReuseDecision,
     wait: buildWaitMetadata({
       completedInline,
       waiting: waiting || staled,
@@ -447,6 +454,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         status: "failed",
         summary: `Job not found: ${input.job_id}`,
         do_not_start_duplicate_job: true,
+        reuse_decision: "not_found",
         wait: buildWaitMetadata({
           timeoutSec: input.wait_timeout_sec ?? 540,
           completedInline: false,
@@ -466,6 +474,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         jobRecord: record,
         delegatedMode: delegatedModeForJobType(job.type),
         completedInline: true,
+        reuseDecision: "job_id",
       });
     }
 
@@ -477,6 +486,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         delegated_mode: delegatedModeForJobType(job.type),
         status: "failed",
         summary: `Job not found during wait: ${input.job_id}`,
+        reuse_decision: "not_found",
         wait: buildWaitMetadata({
           timeoutSec: input.wait_timeout_sec ?? 540,
           completedInline: false,
@@ -495,6 +505,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         jobRecord: inlineResult.jobRecord,
         delegatedMode: delegatedModeForJobType(inlineResult.job!.type),
         completedInline: true,
+        reuseDecision: "job_id",
       });
     }
 
@@ -507,6 +518,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         delegatedMode: delegatedModeForJobType(inlineResult.job!.type),
         completedInline: false,
         staled: true,
+        reuseDecision: "job_id",
       });
     }
 
@@ -519,6 +531,8 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
       completed_inline: false,
       waiting: true,
       do_not_start_duplicate_job: true,
+      dedup_policy: dedupPolicyForJobType((stillRunning ?? record).type),
+      reuse_decision: "job_id",
       wait: buildWaitMetadata({
         timeoutSec: input.wait_timeout_sec ?? 540,
         completedInline: false,
@@ -630,6 +644,8 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         deduped: queued.deduped,
         completed_inline: false,
         do_not_start_duplicate_job: queued.do_not_start_duplicate_job ?? (queued.deduped ? true : undefined),
+        dedup_policy: dedupPolicyForJobType(queued.job.type),
+        reuse_decision: reuseDecisionForQueued(queued),
         wait: buildWaitMetadata({
           mode: "background",
           timeoutSec: input.wait_timeout_sec ?? 540,
@@ -661,6 +677,8 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         summary: `Job ${queued.job.job_id} not found during inline wait.`,
         job: queued.job,
         deduped: queued.deduped,
+        dedup_policy: dedupPolicyForJobType(queued.job.type),
+        reuse_decision: reuseDecisionForQueued(queued),
         wait: buildWaitMetadata({
           timeoutSec: input.wait_timeout_sec ?? 540,
           completedInline: false,
@@ -680,6 +698,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         delegatedMode,
         completedInline: true,
         modeInference,
+        reuseDecision: reuseDecisionForQueued(queued),
       });
     }
 
@@ -691,6 +710,8 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
           mode_inference: modeInference,
           status: "failed",
           summary: `Job ${queued.job.job_id} disappeared during inline wait.`,
+          dedup_policy: dedupPolicyForJobType(queued.job.type),
+          reuse_decision: reuseDecisionForQueued(queued),
           wait: buildWaitMetadata({
             timeoutSec: input.wait_timeout_sec ?? 540,
             completedInline: false,
@@ -709,6 +730,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         completedInline: false,
         staled: true,
         modeInference,
+        reuseDecision: reuseDecisionForQueued(queued),
       });
     }
 
@@ -723,6 +745,8 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
       completed_inline: false,
       waiting: true,
       do_not_start_duplicate_job: true,
+      dedup_policy: dedupPolicyForJobType(queued.job.type),
+      reuse_decision: reuseDecisionForQueued(queued),
       wait: buildWaitMetadata({
         timeoutSec: input.wait_timeout_sec ?? 540,
         completedInline: false,
@@ -751,6 +775,21 @@ function delegatedModeForJobType(type: BackgroundJobType): Exclude<ClaudeTaskMod
     case "implement": return "write";
     default: return "read";
   }
+}
+
+type ReuseDecision = "created" | "deduped" | "busy_existing" | "job_id" | "not_found";
+
+function dedupPolicyForJobType(type: BackgroundJobType): { enabled: boolean; key: "task_fingerprint" | "none"; applies_to: Array<"read" | "review" | "write"> } {
+  if (type === "apply" || type === "cleanup") {
+    return { enabled: false, key: "none", applies_to: [] };
+  }
+  return { enabled: true, key: "task_fingerprint", applies_to: ["read", "review", "write"] };
+}
+
+function reuseDecisionForQueued(queued: BackgroundJobEnqueueResult): "created" | "deduped" | "busy_existing" {
+  if (queued.deduped) return "deduped";
+  if (queued.concurrency?.busy) return "busy_existing";
+  return "created";
 }
 
 export async function enqueueBackgroundJob(input: {

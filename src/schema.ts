@@ -372,6 +372,8 @@ export interface ClaudeTaskResult {
   completed_inline?: boolean;
   waiting?: boolean;
   do_not_start_duplicate_job?: boolean;
+  dedup_policy?: { enabled: boolean; key: "task_fingerprint" | "none"; applies_to: Array<"read" | "review" | "write"> };
+  reuse_decision?: "created" | "deduped" | "busy_existing" | "job_id" | "not_found";
   wait?: ClaudeWaitMetadata;
   warnings?: string[];
   next_actions: WorkflowNextAction[];
