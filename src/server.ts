@@ -25,6 +25,7 @@ import {
   runClaudeTask,
   runClaudeApply,
   runClaudeCleanup,
+  runClaudeExport,
   getRecentRunsSummary,
   listBackgroundJobs,
   listRunLogs,
@@ -39,6 +40,7 @@ import {
 import {
   claudeApplyInputSchema,
   claudeCleanupInputSchema,
+  claudeExportInputSchema,
   claudeImplementInputSchema,
   claudeJobCancelInputSchema,
   claudeJobCleanupInputSchema,
@@ -377,6 +379,22 @@ const BASE_TOOL_DEFINITIONS = [
         },
       },
     },
+  {
+    name: "claude_export",
+    description:
+      "Advanced / Debug. Export a delegated worktree's observed changes to a local branch without modifying the main workspace. Creates a commit from the worktree's implement run metadata and creates a local branch ref.",
+    inputSchema: {
+      type: "object",
+      required: ["cwd", "worktree_path", "branch"],
+      properties: {
+        cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
+        worktree_path: { type: "string", description: "Path to worktree, e.g. .claude/worktrees/codex-delegated-xxx" },
+        branch: { type: "string", description: "Name of the local branch to create with exported changes" },
+        message: { type: "string", description: "Custom commit message (default: auto-generated)" },
+        force: { type: "boolean", description: "Overwrite existing branch if it already exists" },
+      },
+    },
+  },
 ] as const;
 
 const DEFAULT_TOOL_METADATA: Record<string, {
@@ -471,6 +489,11 @@ const DEFAULT_TOOL_METADATA: Record<string, {
   },
   claude_cleanup: {
     title: "Clean Delegated Worktrees",
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+    outputSchema: { type: "object", additionalProperties: true },
+  },
+  claude_export: {
+    title: "Export Delegated Changes",
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
     outputSchema: { type: "object", additionalProperties: true },
   },
@@ -990,6 +1013,30 @@ export async function handleToolCall(name: string, args: unknown, runId = random
           state: dry_run ? "cleanup_preview" : "cleaned",
           next_step: dry_run ? "Review entries. If these worktrees are no longer needed, call claude_cleanup with dry_run=false." : "Run claude_cleanup dry_run=true again only if you want to confirm no stale delegated worktrees remain.",
         }));
+      }
+
+      case "claude_export": {
+        const startTime = Date.now();
+        const parsed = claudeExportInputSchema.safeParse(args);
+        if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
+        const { cwd, worktree_path, branch, message, force } = parsed.data;
+        const check = await validateCwd(cwd);
+        if (!check.ok) return errorResult(check.error!);
+
+        const result = await runClaudeExport({
+          cwd: check.resolved,
+          worktree_path,
+          branch,
+          message,
+          force,
+        });
+
+        const payload = {
+          ...result,
+          execution: localExecution(startTime),
+          warnings: result.error ? [result.error] : [],
+        };
+        return jsonResult(payload);
       }
 
       default:

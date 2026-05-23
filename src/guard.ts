@@ -373,13 +373,14 @@ export function getEnvSanitizationDiagnostics(): EnvSanitizationDiagnostics {
 export function execCapture(
   command: string,
   args: string[],
-  opts: { cwd: string; timeoutMs?: number }
+  opts: { cwd: string; timeoutMs?: number; env?: Record<string, string | undefined> }
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: opts.cwd,
       timeout: opts.timeoutMs ?? 30_000,
       stdio: ["ignore", "pipe", "pipe"],
+      env: opts.env ? { ...process.env, ...opts.env } : undefined,
     });
 
     let stdout = "";

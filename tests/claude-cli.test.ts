@@ -5826,4 +5826,334 @@ describe("runClaudeImplement — permission_denials warnings", () => {
     vi.doUnmock("node:child_process");
     vi.resetModules();
   });
+
+  // ---- claude_export ----
+
+  describe("claude_export", () => {
+    async function createExportFixture() {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codex-export-"));
+      cleanupPaths.push(root);
+      const repo = path.join(root, "repo");
+      const stateDir = path.join(root, ".codex-claude-delegate");
+      const logDir = path.join(stateDir, "runs");
+      await mkdir(repo, { recursive: true });
+      await mkdir(logDir, { recursive: true });
+
+      // Init git repo
+      sh(root, "git", "init", repo);
+      sh(repo, "git", "config", "user.name", "Test User");
+      sh(repo, "git", "config", "user.email", "test@example.com");
+
+      const srcDir = path.join(repo, "src");
+      await mkdir(srcDir, { recursive: true });
+      await writeFile(path.join(repo, "README.md"), "# main\n");
+      await writeFile(path.join(srcDir, "main.ts"), "// entry point\n");
+      sh(repo, "git", "add", ".");
+      sh(repo, "git", "commit", "-m", "init");
+
+      const baseCommit = sh(repo, "git", "rev-parse", "HEAD");
+
+      const wtName = "codex-delegated-test";
+      const wtRelPath = ".claude/worktrees/" + wtName;
+      const wtPath = path.join(repo, wtRelPath);
+      await mkdir(path.dirname(wtPath), { recursive: true });
+      sh(repo, "git", "worktree", "add", "--detach", wtRelPath, "HEAD");
+
+      process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+
+      return { root, repo, stateDir, logDir, baseCommit, wtName, wtRelPath, wtPath };
+    }
+
+    async function writeImplementLog(
+      logDir: string,
+      wtRelPath: string,
+      baseCommit: string,
+      changedFiles: string[],
+      overrides?: Record<string, unknown>,
+    ) {
+      const logEntry = {
+        type: "implement",
+        input: { cwd: logDir },
+        report: { status: "success", summary: "implemented" },
+        observed: {
+          worktree_path: wtRelPath,
+          base_commit: baseCommit,
+          changed_files: changedFiles,
+          ...overrides,
+        },
+      };
+      await writeFile(path.join(logDir, "run-export.json"), JSON.stringify(logEntry));
+    }
+
+    it("exports delegated worktree changes to a new branch without touching main workspace", async () => {
+      const { repo, logDir, baseCommit, wtRelPath, wtPath } = await createExportFixture();
+
+      // Make changes in worktree
+      await writeFile(path.join(wtPath, "README.md"), "# main\n\nmodified\n");
+      await writeFile(path.join(wtPath, "src", "newfile.ts"), "// new file\n");
+      sh(wtPath, "git", "add", ".");
+
+      const changedFiles = ["README.md", "src/newfile.ts"];
+      await writeImplementLog(logDir, wtRelPath, baseCommit, changedFiles);
+
+      const reloaded = await import("../src/claude-cli.js");
+      const result = await reloaded.runClaudeExport({
+        cwd: repo,
+        worktree_path: wtRelPath,
+        branch: "feature/my-export",
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(result.branch).toBe("feature/my-export");
+      expect(result.commit_sha).toBeTruthy();
+      expect(result.base_commit).toBe(baseCommit);
+      expect(result.tree_sha).toBeTruthy();
+      expect(result.file_count).toBe(2);
+      expect(result.worktree_path).toBe(wtRelPath);
+
+      // Verify branch exists and contains changes
+      const branchList = sh(repo, "git", "branch", "--list", "feature/my-export");
+      expect(branchList).toContain("feature/my-export");
+
+      // Verify main workspace not affected
+      const headBranch = sh(repo, "git", "rev-parse", "--abbrev-ref", "HEAD");
+      expect(headBranch).toBe("main");
+      const workspaceStatus = sh(repo, "git", "status", "--short", "--", "README.md", "src/main.ts");
+      expect(workspaceStatus).toBe("");
+      expect(await readFile(path.join(repo, "README.md"), "utf8")).toBe("# main\n");
+
+      // Verify exported commit has the changes
+      const exportedFiles = sh(repo, "git", "diff-tree", "--no-commit-id", "-r", "--name-only", result.commit_sha!);
+      expect(exportedFiles).toContain("README.md");
+      expect(exportedFiles).toContain("src/newfile.ts");
+
+      // Verify commit message
+      const commitMsg = sh(repo, "git", "log", "--format=%s", "-1", result.commit_sha!);
+      expect(commitMsg).toContain("codex-delegated-test");
+
+      vi.resetModules();
+    });
+
+    it("accepts custom commit message", async () => {
+      const { repo, logDir, baseCommit, wtRelPath, wtPath } = await createExportFixture();
+
+      await writeFile(path.join(wtPath, "README.md"), "# main\n\ncustom msg\n");
+      sh(wtPath, "git", "add", ".");
+
+      await writeImplementLog(logDir, wtRelPath, baseCommit, ["README.md"]);
+
+      const reloaded = await import("../src/claude-cli.js");
+      const result = await reloaded.runClaudeExport({
+        cwd: repo,
+        worktree_path: wtRelPath,
+        branch: "feature/custom-msg",
+        message: "My custom export message",
+      });
+
+      expect(result.error).toBeUndefined();
+      const commitMsg = sh(repo, "git", "log", "--format=%s", "-1", result.commit_sha!);
+      expect(commitMsg).toBe("My custom export message");
+
+      vi.resetModules();
+    });
+
+    it("rejects invalid branch names", async () => {
+      const { repo, logDir, baseCommit, wtRelPath } = await createExportFixture();
+      await writeImplementLog(logDir, wtRelPath, baseCommit, ["README.md"]);
+
+      const reloaded = await import("../src/claude-cli.js");
+      const result = await reloaded.runClaudeExport({
+        cwd: repo,
+        worktree_path: wtRelPath,
+        branch: "HEAD",  // invalid branch name
+      });
+
+      expect(result.error).toContain("Invalid branch name");
+
+      vi.resetModules();
+    });
+
+    it("rejects existing branch without force", async () => {
+      const { repo, logDir, baseCommit, wtRelPath, wtPath } = await createExportFixture();
+
+      // Create an existing branch
+      sh(repo, "git", "branch", "existing-branch");
+
+      await writeFile(path.join(wtPath, "README.md"), "# main\n\nmodified\n");
+      sh(wtPath, "git", "add", ".");
+      await writeImplementLog(logDir, wtRelPath, baseCommit, ["README.md"]);
+
+      const reloaded = await import("../src/claude-cli.js");
+      const result = await reloaded.runClaudeExport({
+        cwd: repo,
+        worktree_path: wtRelPath,
+        branch: "existing-branch",
+      });
+
+      expect(result.error).toContain("already exists");
+
+      vi.resetModules();
+    });
+
+    it("force=true overwrites existing branch", async () => {
+      const { repo, logDir, baseCommit, wtRelPath, wtPath } = await createExportFixture();
+
+      // Create an existing branch
+      sh(repo, "git", "branch", "overwrite-branch");
+
+      await writeFile(path.join(wtPath, "README.md"), "# main\n\nexport content\n");
+      sh(wtPath, "git", "add", ".");
+      await writeImplementLog(logDir, wtRelPath, baseCommit, ["README.md"]);
+
+      const reloaded = await import("../src/claude-cli.js");
+      const result = await reloaded.runClaudeExport({
+        cwd: repo,
+        worktree_path: wtRelPath,
+        branch: "overwrite-branch",
+        force: true,
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(result.branch).toBe("overwrite-branch");
+
+      // Verify branch now points to the new commit
+      const branchSha = sh(repo, "git", "rev-parse", "overwrite-branch");
+      expect(branchSha).toBe(result.commit_sha);
+
+      vi.resetModules();
+    });
+
+    it("rejects missing implement metadata", async () => {
+      const { repo, wtRelPath } = await createExportFixture();
+      // Don't write implement log
+
+      const reloaded = await import("../src/claude-cli.js");
+      const result = await reloaded.runClaudeExport({
+        cwd: repo,
+        worktree_path: wtRelPath,
+        branch: "feature/no-metadata",
+      });
+
+      expect(result.error).toContain("implement metadata");
+
+      vi.resetModules();
+    });
+
+    it("rejects non-delegated worktree path", async () => {
+      const { repo, logDir, baseCommit } = await createExportFixture();
+      // Use a non-delegated path under worktrees
+      const badPath = ".claude/worktrees/not-delegated";
+      await writeImplementLog(logDir, badPath, baseCommit, ["README.md"]);
+
+      const reloaded = await import("../src/claude-cli.js");
+      const result = await reloaded.runClaudeExport({
+        cwd: repo,
+        worktree_path: badPath,
+        branch: "feature/non-delegated",
+      });
+
+      expect(result.error).toContain("delegated worktree");
+
+      vi.resetModules();
+    });
+
+    it("rejects nested delegated worktree path", async () => {
+      const { repo } = await createExportFixture();
+      const nestedPath = ".claude/worktrees/codex-delegated-a/.claude/worktrees/codex-delegated-b";
+
+      const reloaded = await import("../src/claude-cli.js");
+      const result = await reloaded.runClaudeExport({
+        cwd: repo,
+        worktree_path: nestedPath,
+        branch: "feature/nested",
+      });
+
+      expect(result.error).toContain("Nested delegated worktrees");
+
+      vi.resetModules();
+    });
+
+    it("rejects export with no changes", async () => {
+      const { repo, logDir, baseCommit, wtRelPath } = await createExportFixture();
+      // No changes in worktree
+      await writeImplementLog(logDir, wtRelPath, baseCommit, ["README.md"]);
+
+      const reloaded = await import("../src/claude-cli.js");
+      const result = await reloaded.runClaudeExport({
+        cwd: repo,
+        worktree_path: wtRelPath,
+        branch: "feature/no-changes",
+      });
+
+      expect(result.error).toContain("No changes detected");
+
+      vi.resetModules();
+    });
+
+    it("stages only observed changed_files; unobserved file not in exported commit", async () => {
+      const { repo, logDir, baseCommit, wtRelPath, wtPath } = await createExportFixture();
+
+      // Change two files in worktree
+      await writeFile(path.join(wtPath, "README.md"), "# main\n\nmodified\n");
+      await writeFile(path.join(wtPath, "src", "main.ts"), "// modified entry\n");
+      sh(wtPath, "git", "add", ".");
+
+      // Only observe README.md changes
+      await writeImplementLog(logDir, wtRelPath, baseCommit, ["README.md"]);
+
+      const reloaded = await import("../src/claude-cli.js");
+      const result = await reloaded.runClaudeExport({
+        cwd: repo,
+        worktree_path: wtRelPath,
+        branch: "feature/selective",
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(result.file_count).toBe(1);
+
+      // Verify only README.md is in the export
+      const exportedFiles = sh(repo, "git", "diff-tree", "--no-commit-id", "-r", "--name-only", result.commit_sha!);
+      expect(exportedFiles.split("\n")).toEqual(["README.md"]);
+
+      vi.resetModules();
+    });
+
+    it("refuses export with scope_exceeded metadata", async () => {
+      const { repo, logDir, baseCommit, wtRelPath } = await createExportFixture();
+
+      await writeImplementLog(logDir, wtRelPath, baseCommit, ["README.md"], {
+        scope: { scope_exceeded: true, warnings: ["Changed out-of-scope-file.txt"] },
+      });
+
+      const reloaded = await import("../src/claude-cli.js");
+      const result = await reloaded.runClaudeExport({
+        cwd: repo,
+        worktree_path: wtRelPath,
+        branch: "feature/scope-exceeded",
+      });
+
+      expect(result.error).toContain("outside requested files");
+
+      vi.resetModules();
+    });
+
+    it("refuses export with resource_limits.changed_files_exceeded metadata", async () => {
+      const { repo, logDir, baseCommit, wtRelPath } = await createExportFixture();
+
+      await writeImplementLog(logDir, wtRelPath, baseCommit, ["README.md"], {
+        resource_limits: { changed_files_exceeded: true, warnings: ["Changed 5 files, exceeds limit of 3"] },
+      });
+
+      const reloaded = await import("../src/claude-cli.js");
+      const result = await reloaded.runClaudeExport({
+        cwd: repo,
+        worktree_path: wtRelPath,
+        branch: "feature/limits-exceeded",
+      });
+
+      expect(result.error).toContain("resource limits");
+
+      vi.resetModules();
+    });
+  });
 });

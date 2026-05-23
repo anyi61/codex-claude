@@ -575,6 +575,27 @@ export interface ClaudeApplyResult {
   untracked_not_in_patch?: boolean;
 }
 
+// ---- Export types ----
+
+export interface ClaudeExportInput {
+  cwd: string;
+  worktree_path: string;
+  branch: string;
+  message?: string;
+  force?: boolean;
+}
+
+export interface ClaudeExportResult {
+  branch?: string;
+  commit_sha?: string;
+  base_commit?: string;
+  tree_sha?: string;
+  file_count?: number;
+  worktree_path?: string;
+  error?: string;
+  next_actions?: WorkflowNextAction[];
+}
+
 export interface ClaudeCleanupInput {
   cwd: string;
   older_than_hours?: number;
@@ -778,6 +799,14 @@ export const claudeApplyInputSchema = z.object({
   message: "preview=true cannot be combined with cleanup=true",
   path: ["cleanup"],
 });
+
+export const claudeExportInputSchema = z.object({
+  cwd: cwdSchema,
+  worktree_path: z.string().trim().min(1, "worktree_path is required"),
+  branch: z.string().trim().min(1, "branch is required"),
+  message: z.string().trim().min(1).optional(),
+  force: z.boolean().optional(),
+}).strict();
 
 export const claudeCleanupInputSchema = z.object({
   cwd: cwdSchema,

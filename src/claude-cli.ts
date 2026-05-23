@@ -2,6 +2,7 @@ import { writeFile, mkdir, readFile, readdir, stat, unlink } from "node:fs/promi
 import { existsSync } from "node:fs";
 import { randomUUID, createHash } from "node:crypto";
 import path from "node:path";
+import os from "node:os";
 import { execCapture } from "./guard.js";
 import {
   applyDirtySnapshotToWorktree,
@@ -30,6 +31,8 @@ import type {
   ClaudeApplyResult,
   ClaudeCleanupInput,
   ClaudeCleanupResult,
+  ClaudeExportInput,
+  ClaudeExportResult,
   ClaudeImplementInput,
   ClaudeJobCancelInput,
   ClaudeJobCleanupInput,
@@ -2435,6 +2438,138 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   }
 
   return finish({ applied_files: txResult.applied_files, diff_stat: diffStat, cleanup_performed: cleanupPerformed, conflicts, planned_changes: plannedChanges });
+  } finally {
+    await worktreeLock.release();
+  }
+}
+
+// ---- Export delegated worktree changes ----
+
+export async function runClaudeExport(input: ClaudeExportInput): Promise<ClaudeExportResult> {
+  const wtReal = path.resolve(input.cwd, input.worktree_path);
+  const wtDir = path.join(input.cwd, ".claude", "worktrees");
+  if (!wtReal.startsWith(wtDir + path.sep)) {
+    return { error: `worktree_path must be under ${wtDir}` };
+  }
+  if (!wtReal.startsWith(wtDir + path.sep + "codex-delegated-")) {
+    return { error: "worktree_path must be a delegated worktree (codex-delegated-*)" };
+  }
+  // Reject nested delegated worktree paths
+  const nestedMarker = `${path.sep}.claude${path.sep}worktrees${path.sep}codex-delegated-`;
+  const firstMarkerIdx = wtReal.indexOf(nestedMarker);
+  if (firstMarkerIdx >= 0 && wtReal.indexOf(nestedMarker, firstMarkerIdx + 1) >= 0) {
+    return { error: "Nested delegated worktrees are not supported by claude_export. Use the original repository cwd and top-level delegated worktree path instead." };
+  }
+  if (!existsSync(wtReal)) {
+    return { error: `worktree directory not found: ${wtReal}` };
+  }
+
+  const worktreeLock = await acquireFileLock({
+    cwd: input.cwd,
+    resource: `worktree:${path.basename(wtReal)}`,
+  }).catch((err) => {
+    if (err instanceof LockBusyError) return err;
+    throw err;
+  });
+  if (worktreeLock instanceof LockBusyError) {
+    return {
+      error: `Another operation (implement/apply/cleanup/export) is already using delegated worktree ${path.basename(wtReal)}. Retry after the current operation finishes.`,
+    };
+  }
+
+  try {
+    const wtRelPath = path.join(".claude", "worktrees", path.basename(wtReal));
+    const jobMatch = await findImplementJobForWorktree(wtRelPath, input.cwd);
+    let implementLog: ImplementRunLog | null = null;
+
+    if (jobMatch?.run_id) {
+      const raw = await readRunLogFile(jobMatch.run_id, input.cwd);
+      if (raw) {
+        implementLog = ImplementRunLogSchema.parse(raw);
+      }
+    }
+
+    if (!implementLog) {
+      implementLog = await findImplementLogForWorktree(wtRelPath, input.cwd);
+    }
+
+    const baseCommit = typeof implementLog?.observed?.base_commit === "string"
+      ? implementLog.observed.base_commit.trim()
+      : undefined;
+    const observedChangedFiles = Array.isArray(implementLog?.observed?.changed_files)
+      ? implementLog.observed.changed_files.filter((item): item is string => typeof item === "string" && item.length > 0)
+      : [];
+
+    if (!baseCommit || observedChangedFiles.length === 0) {
+      return { error: `No implement metadata found for worktree "${path.basename(wtReal)}". The implement run's base commit and changed files could not be resolved.` };
+    }
+
+    const resourceLimits = implementLog?.observed?.resource_limits;
+    if (resourceLimits?.changed_files_exceeded === true) {
+      return { error: "Worktree exceeded implement resource limits; export refused" };
+    }
+
+    const observedScope = implementLog?.observed?.scope;
+    if (observedScope?.scope_exceeded === true) {
+      return { error: "Worktree contains changes outside requested files; export refused" };
+    }
+
+    try {
+      await execCapture("git", ["check-ref-format", "--branch", input.branch], { cwd: input.cwd, timeoutMs: 5000 });
+    } catch {
+      return { error: `Invalid branch name: "${input.branch}". Branch names must follow git ref format rules.` };
+    }
+
+    const branchExists = await execCapture("git", ["rev-parse", "--verify", `refs/heads/${input.branch}`], { cwd: input.cwd, timeoutMs: 5000 })
+      .then(() => true)
+      .catch(() => false);
+
+    if (branchExists && input.force !== true) {
+      return { error: `Branch "${input.branch}" already exists. Use force=true to overwrite.` };
+    }
+
+    const tmpIndex = path.join(os.tmpdir(), `claude-export-${randomUUID()}`);
+    const tempIndexEnv = { GIT_INDEX_FILE: tmpIndex };
+
+    try {
+      await execCapture("git", ["read-tree", baseCommit], { cwd: wtReal, timeoutMs: 10000, env: tempIndexEnv });
+
+      const existingFiles = observedChangedFiles.filter((file) => existsSync(path.join(wtReal, file)));
+      if (existingFiles.length > 0) {
+        await execCapture("git", ["add", "--", ...existingFiles], { cwd: wtReal, timeoutMs: 30000, env: tempIndexEnv });
+      }
+
+      const deletedFiles = observedChangedFiles.filter((file) => !existsSync(path.join(wtReal, file)));
+      if (deletedFiles.length > 0) {
+        await execCapture("git", ["rm", "--cached", "--", ...deletedFiles], { cwd: wtReal, timeoutMs: 10000, env: tempIndexEnv });
+      }
+
+      const treeSha = await execCapture("git", ["write-tree"], { cwd: wtReal, timeoutMs: 10000, env: tempIndexEnv });
+      const baseTreeSha = await execCapture("git", ["rev-parse", `${baseCommit}^{tree}`], { cwd: wtReal, timeoutMs: 5000 });
+      if (treeSha === baseTreeSha) {
+        return { error: "No changes detected in observed files." };
+      }
+
+      const message = input.message ?? `Export changes from ${path.basename(wtRelPath)}`;
+      const commitSha = await execCapture("git", ["commit-tree", treeSha, "-p", baseCommit, "-m", message], { cwd: wtReal, timeoutMs: 10000 });
+
+      if (branchExists && input.force === true) {
+        await execCapture("git", ["branch", "-f", input.branch, commitSha], { cwd: input.cwd, timeoutMs: 10000 });
+      } else {
+        await execCapture("git", ["branch", input.branch, commitSha], { cwd: input.cwd, timeoutMs: 10000 });
+      }
+
+      return {
+        branch: input.branch,
+        commit_sha: commitSha,
+        base_commit: baseCommit,
+        tree_sha: treeSha,
+        file_count: observedChangedFiles.length,
+        worktree_path: input.worktree_path,
+      };
+    } finally {
+      await unlink(tmpIndex).catch(() => {});
+    }
   } finally {
     await worktreeLock.release();
   }

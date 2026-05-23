@@ -23,6 +23,7 @@ const {
   startBackgroundQueryMock,
   startBackgroundReviewMock,
   waitForBackgroundJobMock,
+  runClaudeExportMock,
 } = vi.hoisted(() => ({
   validateCwdMock: vi.fn(),
   validateFilesWithinCwdMock: vi.fn(),
@@ -46,6 +47,7 @@ const {
   startBackgroundQueryMock: vi.fn(),
   startBackgroundReviewMock: vi.fn(),
   waitForBackgroundJobMock: vi.fn(),
+  runClaudeExportMock: vi.fn(),
 }));
 
 vi.mock("../src/guard.js", () => ({
@@ -78,6 +80,7 @@ vi.mock("../src/claude-cli.js", () => ({
   runClaudeImplement: vi.fn(),
   runClaudeApply: vi.fn(),
   runClaudeCleanup: vi.fn(),
+  runClaudeExport: runClaudeExportMock,
   getRecentRunsSummary: vi.fn(),
   listBackgroundJobs: listBackgroundJobsMock,
   listRunLogs: vi.fn(),
@@ -145,6 +148,7 @@ describe("server background job handlers", () => {
       "claude_job_cleanup",
       "claude_apply",
       "claude_cleanup",
+      "claude_export",
     ]);
   });
 
@@ -1297,6 +1301,50 @@ describe("server background job handlers", () => {
     expect(result.isError).toBeUndefined();
     expect(payload.delegated_mode).toBe("write");
     expect(runClaudeTaskMock).toHaveBeenCalled();
+  });
+
+  it("routes claude_export through runClaudeExport with resolved cwd", async () => {
+    runClaudeExportMock.mockResolvedValue({
+      branch: "feature/test-export",
+      commit_sha: "abc123",
+      base_commit: "def456",
+      file_count: 3,
+      worktree_path: ".claude/worktrees/codex-delegated-xxx",
+    });
+
+    const result = await handleToolCall("claude_export", {
+      cwd: "/repo/input",
+      worktree_path: ".claude/worktrees/codex-delegated-xxx",
+      branch: "feature/test-export",
+      message: "Custom message",
+      force: true,
+    });
+    const payload = parsePayload(result);
+
+    expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
+    expect(runClaudeExportMock).toHaveBeenCalledWith({
+      cwd: "/repo/resolved",
+      worktree_path: ".claude/worktrees/codex-delegated-xxx",
+      branch: "feature/test-export",
+      message: "Custom message",
+      force: true,
+    });
+    expect(payload.branch).toBe("feature/test-export");
+    expect(payload.commit_sha).toBe("abc123");
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("returns validation errors for claude_export with missing branch", async () => {
+    const result = await handleToolCall("claude_export", {
+      cwd: "/repo/input",
+      worktree_path: ".claude/worktrees/codex-delegated-xxx",
+    });
+    const payload = parsePayload(result);
+
+    expect(validateCwdMock).not.toHaveBeenCalled();
+    expect(runClaudeExportMock).not.toHaveBeenCalled();
+    expect(result.isError).toBe(true);
+    expect(String(payload.error)).toContain("branch");
   });
 });
 
