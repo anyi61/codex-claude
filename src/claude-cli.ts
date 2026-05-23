@@ -1018,10 +1018,10 @@ async function preflightImplementDirtyState(input: ClaudeImplementInput): Promis
 
 
 async function expandDirectoryChange(
-  change: { status: string; file: string },
+  change: { status: string; file: string; old_file?: string },
   worktreeRoot: string
-): Promise<Array<{ status: string; file: string }>> {
-  if (change.status === "D") return [change];
+): Promise<Array<{ status: string; file: string; old_file?: string }>> {
+  if (change.status === "D" || change.status === "R" || change.status === "C") return [change];
   const sourcePath = path.join(worktreeRoot, change.file);
   let sourceStat;
   try {
@@ -1031,7 +1031,7 @@ async function expandDirectoryChange(
   }
   if (!sourceStat.isDirectory()) return [change];
 
-  const expanded: Array<{ status: string; file: string }> = [];
+  const expanded: Array<{ status: string; file: string; old_file?: string }> = [];
   const walk = async (relativeDir: string): Promise<void> => {
     const dirPath = path.join(worktreeRoot, relativeDir);
     const entries = await readdir(dirPath, { withFileTypes: true });
@@ -2223,21 +2223,79 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   diffStat = await execCapture("git", ["diff", "--stat", baseCommit, "HEAD", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 10000 }).catch(() => "");
 
   const [trackedStatus, uncommittedStatus, untrackedStatus] = await Promise.all([
-    execCapture("git", ["diff", "--name-status", "-z", baseCommit, "HEAD", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
-    execCapture("git", ["diff", "--name-status", "-z", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
-    execCapture("git", ["status", "--porcelain=v1", "-z", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
+    execCapture("git", ["diff", "--name-status", "-z", baseCommit, "HEAD"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
+    execCapture("git", ["diff", "--name-status", "-z"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
+    execCapture("git", ["status", "--porcelain=v1", "-z"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
   ]);
 
-  const changesByFile = new Map<string, { status: string; file: string }>();
-  function addChange(change: { status: string; file: string }): void {
-    if (hasObservedScope && !observedChangedFiles.some((observed) => isUnderRequestedFile(change.file, observed))) {
-      return;
+  // Parse old_file mappings for R/C from raw trackedStatus output.
+  // The standard parsers convert R/C to "unsupported"; this extracts the
+  // source path and real status so we can handle them properly.
+  function parseRCOldFiles(raw: string): Map<string, { status: string; old_file: string }> {
+    const result = new Map<string, { status: string; old_file: string }>();
+    const entries = raw.split("\0");
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      if (!entry) continue;
+      const tabIdx = entry.indexOf("\t");
+      let rawStatus: string, firstPath: string;
+      let consumed = false;
+      if (tabIdx > 0) {
+        rawStatus = entry.slice(0, tabIdx);
+        firstPath = entry.slice(tabIdx + 1);
+      } else if (/^[A-Z?][0-9]*$/.test(entry)) {
+        rawStatus = entry;
+        firstPath = entries[i + 1] ?? "";
+        consumed = true;
+      } else {
+        continue;
+      }
+      const code = rawStatus[0] ?? "?";
+      if ((code === "R" || code === "C") && firstPath) {
+        const dest = entries[i + (consumed ? 2 : 1)];
+        if (dest) {
+          result.set(dest, { status: code, old_file: firstPath });
+        }
+        if (consumed) i++;
+        if (dest) i++;
+      }
+    }
+    return result;
+  }
+
+  const rcMap = new Map([...parseRCOldFiles(trackedStatus), ...parseRCOldFiles(uncommittedStatus)]);
+
+  const changesByFile = new Map<string, { status: string; file: string; old_file?: string }>();
+  function addChange(change: { status: string; file: string; old_file?: string }): void {
+    if (hasObservedScope) {
+      // Destination must be in observed scope
+      if (!observedChangedFiles.some((o) => isUnderRequestedFile(change.file, o))) return;
+      // For R/C, source (old_file) must also be in observed scope
+      if (change.old_file && !observedChangedFiles.some((o) => isUnderRequestedFile(change.old_file!, o))) return;
     }
     changesByFile.set(change.file, change);
   }
 
-  for (const change of parseNameStatusPorcelainZ(trackedStatus)) addChange(change);
-  for (const change of parseNameStatusPorcelainZ(uncommittedStatus)) addChange(change);
+  for (const change of parseNameStatusPorcelainZ(trackedStatus)) {
+    if (change.status === "unsupported" && rcMap.has(change.file)) {
+      const rc = rcMap.get(change.file)!;
+      addChange({ status: rc.status, file: change.file, old_file: rc.old_file });
+    } else if (change.status === "unsupported") {
+      addChange({ status: "unsupported", file: change.file });
+    } else {
+      addChange(change);
+    }
+  }
+  for (const change of parseNameStatusPorcelainZ(uncommittedStatus)) {
+    if (change.status === "unsupported" && rcMap.has(change.file)) {
+      const rc = rcMap.get(change.file)!;
+      addChange({ status: rc.status, file: change.file, old_file: rc.old_file });
+    } else if (change.status === "unsupported") {
+      addChange({ status: "unsupported", file: change.file });
+    } else {
+      addChange(change);
+    }
+  }
   for (const change of parseStatusPorcelainZ(untrackedStatus)) addChange(change);
 
   const submodulePaths = await collectSubmodulePaths(wtReal, baseCommit);
@@ -2253,7 +2311,11 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   if (!diffStat.trim() && changes.length > 0) {
     diffStat = changes.map((c) => `${c.status}\t${c.file}`).join("\n");
   }
-  const plannedChanges: ApplyPlannedChange[] = changes.map((c) => ({ status: c.status, file: c.file }));
+  const plannedChanges: ApplyPlannedChange[] = changes.map((c) => {
+    const planned: ApplyPlannedChange = { status: c.status, file: c.file };
+    if (c.old_file) planned.old_file = c.old_file;
+    return planned;
+  });
   const ignoredChanges = input.preview === true ? await collectIgnoredChanges(wtReal) : undefined;
   const withIgnored = (result: ClaudeApplyResult): ClaudeApplyResult =>
     input.preview === true ? { ...result, ignored_changes: ignoredChanges ?? [] } : result;
@@ -2296,28 +2358,35 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   // Preflight: check for uncommitted changes in main workspace and
   // unsupported status codes. If any issues found, refuse the entire apply.
   const conflicts: string[] = [];
-  const validStatuses = new Set(["A", "M", "D"]);
+  const validStatuses = new Set(["A", "M", "D", "R", "C"]);
 
   for (const c of changes) {
-    const submodule = containingSubmodule(c.file, submodulePaths);
-    if (submodule !== null) {
-      conflicts.push(
-        c.file === submodule
-          ? `${c.file}: is a submodule (gitlink); submodule write/apply is not supported`
-          : `${c.file}: lies inside submodule "${submodule}"; submodule write/apply is not supported`
-      );
-      continue;
-    }
     if (!validStatuses.has(c.status)) {
-      conflicts.push(`${c.file}: unsupported status "${c.status}" (only A/M/D supported)`);
+      conflicts.push(`${c.file}: unsupported status "${c.status}" (only A/M/D/R/C supported)`);
       continue;
     }
-    try {
-      const shortStat = await execCapture("git", ["status", "--short", "--", c.file], { cwd: input.cwd, timeoutMs: 10000 });
-      if (shortStat.trim()) {
-        conflicts.push(`${c.file}: main workspace has uncommitted changes (${shortStat.trim().slice(0, 80)})`);
+    if ((c.status === "R" || c.status === "C") && !c.old_file) {
+      conflicts.push(`${c.file}: "${c.status}" change is missing a source path (old_file)`);
+      continue;
+    }
+    const checkFiles = c.old_file ? [c.file, c.old_file] : [c.file];
+    for (const checkFile of checkFiles) {
+      const submodule = containingSubmodule(checkFile, submodulePaths);
+      if (submodule !== null) {
+        conflicts.push(
+          checkFile === submodule
+            ? `${checkFile}: is a submodule (gitlink); submodule write/apply is not supported`
+            : `${checkFile}: lies inside submodule "${submodule}"; submodule write/apply is not supported`
+        );
+        continue;
       }
-    } catch {}
+      try {
+        const shortStat = await execCapture("git", ["status", "--short", "--", checkFile], { cwd: input.cwd, timeoutMs: 10000 });
+        if (shortStat.trim()) {
+          conflicts.push(`${checkFile}: main workspace has uncommitted changes (${shortStat.trim().slice(0, 80)})`);
+        }
+      } catch {}
+    }
   }
 
   if (conflicts.length > 0) {

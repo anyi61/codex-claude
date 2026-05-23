@@ -542,6 +542,7 @@ export interface ClaudeApplyInput {
 export interface ApplyPlannedChange {
   status: string;
   file: string;
+  old_file?: string;
 }
 
 export interface ApplyIgnoredChange {

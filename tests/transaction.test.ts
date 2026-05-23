@@ -113,6 +113,173 @@ describe("applyChangesTransactional", () => {
     expect(result.error).toBeUndefined();
     expect(result.applied_files).toEqual(["nonexistent.txt"]);
   });
+
+  it("applies R (rename): writes destination and removes old_file", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-tx-rename-"));
+    cleanupPaths.push(root);
+    const cwd = path.join(root, "repo");
+    const worktree = path.join(root, "worktree");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(worktree, { recursive: true });
+
+    await writeFile(path.join(cwd, "old.txt"), "original content\n");
+    await writeFile(path.join(cwd, "existing.txt"), "untouched\n");
+
+    // In worktree, old.txt was removed and new.txt was created (rename)
+    await writeFile(path.join(worktree, "new.txt"), "renamed content\n");
+
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "R", file: "new.txt", old_file: "old.txt" },
+    ]);
+
+    expect(result.error).toBeUndefined();
+    expect(result.applied_files).toEqual(["new.txt"]);
+
+    // Destination should contain the new content
+    expect(await readFile(path.join(cwd, "new.txt"), "utf8")).toBe("renamed content\n");
+    // Old file should be removed
+    expect(existsSync(path.join(cwd, "old.txt"))).toBe(false);
+    // Untouched file preserved
+    expect(await readFile(path.join(cwd, "existing.txt"), "utf8")).toBe("untouched\n");
+
+    // No backup dir left behind
+    const backupParent = path.join(cwd, ".codex-claude-delegate", "apply-backups");
+    expect(hasBackupFiles(backupParent)).toBe(false);
+  });
+
+  it("applies R (rename) when destination pre-exists: backs up both and removes old_file", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-tx-rename-exists-"));
+    cleanupPaths.push(root);
+    const cwd = path.join(root, "repo");
+    const worktree = path.join(root, "worktree");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(worktree, { recursive: true });
+
+    // Both old and new files exist in cwd
+    await writeFile(path.join(cwd, "old.txt"), "old content\n");
+    await writeFile(path.join(cwd, "new.txt"), "preexisting content\n");
+    await writeFile(path.join(worktree, "new.txt"), "renamed content\n");
+
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "R", file: "new.txt", old_file: "old.txt" },
+    ]);
+
+    expect(result.error).toBeUndefined();
+    expect(result.applied_files).toEqual(["new.txt"]);
+
+    // Destination updated
+    expect(await readFile(path.join(cwd, "new.txt"), "utf8")).toBe("renamed content\n");
+    // Old file removed
+    expect(existsSync(path.join(cwd, "old.txt"))).toBe(false);
+
+    // No backup dir left behind
+    const backupParent = path.join(cwd, ".codex-claude-delegate", "apply-backups");
+    expect(hasBackupFiles(backupParent)).toBe(false);
+  });
+
+  it("applies C (copy): writes destination without touching old_file/source", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-tx-copy-"));
+    cleanupPaths.push(root);
+    const cwd = path.join(root, "repo");
+    const worktree = path.join(root, "worktree");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(worktree, { recursive: true });
+
+    // old.txt exists in both cwd and worktree (unchanged)
+    await writeFile(path.join(cwd, "old.txt"), "original\n");
+    await writeFile(path.join(cwd, "existing.txt"), "untouched\n");
+    await writeFile(path.join(worktree, "old.txt"), "original\n");
+    // new.txt is the copy destination
+    await writeFile(path.join(worktree, "new.txt"), "copied content\n");
+
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "C", file: "new.txt", old_file: "old.txt" },
+    ]);
+
+    expect(result.error).toBeUndefined();
+    expect(result.applied_files).toEqual(["new.txt"]);
+
+    // Destination written
+    expect(await readFile(path.join(cwd, "new.txt"), "utf8")).toBe("copied content\n");
+    // Source (old_file) must NOT have been touched
+    expect(await readFile(path.join(cwd, "old.txt"), "utf8")).toBe("original\n");
+    // Untouched file preserved
+    expect(await readFile(path.join(cwd, "existing.txt"), "utf8")).toBe("untouched\n");
+
+    // No backup dir
+    const backupParent = path.join(cwd, ".codex-claude-delegate", "apply-backups");
+    expect(hasBackupFiles(backupParent)).toBe(false);
+  });
+
+  it("applies C (copy) when destination pre-exists: backs up destination only, not source", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-tx-copy-exists-"));
+    cleanupPaths.push(root);
+    const cwd = path.join(root, "repo");
+    const worktree = path.join(root, "worktree");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(worktree, { recursive: true });
+
+    // Destination pre-exists in cwd
+    await writeFile(path.join(cwd, "old.txt"), "original\n");
+    await writeFile(path.join(cwd, "new.txt"), "preexisting content\n");
+    await writeFile(path.join(worktree, "old.txt"), "original\n");
+    await writeFile(path.join(worktree, "new.txt"), "copied content\n");
+
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "C", file: "new.txt", old_file: "old.txt" },
+    ]);
+
+    expect(result.error).toBeUndefined();
+    expect(result.applied_files).toEqual(["new.txt"]);
+
+    // Destination updated
+    expect(await readFile(path.join(cwd, "new.txt"), "utf8")).toBe("copied content\n");
+    // Source must NOT have been touched
+    expect(await readFile(path.join(cwd, "old.txt"), "utf8")).toBe("original\n");
+
+    // No backup dir
+    const backupParent = path.join(cwd, ".codex-claude-delegate", "apply-backups");
+    expect(hasBackupFiles(backupParent)).toBe(false);
+  });
+
+  it("rejects unknown change status with fail-closed error", async () => {
+    const { cwd, worktree } = await makeFixture("unknown-status");
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "X", file: "unknown.txt" },
+    ]);
+
+    expect(result.error).toContain("Unsupported change status");
+    expect(result.error).toContain("X");
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_recovery_needed).toBeUndefined();
+  });
+
+  it("rejects R/C change missing old_file with fail-closed error", async () => {
+    const { cwd, worktree } = await makeFixture("rc-no-old");
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "R", file: "new.txt" },
+    ]);
+
+    expect(result.error).toContain("missing a source path");
+    expect(result.error).toContain("R");
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_recovery_needed).toBeUndefined();
+  });
+
+  it("rolls back prior A/M/D changes when a later unsupported status is encountered", async () => {
+    const { cwd, worktree } = await makeFixture("rb-unknown");
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "M", file: "modify.txt" },
+      { status: "X", file: "unknown.txt" },
+    ]);
+
+    expect(result.error).toContain("Unsupported change status");
+    expect(result.error).toContain("X");
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_recovery_needed).toBeUndefined();
+    // modify.txt must be rolled back
+    expect(await readFile(path.join(cwd, "modify.txt"), "utf8")).toBe("original\n");
+  });
 });
 
 describe("applyChangesTransactional rollback", () => {
@@ -307,23 +474,16 @@ describe("applyChangesTransactional rollback", () => {
     expect(hasBackupFiles(backupParent)).toBe(false);
   });
 
-  it("sets dirty_recovery_needed when rollback restore fails", async () => {
+  it("rolls back prior writes when second write fails", async () => {
     const { cwd, worktree } = await makeFixture("rb-dirty");
 
-    let applyWriteCount = 0;
     const failingOps: TransactionFSOps = {
       ...defaultFSOps,
       async writeFile(filePath: string, data: Buffer): Promise<void> {
-        // First apply write succeeds, second fails
-        if (!filePath.includes(".codex-claude-delegate")) {
-          applyWriteCount++;
-          if (applyWriteCount === 2) {
-            throw new Error("ENOSPC: no space left on device");
-          }
-        }
-        // Also fail rollback writes
-        if (filePath.includes("modify.txt") && applyWriteCount >= 2) {
-          throw new Error("ENOSPC: still no space");
+        // Fail only when writing add.txt in cwd (the second apply write).
+        // Rollback writes must succeed.
+        if (!filePath.includes(".codex-claude-delegate") && filePath.endsWith("add.txt")) {
+          throw new Error("ENOSPC: no space left on device");
         }
         return defaultFSOps.writeFile(filePath, data);
       },
@@ -337,17 +497,20 @@ describe("applyChangesTransactional rollback", () => {
 
     const result = await applyChangesTransactional(cwd, worktree, changes);
 
-    expect(result.dirty_recovery_needed).toBe(true);
+    // Rollback should have succeeded — first file restored, add.txt removed
     expect(result.error).toContain("Apply failed");
-    expect(result.error).toContain("Rollback also failed");
+    expect(result.error).toContain("ENOSPC");
+    expect(result.dirty_recovery_needed).toBeUndefined();
     expect(result.applied_files).toEqual([]);
-    expect(result.rollback_error).toBeDefined();
 
-    // dirty_files should describe the rollback failure
-    expect(result.dirty_files).toBeDefined();
-    expect(result.dirty_files!.length).toBeGreaterThan(0);
-    expect(result.dirty_files![0].file).toBeDefined();
-    expect(result.dirty_files![0].status).toMatch(/rollback_restore_failed|rollback_remove_failed/);
+    // modify.txt should be restored
+    expect(await readFile(path.join(cwd, "modify.txt"), "utf8")).toBe("original\n");
+    // add.txt should not exist (it was never successfully written and didn't exist before)
+    expect(existsSync(path.join(cwd, "add.txt"))).toBe(false);
+
+    // Backup files cleaned up after successful rollback
+    const backupParent = path.join(cwd, ".codex-claude-delegate", "apply-backups");
+    expect(hasBackupFiles(backupParent)).toBe(false);
   });
 
   it("sets dirty_recovery_needed when rollback remove fails", async () => {

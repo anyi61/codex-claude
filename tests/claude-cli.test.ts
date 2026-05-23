@@ -5411,6 +5411,104 @@ describe("runClaudeApply — submodule/gitlink detection", () => {
   });
 });
 
+describe("runClaudeApply — rename/copy detection", () => {
+  it("preview detects a rename (R) when both old and new paths are in observed scope", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-rename-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "old.txt"), "same content\n");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-rename-test";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+
+    // Perform rename in worktree
+    sh(worktree, "git", "rm", "old.txt");
+    await writeFile(path.join(worktree, "new.txt"), "same content\n");
+    sh(worktree, "git", "add", "new.txt");
+    sh(worktree, "git", "commit", "-m", "rename old.txt -> new.txt");
+
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD~1");
+    // Both old and new paths must be in observed scope for rename detection
+    await writeFile(path.join(logDir, "rename-run.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["old.txt", "new.txt"],
+        scope: { requested_files: undefined, out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 2, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "run-rename");
+
+    expect(preview.preview).toBe(true);
+    expect(preview.planned_changes).toEqual([
+      { status: "R", file: "new.txt", old_file: "old.txt" },
+    ]);
+    expect(preview.error).toBeUndefined();
+  });
+
+  it("filters out rename when only destination is in observed scope", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-rename-scope-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "old.txt"), "same content\n");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-rename-scope";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+
+    // Perform rename in worktree
+    sh(worktree, "git", "rm", "old.txt");
+    await writeFile(path.join(worktree, "new.txt"), "same content\n");
+    sh(worktree, "git", "add", "new.txt");
+    sh(worktree, "git", "commit", "-m", "rename old.txt -> new.txt");
+
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD~1");
+    // Only destination path in observed scope — rename should be filtered out
+    await writeFile(path.join(logDir, "rename-scope-run.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["new.txt"],
+        scope: { requested_files: ["new.txt"], out_of_scope_files: ["old.txt"], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 1, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "run-rename-scope");
+
+    // With only new.txt in scope, the rename should be filtered out (old.txt not in scope)
+    expect(preview.error).toContain("No changed files found");
+    expect(preview.planned_changes).toEqual([]);
+  });
+});
+
 describe("runClaudeImplement — permission_denials warnings", () => {
   it("records passed server verification", async () => {
     const { repo } = await createGitRepoFixture("codex-server-verify-pass-");

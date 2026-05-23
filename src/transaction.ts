@@ -58,65 +58,134 @@ export interface TransactionApplyResult {
   error?: string;
 }
 
+/** A single change with optional old_file for rename/copy. */
+export interface ChangeEntry {
+  status: string;
+  file: string;
+  old_file?: string;
+}
+
 // ---- Core logic ----
 
 export async function applyChangesTransactional(
   cwd: string,
   worktreeRoot: string,
-  changes: Array<{ status: string; file: string }>,
+  changes: ChangeEntry[],
 ): Promise<TransactionApplyResult> {
   const f = fs();
   const backupDir = path.join(cwd, ".codex-claude-delegate", "apply-backups", randomUUID());
   const backups: BackupRecord[] = [];
   const appliedFiles: string[] = [];
+  // Tracks how many backup records exist after processing each change (used for
+  // correct rollback scoping since R can produce 2 backup records per change).
+  const backupEndIndices: number[] = [];
 
   // Phase 1: create backups. Fail closed: if any existing target cannot be
   // backed up, do not mutate the main workspace.
   for (const change of changes) {
-    const dest = path.join(cwd, change.file);
-    const bakPath = path.join(backupDir, change.file);
-    const destExists = f.exists(dest);
-
-    if (destExists) {
-      await f.mkdir(path.dirname(bakPath));
-      try {
-        const content = await f.readFile(dest);
-        await f.writeFile(bakPath, content);
-        backups.push({ file: change.file, backupPath: bakPath, existed: true });
-      } catch (err) {
-        await f.rm(backupDir).catch(() => {});
-        const backupError = err instanceof Error ? err.message : String(err);
-        return {
-          applied_files: [],
-          error: `Backup failed for ${change.file}: ${backupError}`,
-        };
-      }
-    } else {
-      backups.push({ file: change.file, backupPath: bakPath, existed: false });
+    const entitiesToBackup: string[] = [change.file];
+    // R backs up both destination and source (old_file)
+    if (change.status === "R" && change.old_file) {
+      entitiesToBackup.push(change.old_file);
     }
+    // C backs up destination only (old_file/source must NOT be backed up or mutated)
+
+    for (const file of entitiesToBackup) {
+      const dest = path.join(cwd, file);
+      const bakPath = path.join(backupDir, file);
+      const destExists = f.exists(dest);
+
+      if (destExists) {
+        await f.mkdir(path.dirname(bakPath));
+        try {
+          const content = await f.readFile(dest);
+          await f.writeFile(bakPath, content);
+          backups.push({ file, backupPath: bakPath, existed: true });
+        } catch (err) {
+          await f.rm(backupDir).catch(() => {});
+          const backupError = err instanceof Error ? err.message : String(err);
+          return {
+            applied_files: [],
+            error: `Backup failed for ${file}: ${backupError}`,
+          };
+        }
+      } else {
+        backups.push({ file, backupPath: bakPath, existed: false });
+      }
+    }
+    backupEndIndices.push(backups.length);
   }
 
   // Phase 2: apply changes
   for (let i = 0; i < changes.length; i++) {
     const c = changes[i];
     const dest = path.join(cwd, c.file);
+
+    // Unknown status — fail closed
+    if (!["A", "M", "D", "R", "C"].includes(c.status)) {
+      const rollbackOk = await rollbackApplied(cwd, backups.slice(0, backupEndIndices[i]), f);
+      await f.rm(backupDir).catch(() => {});
+      if (rollbackOk.ok) {
+        return {
+          applied_files: [],
+          error: `Unsupported change status "${c.status}" for ${c.file}`,
+        };
+      }
+      return {
+        applied_files: [],
+        dirty_recovery_needed: true,
+        dirty_files: rollbackOk.dirtyFiles,
+        rollback_error: rollbackOk.error,
+        error: `Unsupported change status "${c.status}" for ${c.file}. Rollback also failed.`,
+      };
+    }
+
+    // R/C without old_file must be rejected
+    if ((c.status === "R" || c.status === "C") && !c.old_file) {
+      const rollbackOk = await rollbackApplied(cwd, backups.slice(0, backupEndIndices[i]), f);
+      await f.rm(backupDir).catch(() => {});
+      if (rollbackOk.ok) {
+        return {
+          applied_files: [],
+          error: `Change "${c.status} ${c.file}" is missing a source path (old_file)`,
+        };
+      }
+      return {
+        applied_files: [],
+        dirty_recovery_needed: true,
+        dirty_files: rollbackOk.dirtyFiles,
+        rollback_error: rollbackOk.error,
+        error: `Change "${c.status} ${c.file}" is missing a source path (old_file). Rollback also failed.`,
+      };
+    }
+
     try {
       if (c.status === "D") {
         if (f.exists(dest)) {
           await f.rm(dest);
         }
       } else {
+        // A, M, R, C: write file from worktree
         const src = path.join(worktreeRoot, c.file);
         const content = await f.readFile(src);
         await f.mkdir(path.dirname(dest));
         await f.writeFile(dest, content);
+
+        // R additionally removes old_file from cwd
+        if (c.status === "R" && c.old_file) {
+          const oldDest = path.join(cwd, c.old_file);
+          if (f.exists(oldDest)) {
+            await f.rm(oldDest);
+          }
+        }
+        // C: does NOT touch old_file/source
       }
       appliedFiles.push(c.file);
     } catch (err) {
       const applyError = err instanceof Error ? err.message : String(err);
 
-      // Phase 3: rollback
-      const rollbackOk = await rollbackApplied(cwd, backups.slice(0, i + 1), f);
+      // Phase 3: rollback using tracked backup count
+      const rollbackOk = await rollbackApplied(cwd, backups.slice(0, backupEndIndices[i]), f);
 
       if (rollbackOk.ok) {
         await f.rm(backupDir).catch(() => {});
