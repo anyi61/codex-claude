@@ -1,5 +1,6 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import type { EnvironmentConfigSummary } from "./environment-config.js";
 
 // ---- Environment diagnostics types ----
 
@@ -279,7 +280,7 @@ export interface DelegatedWorktreeSummary {
 }
 
 export interface WorkspaceAttentionItem {
-  kind: "queued_job" | "apply_blocked" | "stale_worktree" | "orphan_worktree" | "crashed_job";
+  kind: "queued_job" | "apply_blocked" | "stale_worktree" | "orphan_worktree" | "crashed_job" | "environment_config";
   severity: "info" | "warning";
   message: string;
 }
@@ -315,6 +316,7 @@ export interface ClaudeWorkspaceStatusResult {
   do_not_start_duplicate_job?: boolean;
   next_actions?: WorkflowNextAction[];
   attention_items: WorkspaceAttentionItem[];
+  environment_config?: EnvironmentConfigSummary;
 }
 
 export interface ReviewGateState {

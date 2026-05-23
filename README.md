@@ -309,6 +309,22 @@ CODEX_CLAUDE_ENV_PASSTHROUGH = "MY_ORG_API_URL,CI_PIPELINE_ID"
 
 `codex-claude doctor` 报告环境净化诊断（allowlisted/passthrough/blocked 计数和名称，不暴露任何变量值）。
 
+### 本地环境配置诊断
+
+可在仓库内放置 `.codex-claude-delegate/environment.json`，用于记录本仓库的环境准备意图：
+
+```json
+{
+  "install": "npm ci",
+  "test": "npm run typecheck",
+  "start": "npm run dev",
+  "symlink_directories": ["/absolute/cache/path"],
+  "sparse_paths": ["src", "tests"]
+}
+```
+
+当前版本只读取并校验该文件，并在 `codex-claude doctor` 与 `claude_workspace_status` 中显示安全摘要。不会执行 `install`、`test` 或 `start`，也不会创建 symlink 或 sparse checkout。摘要只包含字段名、计数和校验错误，不回显命令内容。
+
 ### 开发 / 维护
 
 从源码构建：

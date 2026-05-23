@@ -86,6 +86,14 @@ export interface DoctorCheckEnvSanitization {
   blocked_passthrough_names: string[];
 }
 
+export interface DoctorCheckEnvironmentConfig {
+  ok: boolean;
+  exists: boolean;
+  errors: number;
+  warnings: number;
+  fields_present: string[];
+}
+
 export interface DoctorResult {
   ready: boolean;
   status: DoctorStatus;
@@ -100,6 +108,7 @@ export interface DoctorResult {
     allow_roots: DoctorCheckAllowRoots;
     active_claude_processes: DoctorCheckActiveClaudeProcesses;
     env_sanitization: DoctorCheckEnvSanitization;
+    environment_config: DoctorCheckEnvironmentConfig;
   };
   warnings: string[];
   problems: Array<{ problem: string; fix: string; next_step: string }>;
@@ -279,6 +288,7 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
       allow_roots: { ok: false },
       active_claude_processes: { ok: true, count: 0, jobs: [] },
       env_sanitization: { ok: true, allowlisted_count: 0, allowlisted_names: [], passthrough_count: 0, passthrough_names: [], blocked_passthrough_count: 0, blocked_passthrough_names: [] },
+      environment_config: { ok: true, exists: false, errors: 0, warnings: 0, fields_present: [] },
     },
     warnings: [],
     problems: [],
@@ -525,6 +535,49 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
     result.checks.env_sanitization = { ok: true, allowlisted_count: 0, allowlisted_names: [], passthrough_count: 0, passthrough_names: [], blocked_passthrough_count: 0, blocked_passthrough_names: [] };
   }
 
+  // Environment config diagnostics (never leaks command values)
+  try {
+    const { readEnvironmentConfig } = await import("./environment-config.js");
+    const envConfigResult = await readEnvironmentConfig(process.cwd());
+    if (envConfigResult) {
+      const s = envConfigResult.summary;
+      result.checks.environment_config = {
+        ok: s.ok,
+        exists: true,
+        errors: s.errors.length,
+        warnings: s.warnings.length,
+        fields_present: s.fields_present,
+      };
+      if (!s.ok) {
+        needsAttention = true;
+        addProblem(
+          `Environment config at ${s.path} has ${s.errors.length} error(s) and ${s.warnings.length} warning(s)`,
+          "Fix the issues in .codex-claude-delegate/environment.json",
+          "codex-claude doctor --json",
+        );
+      } else if (s.warnings.length > 0) {
+        // Warnings alone do not promote to needs_attention
+        warnings.push(`Environment config has ${s.warnings.length} warning(s)`);
+      }
+    } else {
+      result.checks.environment_config = {
+        ok: true,
+        exists: false,
+        errors: 0,
+        warnings: 0,
+        fields_present: [],
+      };
+    }
+  } catch {
+    result.checks.environment_config = {
+      ok: true,
+      exists: false,
+      errors: 0,
+      warnings: 0,
+      fields_present: [],
+    };
+  }
+
   // Determine overall status
   if (notReady) {
     result.status = "not_ready";
@@ -589,6 +642,15 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
     }
     if (es.blocked_passthrough_names.length > 0) {
       deps.writeOut(`  Blocked passthrough: ${es.blocked_passthrough_names.join(", ")}\n`);
+    }
+
+    const ec = result.checks.environment_config;
+    if (ec.exists) {
+      const parts: string[] = [];
+      if (ec.fields_present.length > 0) parts.push(`fields: ${ec.fields_present.join(", ")}`);
+      if (ec.errors > 0) parts.push(`${ec.errors} error(s)`);
+      if (ec.warnings > 0) parts.push(`${ec.warnings} warning(s)`);
+      emit(`Environment config: ${parts.join("; ")}`, ec.ok);
     }
 
     deps.writeOut(`\nStatus: ${result.status}\n`);

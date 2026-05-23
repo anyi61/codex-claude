@@ -28,6 +28,7 @@ import {
 import type { GenericRunLog } from "./run-logs.js";
 
 import { getBackgroundJobResult, listBackgroundJobs } from "./background-jobs.js";
+import { readEnvironmentConfig } from "./environment-config.js";
 
 // ---- Session store (cwd-scoped, lazy init) ----
 
@@ -449,6 +450,23 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
     }
   }
 
+  // Environment config diagnostics
+  const envConfigResult = await readEnvironmentConfig(input.cwd);
+  let environmentConfig = envConfigResult?.summary;
+  if (envConfigResult && !envConfigResult.summary.ok) {
+    attentionItems.push({
+      kind: "environment_config",
+      severity: "info",
+      message: `Environment config has validation errors (${envConfigResult.summary.errors.length} error(s), ${envConfigResult.summary.warnings.length} warning(s))`,
+    });
+  } else if (envConfigResult && envConfigResult.summary.warnings.length > 0) {
+    attentionItems.push({
+      kind: "environment_config",
+      severity: "info",
+      message: `Environment config has warnings (${envConfigResult.summary.warnings.length} warning(s))`,
+    });
+  }
+
   return {
     workspace_root: input.cwd,
     running_jobs: runningJobs.entries,
@@ -476,5 +494,6 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
     do_not_start_duplicate_job: activeJobs.length > 0 ? true : undefined,
     next_actions: workspaceNextActions.length > 0 ? workspaceNextActions : crashedNextActions.length > 0 ? crashedNextActions : undefined,
     attention_items: attentionItems,
+    environment_config: environmentConfig,
   };
 }

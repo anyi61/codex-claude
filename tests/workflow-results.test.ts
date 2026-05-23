@@ -163,4 +163,66 @@ describe("workflow results", () => {
     expect(result.recent_artifacts!.length).toBe(1);
     expect(result.recent_runs.length).toBe(1);
   });
+
+  it("includes environment_config when file exists and is valid", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-workflow-envcfg-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const configDir = path.join(repo, ".codex-claude-delegate");
+    await mkdir(repo, { recursive: true });
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      path.join(configDir, "environment.json"),
+      JSON.stringify({ test: "npx vitest run", sparse_paths: ["src/"] }),
+    );
+
+    const { getWorkspaceStatus } = await import("../src/workflow-results.js");
+    const result = await getWorkspaceStatus({ cwd: repo });
+
+    expect(result.environment_config).toBeDefined();
+    expect(result.environment_config!.exists).toBe(true);
+    expect(result.environment_config!.ok).toBe(true);
+    expect(result.environment_config!.test).toBe(true);
+    expect(result.environment_config!.fields_present).toContain("test");
+    expect(result.environment_config!.fields_present).toContain("sparse_paths");
+  });
+
+  it("omits environment_config when file is absent", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-workflow-noenv-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    await mkdir(repo, { recursive: true });
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+
+    const { getWorkspaceStatus } = await import("../src/workflow-results.js");
+    const result = await getWorkspaceStatus({ cwd: repo });
+
+    expect(result.environment_config).toBeUndefined();
+  });
+
+  it("adds attention item when environment config has errors", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-workflow-envbad-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const configDir = path.join(repo, ".codex-claude-delegate");
+    await mkdir(repo, { recursive: true });
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      path.join(configDir, "environment.json"),
+      JSON.stringify({ install: "" }),
+    );
+
+    const { getWorkspaceStatus } = await import("../src/workflow-results.js");
+    const result = await getWorkspaceStatus({ cwd: repo });
+
+    expect(result.environment_config).toBeDefined();
+    expect(result.environment_config!.ok).toBe(false);
+    expect(result.environment_config!.errors.length).toBeGreaterThan(0);
+    expect(result.attention_items.some((item) => item.kind === "environment_config")).toBe(true);
+  });
 });

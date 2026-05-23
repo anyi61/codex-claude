@@ -32,6 +32,14 @@ vi.mock("../src/claude-cli.js", async () => {
   };
 });
 
+vi.mock("../src/environment-config.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/environment-config.js")>("../src/environment-config.js");
+  return {
+    ...actual,
+    readEnvironmentConfig: vi.fn(),
+  };
+});
+
 function makeIo() {
   return {
     stdout: "",
@@ -1021,5 +1029,245 @@ describe("codex-claude CLI", () => {
     expect(parsed.checks.env_sanitization.passthrough_names).toEqual(["MY_SAFE_VAR"]);
     // Blocked passthrough should NOT make status not_ready
     expect(parsed.status).not.toBe("not_ready");
+  });
+
+  // Environment config doctor tests
+
+  async function setupEnvConfigMock(override: Record<string, unknown> | null | undefined) {
+    const envConfigModule = vi.mocked(await import("../src/environment-config.js"));
+    if (override === undefined) {
+      // File absent
+      envConfigModule.readEnvironmentConfig.mockResolvedValue(null);
+    } else if (override === null) {
+      // Return default (undefined) — simulates real read
+      envConfigModule.readEnvironmentConfig.mockResolvedValue(undefined as any);
+    } else {
+      // Return a custom result
+      const base = {
+        summary: {
+          exists: true,
+          path: "/fake/.codex-claude-delegate/environment.json",
+          ok: true,
+          fields_present: [] as string[],
+          install: false,
+          test: false,
+          start: false,
+          symlink_directories_count: 0,
+          sparse_paths_count: 0,
+          errors: [] as Array<{ field: string; message: string }>,
+          warnings: [] as Array<{ field: string; message: string }>,
+        },
+        _raw: {} as Record<string, unknown> | undefined,
+      };
+      const merged = {
+        summary: { ...base.summary, ...(override.summary ?? {}) },
+        _raw: override._raw ?? base._raw,
+      };
+      envConfigModule.readEnvironmentConfig.mockResolvedValue(merged as any);
+    }
+  }
+
+  it("doctor --json includes environment_config check when file is absent", async () => {
+    await setupDoctorMocks({
+      execCapture: async () => "1.0.0",
+      scanResult: {
+        configPath: "/fake/.codex/config.toml",
+        exists: true,
+        hasAllowRoots: false,
+        allowRootsValue: null,
+        mcpClassification: { origin: "manual", hasCommand: true, hasArgs: true, hasEnv: false },
+        mcpServerKeys: ["command", "enabled_tools"],
+        envKeys: [],
+        mcpCommand: "codex-claude",
+        mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"],
+        mcpToolTimeoutSec: 600,
+      },
+    });
+    await setupEnvConfigMock(undefined);
+
+    const io = makeIo();
+    await runCli(["node", "codex-claude", "doctor", "--json"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+    const parsed = JSON.parse(io.stdout);
+    expect(parsed.checks).toHaveProperty("environment_config");
+    expect(parsed.checks.environment_config.exists).toBe(false);
+    expect(parsed.checks.environment_config.ok).toBe(true);
+  });
+
+  it("doctor --json includes environment_config check when file is present and valid", async () => {
+    await setupDoctorMocks({
+      execCapture: async (cmd, args) => {
+        if (args[0] === "auth") return "logged in";
+        return "1.0.0";
+      },
+      allowRoots: [process.cwd()],
+      scanResult: {
+        configPath: "/fake/.codex/config.toml",
+        exists: true,
+        hasAllowRoots: false,
+        allowRootsValue: null,
+        mcpClassification: { origin: "manual", hasCommand: true, hasArgs: true, hasEnv: false },
+        mcpServerKeys: ["command", "enabled_tools"],
+        envKeys: [],
+        mcpCommand: "codex-claude",
+        mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"],
+        mcpToolTimeoutSec: 600,
+      },
+    });
+    await setupEnvConfigMock({
+      summary: {
+        exists: true,
+        path: "/fake/path",
+        ok: true,
+        fields_present: ["test", "install"],
+        install: true,
+        test: true,
+        start: false,
+        symlink_directories_count: 0,
+        sparse_paths_count: 1,
+        errors: [],
+        warnings: [],
+      },
+    });
+
+    const io = makeIo();
+    await runCli(["node", "codex-claude", "doctor", "--json"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+    const parsed = JSON.parse(io.stdout);
+    expect(parsed.checks.environment_config.exists).toBe(true);
+    expect(parsed.checks.environment_config.ok).toBe(true);
+    expect(parsed.checks.environment_config.fields_present).toContain("test");
+    expect(parsed.checks.environment_config.fields_present).toContain("install");
+    expect(parsed.checks.environment_config.errors).toBe(0);
+    expect(parsed.checks.environment_config.warnings).toBe(0);
+  });
+
+  it("doctor --json includes environment_config with errors when config is invalid", async () => {
+    await setupDoctorMocks({
+      execCapture: async (cmd, args) => {
+        if (args[0] === "auth") return "logged in";
+        return "1.0.0";
+      },
+      allowRoots: [process.cwd()],
+      scanResult: {
+        configPath: "/fake/.codex/config.toml",
+        exists: true,
+        hasAllowRoots: false,
+        allowRootsValue: null,
+        mcpClassification: { origin: "manual", hasCommand: true, hasArgs: true, hasEnv: false },
+        mcpServerKeys: ["command", "enabled_tools"],
+        envKeys: [],
+        mcpCommand: "codex-claude",
+        mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"],
+        mcpToolTimeoutSec: 600,
+      },
+    });
+    await setupEnvConfigMock({
+      summary: {
+        exists: true,
+        path: "/fake/path",
+        ok: false,
+        fields_present: ["install"],
+        install: false,
+        test: false,
+        start: false,
+        symlink_directories_count: 0,
+        sparse_paths_count: 0,
+        errors: [{ field: "install", message: '"install" must not be empty' }],
+        warnings: [],
+      },
+    });
+
+    const io = makeIo();
+    await runCli(["node", "codex-claude", "doctor", "--json"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+    const parsed = JSON.parse(io.stdout);
+    expect(parsed.checks.environment_config.exists).toBe(true);
+    expect(parsed.checks.environment_config.ok).toBe(false);
+    expect(parsed.checks.environment_config.errors).toBeGreaterThan(0);
+    expect(parsed.problems.some((problem: { problem: string }) => problem.problem.includes("Environment config"))).toBe(true);
+    expect(parsed.ready).toBe(false);
+  });
+
+  it("doctor text output shows environment config line when file exists", async () => {
+    await setupDoctorMocks({
+      execCapture: async (cmd, args) => {
+        if (args[0] === "auth") return "logged in";
+        return "1.0.0";
+      },
+      allowRoots: [process.cwd()],
+      scanResult: {
+        configPath: "/fake/.codex/config.toml",
+        exists: true,
+        hasAllowRoots: false,
+        allowRootsValue: null,
+        mcpClassification: { origin: "manual", hasCommand: true, hasArgs: true, hasEnv: false },
+        mcpServerKeys: ["command", "enabled_tools"],
+        envKeys: [],
+        mcpCommand: "codex-claude",
+        mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"],
+        mcpToolTimeoutSec: 600,
+      },
+    });
+    await setupEnvConfigMock({
+      summary: {
+        exists: true,
+        path: "/fake/path",
+        ok: true,
+        fields_present: ["test"],
+        install: false,
+        test: true,
+        start: false,
+        symlink_directories_count: 0,
+        sparse_paths_count: 0,
+        errors: [],
+        warnings: [],
+      },
+    });
+
+    const io = makeIo();
+    await runCli(["node", "codex-claude", "doctor"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+    expect(io.stdout).toContain("Environment config:");
+    expect(io.stdout).toContain("test");
+  });
+
+  it("doctor text output does not show environment config line when file absent", async () => {
+    await setupDoctorMocks({
+      execCapture: async () => "1.0.0",
+      scanResult: {
+        configPath: "/fake/.codex/config.toml",
+        exists: true,
+        hasAllowRoots: false,
+        allowRootsValue: null,
+        mcpClassification: { origin: "manual", hasCommand: true, hasArgs: true, hasEnv: false },
+        mcpServerKeys: ["command", "enabled_tools"],
+        envKeys: [],
+        mcpCommand: "codex-claude",
+        mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"],
+        mcpToolTimeoutSec: 600,
+      },
+    });
+    await setupEnvConfigMock(undefined);
+
+    const io = makeIo();
+    await runCli(["node", "codex-claude", "doctor"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+    expect(io.stdout).not.toContain("Environment config:");
   });
 });
