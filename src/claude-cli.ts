@@ -1010,6 +1010,54 @@ async function expandDirectoryChange(
   return expanded.sort((a, b) => a.file.localeCompare(b.file));
 }
 
+async function collectSubmodulePaths(worktreeRoot: string, baseCommit?: string): Promise<string[]> {
+  const submodules = new Set<string>();
+
+  const addLsTreeGitlinks = async (ref: string): Promise<void> => {
+    const output = await execCapture(
+      "git",
+      ["ls-tree", "-r", "-z", ref],
+      { cwd: worktreeRoot, timeoutMs: 10000 }
+    ).catch(() => "");
+    for (const entry of output.split("\0")) {
+      if (!entry) continue;
+      const tabIndex = entry.indexOf("\t");
+      if (tabIndex < 0) continue;
+      const mode = entry.slice(0, tabIndex).split(" ")[0];
+      const file = entry.slice(tabIndex + 1);
+      if (mode === "160000" && file) submodules.add(file);
+    }
+  };
+
+  await addLsTreeGitlinks("HEAD");
+  if (baseCommit && baseCommit !== "HEAD") {
+    await addLsTreeGitlinks(baseCommit);
+  }
+
+  const indexOutput = await execCapture(
+    "git",
+    ["ls-files", "--stage", "-z"],
+    { cwd: worktreeRoot, timeoutMs: 10000 }
+  ).catch(() => "");
+  for (const entry of indexOutput.split("\0")) {
+    if (!entry) continue;
+    const tabIndex = entry.indexOf("\t");
+    if (tabIndex < 0) continue;
+    const mode = entry.slice(0, tabIndex).split(" ")[0];
+    const file = entry.slice(tabIndex + 1);
+    if (mode === "160000" && file) submodules.add(file);
+  }
+
+  return [...submodules].sort((a, b) => a.localeCompare(b));
+}
+
+function containingSubmodule(file: string, submodulePaths: readonly string[]): string | null {
+  for (const submodule of submodulePaths) {
+    if (file === submodule || file.startsWith(`${submodule}/`)) return submodule;
+  }
+  return null;
+}
+
 async function collectIgnoredChanges(worktreeRoot: string): Promise<ApplyIgnoredChange[]> {
   const rawIgnored = await execCapture(
     "git",
@@ -2150,8 +2198,13 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   for (const change of parseNameStatusPorcelainZ(uncommittedStatus)) addChange(change);
   for (const change of parseStatusPorcelainZ(untrackedStatus)) addChange(change);
 
+  const submodulePaths = await collectSubmodulePaths(wtReal, baseCommit);
   const changes = (await Promise.all(
-    [...changesByFile.values()].map((change) => expandDirectoryChange(change, wtReal))
+    [...changesByFile.values()].map((change) =>
+      containingSubmodule(change.file, submodulePaths) === null
+        ? expandDirectoryChange(change, wtReal)
+        : Promise.resolve([change])
+    )
   ))
     .flat()
     .sort((a, b) => a.file.localeCompare(b.file));
@@ -2204,6 +2257,15 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   const validStatuses = new Set(["A", "M", "D"]);
 
   for (const c of changes) {
+    const submodule = containingSubmodule(c.file, submodulePaths);
+    if (submodule !== null) {
+      conflicts.push(
+        c.file === submodule
+          ? `${c.file}: is a submodule (gitlink); submodule write/apply is not supported`
+          : `${c.file}: lies inside submodule "${submodule}"; submodule write/apply is not supported`
+      );
+      continue;
+    }
     if (!validStatuses.has(c.status)) {
       conflicts.push(`${c.file}: unsupported status "${c.status}" (only A/M/D supported)`);
       continue;

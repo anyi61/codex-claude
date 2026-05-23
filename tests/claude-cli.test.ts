@@ -5095,6 +5095,123 @@ describe("runClaudeApply — nested delegated worktree path detection", () => {
   });
 });
 
+async function createRepoWithSubmoduleFixture(prefix: string): Promise<{
+  repo: string;
+  subRepo: string;
+  logDir: string;
+  worktreeRel: string;
+  worktree: string;
+  baseCommit: string;
+}> {
+  const root = await mkdtemp(path.join(os.tmpdir(), prefix));
+  cleanupPaths.push(root);
+  const subRepo = path.join(root, "sub");
+  await mkdir(subRepo, { recursive: true });
+  sh(root, "git", "init", subRepo);
+  sh(subRepo, "git", "config", "user.name", "Test User");
+  sh(subRepo, "git", "config", "user.email", "test@example.com");
+  await writeFile(path.join(subRepo, "sub-file.txt"), "sub content\n");
+  sh(subRepo, "git", "add", ".");
+  sh(subRepo, "git", "commit", "-m", "init sub");
+
+  const repo = path.join(root, "repo");
+  const logDir = path.join(root, "runs");
+  await mkdir(repo, { recursive: true });
+  await mkdir(logDir, { recursive: true });
+  sh(root, "git", "init", repo);
+  sh(repo, "git", "config", "user.name", "Test User");
+  sh(repo, "git", "config", "user.email", "test@example.com");
+  await writeFile(path.join(repo, "README.md"), "# main\n");
+  sh(repo, "git", "add", ".");
+  sh(repo, "git", "commit", "-m", "init");
+  sh(repo, "git", "-c", "protocol.file.allow=always", "submodule", "add", subRepo, "my-sub");
+  sh(repo, "git", "add", ".");
+  sh(repo, "git", "commit", "-m", "add submodule");
+
+  const worktreeRel = path.join(".claude", "worktrees", `codex-delegated-${prefix.replace(/[^a-z0-9-]/gi, "")}`);
+  sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+  const worktree = path.join(repo, worktreeRel);
+  const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+  return { repo, subRepo, logDir, worktreeRel, worktree, baseCommit };
+}
+
+async function writeApplyLog(logDir: string, filename: string, worktreeRel: string, baseCommit: string, changedFiles: string[]): Promise<void> {
+  await writeFile(path.join(logDir, filename), JSON.stringify({
+    type: "implement",
+    observed: {
+      worktree_path: worktreeRel,
+      base_commit: baseCommit,
+      changed_files: changedFiles,
+      scope: { requested_files: undefined, out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+      resource_limits: { actual_changed_files: changedFiles.length, changed_files_exceeded: false, warnings: [] },
+    },
+  }));
+}
+
+describe("runClaudeApply — submodule/gitlink detection", () => {
+  it("preview refuses a modified submodule gitlink", async () => {
+    const { repo, logDir, worktreeRel, worktree, baseCommit } = await createRepoWithSubmoduleFixture("codex-apply-submodule-gitlink-");
+    sh(worktree, "git", "-c", "protocol.file.allow=always", "submodule", "update", "--init", "my-sub");
+    sh(path.join(worktree, "my-sub"), "git", "config", "user.name", "Test User");
+    sh(path.join(worktree, "my-sub"), "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(worktree, "my-sub", "new-file.txt"), "new\n");
+    sh(path.join(worktree, "my-sub"), "git", "add", ".");
+    sh(path.join(worktree, "my-sub"), "git", "commit", "-m", "update submodule");
+    sh(worktree, "git", "add", "my-sub");
+    await writeApplyLog(logDir, "implement-submodule.json", worktreeRel, baseCommit, ["my-sub"]);
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "run-submodule");
+
+    expect(preview.error).toContain("apply refused");
+    expect(preview.conflicts).toEqual([
+      "my-sub: is a submodule (gitlink); submodule write/apply is not supported",
+    ]);
+    expect(preview.planned_changes).toEqual([{ status: "M", file: "my-sub" }]);
+    expect(preview.applied_files).toEqual([]);
+  });
+
+  it("preview refuses a change inside a submodule path", async () => {
+    const { repo, logDir, worktreeRel, worktree, baseCommit } = await createRepoWithSubmoduleFixture("codex-apply-submodule-inner-");
+    sh(worktree, "git", "-c", "protocol.file.allow=always", "submodule", "update", "--init", "my-sub");
+    sh(worktree, "git", "rm", "--cached", "my-sub");
+    await rm(path.join(worktree, "my-sub", ".git"), { recursive: true, force: true });
+    await writeFile(path.join(worktree, "my-sub", "inner-file.txt"), "inner\n");
+    sh(worktree, "git", "add", "my-sub/inner-file.txt");
+    await writeApplyLog(logDir, "implement-submodule-inner.json", worktreeRel, baseCommit, ["my-sub/inner-file.txt"]);
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "run-submodule-inner");
+
+    expect(preview.error).toContain("apply refused");
+    expect(preview.conflicts).toEqual([
+      "my-sub/inner-file.txt: lies inside submodule \"my-sub\"; submodule write/apply is not supported",
+    ]);
+    expect(preview.applied_files).toEqual([]);
+  });
+
+  it("normal file changes in a repo with a submodule still preview successfully", async () => {
+    const { repo, logDir, worktreeRel, worktree, baseCommit } = await createRepoWithSubmoduleFixture("codex-apply-submodule-normal-");
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+    await writeApplyLog(logDir, "implement-submodule-normal.json", worktreeRel, baseCommit, ["README.md"]);
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "run-submodule-normal");
+
+    expect(preview.error).toBeUndefined();
+    expect(preview.preview).toBe(true);
+    expect(preview.planned_changes).toEqual([{ status: "M", file: "README.md" }]);
+    expect(preview.applied_files).toEqual([]);
+  });
+});
+
 describe("runClaudeImplement — permission_denials warnings", () => {
   it("records passed server verification", async () => {
     const { repo } = await createGitRepoFixture("codex-server-verify-pass-");
