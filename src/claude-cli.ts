@@ -1,4 +1,4 @@
-import { writeFile, mkdir, readFile, readdir, stat, unlink } from "node:fs/promises";
+import { writeFile, mkdir, readFile, readdir, stat, lstat, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { randomUUID, createHash } from "node:crypto";
 import path from "node:path";
@@ -1025,10 +1025,13 @@ async function expandDirectoryChange(
   const sourcePath = path.join(worktreeRoot, change.file);
   let sourceStat;
   try {
-    sourceStat = await stat(sourcePath);
+    sourceStat = await lstat(sourcePath);
   } catch {
     return [change];
   }
+  // Symlink-to-directory: keep the symlink as the planned change so the preflight
+  // symlink detector refuses it; do not expand into child regular files.
+  if (sourceStat.isSymbolicLink()) return [change];
   if (!sourceStat.isDirectory()) return [change];
 
   const expanded: Array<{ status: string; file: string; old_file?: string }> = [];
@@ -1037,6 +1040,13 @@ async function expandDirectoryChange(
     const entries = await readdir(dirPath, { withFileTypes: true });
     for (const entry of entries) {
       const childRelative = path.join(relativeDir, entry.name);
+      if (entry.isSymbolicLink()) {
+        expanded.push({
+          status: change.status,
+          file: normalizeRepoPath(worktreeRoot, childRelative),
+        });
+        continue;
+      }
       if (entry.isDirectory()) {
         await walk(childRelative);
       } else if (entry.isFile()) {
@@ -2448,6 +2458,73 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
           conflicts.push(`${checkFile}: main workspace has uncommitted changes (${shortStat.trim().slice(0, 80)})`);
         }
       } catch {}
+    }
+  }
+
+  // Track files already flagged in the first preflight pass to avoid
+  // adding redundant conflicts from symlink/mode detectors.
+  const conflictFiles = new Set(
+    conflicts.map((c) => {
+      const colonIdx = c.indexOf(":");
+      return colonIdx >= 0 ? c.slice(0, colonIdx) : c;
+    })
+  );
+
+  // Detect symlink destination files; symlink writes are not supported.
+  // Use lstat to avoid following symlinks; only check files that exist in the worktree.
+  for (const c of changes) {
+    if (c.status === "D") continue;
+    if (conflictFiles.has(c.file)) continue;
+    const symlinkPath = path.join(wtReal, c.file);
+    try {
+      const lst = await lstat(symlinkPath);
+      if (lst.isSymbolicLink()) {
+        conflicts.push(`${c.file}: symlink writes are not supported`);
+        conflictFiles.add(c.file);
+      }
+    } catch {
+      // file doesn't exist — will be caught by transaction apply
+    }
+  }
+
+  // Detect file mode (chmod) changes by parsing git diff --raw mode differences.
+  // One call per diff source, not one command per file.
+  const modeChangePaths = new Set<string>();
+  const parseRawModeChanges = (raw: string): void => {
+    for (const line of raw.split("\n")) {
+      if (!line.startsWith(":")) continue;
+      const tabIdx = line.indexOf("\t");
+      if (tabIdx < 0) continue;
+      const meta = line.slice(0, tabIdx);
+      const afterTabs = line.slice(tabIdx + 1);
+      const parts = afterTabs.split("\t");
+      const file = parts[parts.length - 1];
+      if (!file) continue;
+      const metaParts = meta.slice(1).split(" ");
+      if (metaParts.length < 5) continue;
+      const oldMode = metaParts[0];
+      const newMode = metaParts[1];
+      const rawStatus = metaParts[4];
+      if (rawStatus !== "M") continue;
+      if (oldMode !== newMode) {
+        modeChangePaths.add(file);
+      }
+    }
+  };
+
+  const [rawDiffTracked, rawDiffStaged, rawDiffUncommitted] = await Promise.all([
+    execCapture("git", ["diff", "--raw", baseCommit, "HEAD", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
+    execCapture("git", ["diff", "--raw", "--cached", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
+    execCapture("git", ["diff", "--raw", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
+  ]);
+  parseRawModeChanges(rawDiffTracked);
+  parseRawModeChanges(rawDiffStaged);
+  parseRawModeChanges(rawDiffUncommitted);
+
+  for (const c of changes) {
+    if (modeChangePaths.has(c.file) && !conflictFiles.has(c.file)) {
+      conflicts.push(`${c.file}: file mode change is not supported`);
+      conflictFiles.add(c.file);
     }
   }
 

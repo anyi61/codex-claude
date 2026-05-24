@@ -1,5 +1,5 @@
-import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtemp, mkdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
@@ -5871,6 +5871,262 @@ describe("runClaudeApply — rename/copy detection", () => {
     // With only new.txt in scope, the rename should be filtered out (old.txt not in scope)
     expect(preview.error).toContain("No changed files found");
     expect(preview.planned_changes).toEqual([]);
+  });
+});
+
+describe("runClaudeApply — symlink and mode change refusal", () => {
+  const symlinksAvailable = (() => {
+    try {
+      const tmp = os.tmpdir();
+      const testLink = path.join(tmp, `.codex-symlink-test-${process.pid}`);
+      symlinkSync("/tmp", testLink);
+      unlinkSync(testLink);
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+
+  const skipIfNoSymlinks = symlinksAvailable ? it : it.skip;
+
+  skipIfNoSymlinks("preview refuses symlink add with clear conflict", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-symlink-add-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-symlink-add";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+    // Create a symlink in the worktree as a new file
+    await symlink(path.join(worktree, "README.md"), path.join(worktree, "link-to-readme"));
+    sh(worktree, "git", "add", "link-to-readme");
+
+    await writeApplyLog(logDir, "implement-symlink-add.json", worktreeRel, baseCommit, ["link-to-readme"]);
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "run-symlink-add");
+
+    expect(preview.error).toContain("apply refused");
+    expect(preview.conflicts).toContain("link-to-readme: symlink writes are not supported");
+    expect(preview.applied_files).toEqual([]);
+    // Main workspace must be unchanged
+    expect(await readFile(path.join(repo, "README.md"), "utf8")).toBe("# main\n");
+  });
+
+  skipIfNoSymlinks("non-preview apply with preview_token refuses symlink and leaves main workspace unchanged", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-symlink-nonpreview-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const logDir = path.join(stateDir, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# original\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-symlink-np";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+    await symlink(path.join(worktree, "README.md"), path.join(worktree, "link-md"));
+    sh(worktree, "git", "add", "link-md");
+
+    // Also add a normal file change to get a valid preview_token
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+
+    await writeApplyLog(logDir, "implement-symlink-np.json", worktreeRel, baseCommit, ["link-md", "README.md"]);
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+
+    // Preview will be refused because of the symlink, but we can still attempt
+    // non-preview apply. The preflight checks must refuse it before mutation.
+    const result = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      confirmed_by_user: true,
+      preview_token: "0000000000000000000000000000000000000000000000000000000000000000",
+    }, "apply-symlink-np");
+
+    expect(result.error).toContain("apply refused");
+    expect(result.conflicts).toContain("link-md: symlink writes are not supported");
+    expect(result.applied_files).toEqual([]);
+    // Main workspace must be unchanged
+    expect(await readFile(path.join(repo, "README.md"), "utf8")).toBe("# original\n");
+  });
+
+  skipIfNoSymlinks("symlink-to-directory is not expanded into children and is refused as symlink", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-symlink-dir-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+
+    // Create a real directory with a child file
+    await mkdir(path.join(repo, "real-dir"), { recursive: true });
+    await writeFile(path.join(repo, "real-dir", "child.txt"), "child content\n");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-symlink-dir";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+    // Create a symlink to the real-dir (appears as new directory in worktree)
+    await symlink(path.join(worktree, "real-dir"), path.join(worktree, "link-dir"));
+    sh(worktree, "git", "add", "link-dir");
+
+    await writeApplyLog(logDir, "implement-symlink-dir.json", worktreeRel, baseCommit, ["link-dir"]);
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "run-symlink-dir");
+
+    expect(preview.error).toContain("apply refused");
+    expect(preview.conflicts).toContain("link-dir: symlink writes are not supported");
+    // The symlink dir should NOT have been expanded into child files (link-dir/child.txt)
+    const childPlanned = preview.planned_changes.filter((c: { file: string }) => c.file.startsWith("link-dir/"));
+    expect(childPlanned).toEqual([]);
+  });
+
+  it("preview refuses chmod/mode-only change with clear conflict", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-chmod-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "script.sh"), "#!/bin/sh\necho hi\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-chmod";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+    // Change mode only (no content change)
+    sh(worktree, "chmod", "+x", "script.sh");
+    sh(worktree, "git", "add", "script.sh");
+
+    await writeApplyLog(logDir, "implement-chmod.json", worktreeRel, baseCommit, ["script.sh"]);
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "run-chmod");
+
+    expect(preview.error).toContain("apply refused");
+    expect(preview.conflicts).toContain("script.sh: file mode change is not supported");
+    expect(preview.applied_files).toEqual([]);
+  });
+
+  skipIfNoSymlinks("file -> symlink type change is refused with unsupported status T", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-type-swap-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "regular-file"), "some content\n");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-type-swap";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+
+    // Replace regular file with symlink — git diff --name-status shows "T" for this
+    sh(worktree, "git", "rm", "regular-file");
+    await symlink("/dev/null", path.join(worktree, "regular-file"));
+    sh(worktree, "git", "add", "regular-file");
+    sh(worktree, "git", "commit", "-m", "file to symlink type change");
+    const baseCommitForType = sh(worktree, "git", "rev-parse", "HEAD~1");
+
+    await writeApplyLog(logDir, "implement-type-swap.json", worktreeRel, baseCommitForType, ["regular-file"]);
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "run-type-swap");
+
+    expect(preview.error).toContain("apply refused");
+    const hasUnsupported = preview.conflicts.some((c: string) =>
+      c.includes("regular-file") && c.includes("unsupported status")
+    );
+    expect(hasUnsupported).toBe(true);
+    expect(preview.applied_files).toEqual([]);
+  });
+
+  it("ordinary regular file apply still succeeds with preview_token", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-ordinary-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const logDir = path.join(stateDir, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# original\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-ordinary";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+
+    await writeApplyLog(logDir, "implement-ordinary.json", worktreeRel, baseCommit, ["README.md"]);
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+
+    const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "preview-ordinary");
+    expect(preview.preview_token).toBeTruthy();
+    expect(preview.planned_changes).toEqual([{ status: "M", file: "README.md" }]);
+    expect(preview.error).toBeUndefined();
+
+    const result = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      confirmed_by_user: true,
+      preview_token: preview.preview_token,
+    }, "apply-ordinary");
+
+    expect(result.error).toBeUndefined();
+    expect(result.applied_files).toEqual(["README.md"]);
+    expect(await readFile(path.join(repo, "README.md"), "utf8")).toBe("# changed\n");
   });
 });
 

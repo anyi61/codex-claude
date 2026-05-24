@@ -355,6 +355,7 @@ npm run check:plugin
 | `preview_token` 不匹配 | worktree 内容在预览和 apply 之间发生了变化。重新调用 `claude_apply(preview=true)` 获取新 token |
 | `preview=true` + `cleanup=true` | 拆分为预览和已确认的应用+清理两步 |
 | 残留 worktree | `claude_cleanup(cwd="...", dry_run=true)` 然后 `dry_run=false` |
+| apply 被拒：symlink 写入 | symlink 写入、模式(chmod)变更和文件/目录类型互换不受支持。apply 会拒绝这些变更并报告具体冲突 |
 | 旧 job/run log 状态产物 | `codex-claude cleanup-artifacts` 预览后再加 `--execute` |
 
 ## 卸载
