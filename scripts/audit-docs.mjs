@@ -5,8 +5,6 @@ import path from "node:path";
 const root = process.cwd();
 const checkedRoots = [
   "README.md",
-  "docs/development-overview.md",
-  "docs/onboarding-plan.md",
   "docs/uninstall-execution-checklist.md",
   "docs/product",
   "plugins/codex-claude-delegate/skills",

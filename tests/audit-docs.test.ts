@@ -31,8 +31,6 @@ const validReadme = [
 ].join("\n");
 
 const placeholderDocs = [
-  "docs/development-overview.md",
-  "docs/onboarding-plan.md",
   "docs/uninstall-execution-checklist.md",
 ];
 
