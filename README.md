@@ -57,6 +57,7 @@ One Message To Codex：
 - **审查门禁** — 可选的 stop-hook，在终端状态转换前提示审查
 - **敏感文件保护** — `sensitive_file_policy` 控制 `.env`、secrets、SSH 密钥等敏感文件的读取 deny 规则（default/strict/off）
 - **Server-side verification** — `verification_commands` 让 server 在 delegated worktree 中独立运行受控验证命令
+- **产物索引 (Artifact Index)** — `.codex-claude-delegate/artifacts/artifacts.json` 记录 patch 和 verification 产物的元数据（路径/SHA-256/字节数/时间戳/敏感度）。仅存储元数据，高敏感度输出通过文件路径引用，不内嵌内容。`claude_result` 和 `claude_workspace_status` 返回安全的聚合摘要（条目数、类型/敏感度计数、最新时间戳）。
 
 ## 安装
 
@@ -128,7 +129,7 @@ codex-claude print-config --project
 
 ### 清理本地状态产物
 
-预览或清理本工具维护的 terminal background job records 和旧 run logs：
+预览或清理本工具维护的 terminal background job records、旧 run logs 和过期产物索引条目：
 
 ```bash
 codex-claude cleanup-artifacts
@@ -136,7 +137,7 @@ codex-claude cleanup-artifacts --dry-run --older-than-hours 24 --limit 50
 codex-claude cleanup-artifacts --execute
 ```
 
-`cleanup-artifacts` 默认是 dry-run。只有传入 `--execute` 才会删除已结束的 job records 和匹配保留窗口的 run logs。它不会删除 delegated worktree；worktree 仍使用 `claude_cleanup(cwd="...", dry_run=true)` 预览，再用 `dry_run=false` 清理。
+`cleanup-artifacts` 默认是 dry-run。只有传入 `--execute` 才会删除已结束的 job records、匹配保留窗口的 run logs，以及过期的产物索引条目及其引用的文件（仅限 `.codex-claude-delegate/artifacts/` 和 `.codex-claude-delegate/apply-backups/` 内的文件）。它不会删除 delegated worktree；worktree 仍使用 `claude_cleanup(cwd="...", dry_run=true)` 预览，再用 `dry_run=false` 清理。
 
 ## 默认工具集
 
@@ -249,7 +250,7 @@ enabled_tools = [
 - **`mode_inference` 返回字段：** `claude_task` 结果包含可选的 `mode_inference` 对象，记录自动模式推断详情。字段：`requested_mode`（原始请求 mode）、`delegated_mode`（最终 read/review/write）、`reason`（推断原因，如 `write_hints`/`review_hints`/`read_hints`/`query_prefix_override`/`diff`/`constraints`/`explicit`/`files_fallback`/`default_read`）、`confidence`（`high`/`medium`/`low`）、`matched_hints`（命中的关键词数组，如 `["修复"]`）。支持中文/混合语言关键词自动路由。旧客户端可忽略此字段。
 - **安全 profile：** 写入任务默认使用 `security_profile="default"`，不允许 `npx *` 这类远程包执行路径。`strict` 更收窄；只有在明确需要并理解风险时才使用 `permissive`，它会恢复更宽的本地命令 allowlist。
 - **敏感文件保护：** `sensitive_file_policy` 控制 Read/Grep/Glob 和 Bash 读取命令（cat/head/tail/grep）对敏感文件的 deny 规则。`default`（默认）阻止根目录或子目录中的 `.env`/`.env.*` 以及 `secrets/**`；`strict` 额外阻止 `**/*.pem`/`**/*.key`/`**/*.p12`/`**/*.pfx`、`**/id_rsa*`/`**/id_ed25519*`/`**/id_ecdsa*`、`.aws`/`.ssh`/`.gnupg`/`.kube`/`.docker`、`.netrc`/`.npmrc`/`.pypirc`、`credentials*`/`credential*`；`off` 移除所有敏感文件 deny 规则，但保留 `rm *`/`sudo *` 等危险 Bash 命令的 deny。此字段适用于 `claude_task`、`claude_query`、`claude_review`、`claude_implement`。
-- **Server-side verification：** `verification_commands` 适用于 `claude_task` 写入模式和 `claude_implement`。Claude 完成后，server 会在 delegated worktree 内按顺序运行受控验证命令，并在返回体/run log 中写入 `server_verified`。命令会被解析为 argv 且不经过 shell；只允许测试/类型检查/lint 类命令族，例如 `npm test`、`npm run <script>`、`npx vitest ...`、`npx tsc ...`、`pytest ...`、`go test ...`、`cargo test ...`。验证失败会把原本的 success 降为 partial，但不会自动 apply 或清理 worktree。
+- **Server-side verification：** `verification_commands` 适用于 `claude_task` 写入模式和 `claude_implement`。Claude 完成后，server 会在 delegated worktree 内按顺序运行受控验证命令，并在返回体/run log 中写入 `server_verified`。命令会被解析为 argv 且不经过 shell；只允许测试/类型检查/lint 类命令族，例如 `npm test`、`npm run <script>`、`npx vitest ...`、`npx tsc ...`、`pytest ...`、`go test ...`、`cargo test ...`。验证失败会把原本的 success 降为 partial，但不会自动 apply 或清理 worktree。验证的 stdout/stderr tails 会被写入 `.codex-claude-delegate/artifacts/verification/<runId>/` 并在产物索引中注册为高敏感度条目。
 - **instruction_files vs `files`：** 对普通 `claude_task`，计划、清单、规格文档必须放在 `instruction_files`，或直接在 `task` 中提到。`claude_task.files` 已废弃，只作为兼容的上下文文件处理，不是 apply 范围限制。
 - **`allowed_files`：** 在 `claude_task` 写入模式中，`allowed_files` 定义硬文件范围——只有列表中的文件可以被修改。超出范围的文件变更会被 scope checker 拒绝。读取/审查模式下 `allowed_files` 会被静默忽略。`allowed_files` 和 `max_changed_files` 会透传到底层 `claude_implement`。
 - **`claude_implement.files`** 是严格的范围控制，用于需要精确文件约束的场景。`claude_task.allowed_files` 和 `claude_implement.files` 语义相同。

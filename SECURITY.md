@@ -254,6 +254,15 @@ yarn add/remove, pnpm add/remove
 
 ### 第 5 层：输出脱敏 — 日志里如何保护敏感信息
 
+#### 产物索引 (Artifact Index)
+
+`.codex-claude-delegate/artifacts/artifacts.json` 是一个机器可读的产物元数据索引，记录由 `claude_apply`（patch）和 server-side verification 产生的文件。**该索引仅存储元数据**（文件路径、SHA-256、字节数、时间戳、生产者、敏感度等级）——绝不嵌入 patch 内容或验证 stdout/stderr 内容。
+
+- **敏感度等级：** `safe`（patch）、`high`（verification stdout/stderr tails）。高敏感度文件的内容通过路径引用，从不内嵌在索引中。
+- **安全摘要：** `claude_result` 和 `claude_workspace_status` 仅暴露聚合计数（条目数、按类型/敏感度分类计数、最新时间戳），不暴露逐条路径或哈希值。
+- **清理范围：** 产物索引的 prune 逻辑仅在 `.codex-claude-delegate/artifacts/` 和 `.codex-claude-delegate/apply-backups/` 内删除文件，绝不删除这些目录之外的文件。
+- **容错：** 索引读写、文件哈希、文件状态等失败不会导致父工作流崩溃——改为跳过索引条目或返回警告。
+
 #### 错误消息路径脱敏
 
 `safeErrorMessage()` (`src/schema.ts:911`) 从返回给 MCP 客户端的错误消息中移除绝对文件系统路径：

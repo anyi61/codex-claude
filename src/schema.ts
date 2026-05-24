@@ -1,6 +1,7 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { EnvironmentConfigSummary } from "./environment-config.js";
+import type { ArtifactIndexSummary } from "./artifact-index.js";
 
 // ---- Environment diagnostics types ----
 
@@ -251,6 +252,7 @@ export interface ClaudeResultResult {
   };
   do_not_start_duplicate_job?: boolean;
   next_actions: WorkflowNextAction[];
+  artifact_summary?: ArtifactIndexSummary;
 }
 
 export interface ClaudeWorkspaceStatusInput {
@@ -317,6 +319,7 @@ export interface ClaudeWorkspaceStatusResult {
   next_actions?: WorkflowNextAction[];
   attention_items: WorkspaceAttentionItem[];
   environment_config?: EnvironmentConfigSummary;
+  artifact_summary?: ArtifactIndexSummary;
 }
 
 export interface ReviewGateState {

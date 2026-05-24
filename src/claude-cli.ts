@@ -153,6 +153,7 @@ export const __test = backgroundJobsTestState;
 import { getStore, resolveWorkflowSessionSummary, buildNextActions, getClaudeResult } from "./workflow-results.js";
 export { getClaudeResult, getWorkspaceStatus } from "./workflow-results.js";
 import { runVerificationCommands, buildVerificationWarnings, type VerificationOptions } from "./verification.js";
+import { registerPatchArtifact, registerVerificationArtifacts, pruneArtifactIndex } from "./artifact-index.js";
 
 const getBackgroundStateDir = getBackgroundStateDirCore;
 const getJobStore = getJobStoreCore;
@@ -879,6 +880,18 @@ export interface DelegateArtifactCleanupResult {
       error?: string;
     }>;
   };
+  artifact_index?: {
+    dry_run: boolean;
+    matched_count: number;
+    removed_count: number;
+    failed_count: number;
+    entries: Array<{
+      entry_path: string;
+      disk_path: string;
+      removed: boolean;
+      error?: string;
+    }>;
+  };
 }
 
 export async function cleanupDelegateArtifacts(
@@ -951,6 +964,11 @@ export async function cleanupDelegateArtifacts(
       failed_count: failedCount,
       entries,
     },
+    artifact_index: await pruneArtifactIndex(input.cwd, {
+      older_than_hours: input.older_than_hours,
+      dry_run: input.dry_run,
+      limit: input.limit,
+    }),
   };
 }
 
@@ -2045,6 +2063,11 @@ export async function runClaudeImplement(
       verificationOpts,
     );
     log(`Server-side verification: ${serverVerified?.status ?? "skipped"}`);
+
+    // Register verification artifacts in index (non-blocking)
+    if (serverVerified && serverVerified.commands.length > 0) {
+      registerVerificationArtifacts(implementInput.cwd, runId, serverVerified.commands).catch(() => {});
+    }
   }
 
   const sessionLog: SessionLog = {
@@ -2733,6 +2756,11 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
         patchResult.untracked_not_in_patch = true;
       }
     }
+  }
+
+  // Register patch artifact in index (non-blocking, warn on failure)
+  if (input.include_patch === true) {
+    registerPatchArtifact(input.cwd, runId, patchResult).catch(() => {});
   }
 
   if (input.preview) {

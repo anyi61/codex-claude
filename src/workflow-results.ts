@@ -29,6 +29,7 @@ import type { GenericRunLog } from "./run-logs.js";
 
 import { getBackgroundJobResult, listBackgroundJobs } from "./background-jobs.js";
 import { readEnvironmentConfig } from "./environment-config.js";
+import { getArtifactSummary } from "./artifact-index.js";
 
 // ---- Session store (cwd-scoped, lazy init) ----
 
@@ -299,6 +300,7 @@ export async function getClaudeResult(input: ClaudeResultInput): Promise<ClaudeR
   const session = await resolveWorkflowSessionSummary({ cwd: input.cwd, run: runEntry });
   const summary = resolvedJob?.summary ?? (runEntry ? buildResultSummaryFromRun(runEntry) : "Background job resolved");
   const jobIsActive = resolvedJob?.status === "queued" || resolvedJob?.status === "running";
+  const artifactSummary = await getArtifactSummary(input.cwd);
 
   return {
     source_type: resolvedJob ? "job" : "run",
@@ -317,6 +319,7 @@ export async function getClaudeResult(input: ClaudeResultInput): Promise<ClaudeR
       session,
       change_count: changeCount,
     }),
+    artifact_summary: artifactSummary ?? undefined,
   };
 }
 
@@ -467,6 +470,8 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
     });
   }
 
+  const artifactSummary = await getArtifactSummary(input.cwd);
+
   return {
     workspace_root: input.cwd,
     running_jobs: runningJobs.entries,
@@ -495,5 +500,6 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
     next_actions: workspaceNextActions.length > 0 ? workspaceNextActions : crashedNextActions.length > 0 ? crashedNextActions : undefined,
     attention_items: attentionItems,
     environment_config: environmentConfig,
+    artifact_summary: artifactSummary ?? undefined,
   };
 }
