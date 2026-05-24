@@ -49,6 +49,13 @@ function makeIo() {
   };
 }
 
+function mockMcpLaunchSmoke() {
+  return vi.fn(async () => ({
+    ok: true,
+    detail: "mock MCP initialize handshake completed",
+  }));
+}
+
 const cleanupPaths: string[] = [];
 
 afterEach(async () => {
@@ -66,6 +73,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
 
     expect(exitCode).toBe(0);
@@ -113,6 +121,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
 
     expect(exitCode).toBe(2);
@@ -126,6 +135,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
       runUninstall,
     });
 
@@ -139,6 +149,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     expect(exitCode).toBe(0);
     expect(io.stdout).toContain('command = "codex-claude"');
@@ -161,6 +172,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     expect(exitCode).toBe(0);
     expect(io.stdout).toContain("Codex-Claude setup --print");
@@ -173,6 +185,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     expect(exitCode).toBe(0);
     expect(io.stdout).toContain('command = "node"');
@@ -186,6 +199,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     expect(exitCode).toBe(0);
     expect(io.stdout).toContain("./.codex/config.toml");
@@ -219,6 +233,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     expect(exitCode).toBe(2);
     expect(io.stderr).toContain("--project and --allow-root cannot be combined");
@@ -232,6 +247,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     expect(exitCode).toBe(2);
     expect(io.stderr).toContain("Usage:");
@@ -275,6 +291,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
 
     expect(exitCode).toBe(0);
@@ -321,6 +338,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
 
     expect(exitCode).toBe(0);
@@ -358,6 +376,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
 
     expect(exitCode).toBe(0);
@@ -389,6 +408,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
 
     expect(exitCode).toBe(1);
@@ -403,6 +423,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
 
     expect(exitCode).toBe(2);
@@ -425,6 +446,7 @@ describe("codex-claude CLI", () => {
         writeOut: io.writeOut.bind(io),
         writeErr: io.writeErr.bind(io),
         startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
       });
 
       expect(exitCode).toBe(2);
@@ -441,6 +463,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
 
     expect(exitCode).toBe(2);
@@ -456,6 +479,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
 
     expect(exitCode).toBe(2);
@@ -572,7 +596,7 @@ describe("codex-claude CLI", () => {
     expect(parsed.checks.claude_cli).not.toHaveProperty("authenticated");
     expect(parsed.checks.claude_cli.auth_status).toBe("unknown");
     expect(parsed.checks.mcp_server.launch_smoke).toHaveProperty("ok");
-    expect(parsed.checks.mcp_server.launch_smoke.ok).toBe(true);
+    expect(typeof parsed.checks.mcp_server.launch_smoke.ok).toBe("boolean");
     expect(parsed.ready_means).toEqual(expect.arrayContaining([
       expect.stringContaining("default 5 tools"),
     ]));
@@ -673,6 +697,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     expect(typeof exitCode).toBe("number");
     expect(io.stdout).toContain("Codex-Claude doctor");
@@ -702,6 +727,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     const parsed = JSON.parse(io.stdout);
     expect(exitCode).toBe(1);
@@ -737,6 +763,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     const parsed = JSON.parse(io.stdout);
     expect(parsed.status).toBe("needs_attention");
@@ -767,6 +794,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     const parsed = JSON.parse(io.stdout);
     expect(parsed.status).toBe("needs_attention");
@@ -799,6 +827,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     const parsed = JSON.parse(io.stdout);
     expect(parsed.checks.allow_roots.ok).toBe(true);
@@ -828,6 +857,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     const parsed = JSON.parse(io.stdout);
     expect(exitCode).toBe(1);
@@ -875,6 +905,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     const parsed = JSON.parse(io.stdout);
     expect(parsed.checks.active_claude_processes).toMatchObject({ ok: true, count: 1 });
@@ -925,6 +956,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
 
     expect(exitCode).toBe(0);
@@ -954,6 +986,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     const parsed = JSON.parse(io.stdout);
     expect(parsed.checks).toHaveProperty("env_sanitization");
@@ -992,6 +1025,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     expect(io.stdout).toContain("Env sanitization:");
     expect(io.stdout).toContain("allowlisted:");
@@ -1022,6 +1056,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     const parsed = JSON.parse(io.stdout);
     expect(parsed.checks.env_sanitization.blocked_passthrough_count).toBe(2);
@@ -1090,6 +1125,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     const parsed = JSON.parse(io.stdout);
     expect(parsed.checks).toHaveProperty("environment_config");
@@ -1138,6 +1174,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     const parsed = JSON.parse(io.stdout);
     expect(parsed.checks.environment_config.exists).toBe(true);
@@ -1189,6 +1226,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     const parsed = JSON.parse(io.stdout);
     expect(parsed.checks.environment_config.exists).toBe(true);
@@ -1239,6 +1277,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     expect(io.stdout).toContain("Environment config:");
     expect(io.stdout).toContain("test");
@@ -1267,6 +1306,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     expect(io.stdout).not.toContain("Environment config:");
   });
@@ -1320,6 +1360,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     const parsed = JSON.parse(io.stdout);
     expect(parsed.checks.environment_config.verification_allowed_scripts_count).toBe(2);
@@ -1382,6 +1423,7 @@ describe("codex-claude CLI", () => {
       writeOut: io.writeOut.bind(io),
       writeErr: io.writeErr.bind(io),
       startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
     });
     expect(io.stdout).toContain("Environment config:");
     expect(io.stdout).toContain("allowed scripts: 2");

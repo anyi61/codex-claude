@@ -3224,8 +3224,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path12) {
-      let input = path12;
+    function removeDotSegments(path14) {
+      let input = path14;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3424,8 +3424,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path12, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path12 && path12 !== "/" ? path12 : void 0;
+        const [path14, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path14 && path14 !== "/" ? path14 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6815,6 +6815,7 @@ __export(guard_exports, {
   getEnvSanitizationDiagnostics: () => getEnvSanitizationDiagnostics,
   isDelegatedWorktreePath: () => isDelegatedWorktreePath,
   isGitRepo: () => isGitRepo,
+  isSensitiveName: () => isSensitiveName,
   resolveRepoLocalPath: () => resolveRepoLocalPath,
   sanitizeEnv: () => sanitizeEnv,
   supportsWorktree: () => supportsWorktree,
@@ -7034,7 +7035,8 @@ function execCapture(command, args, opts) {
     const child = spawn(command, args, {
       cwd: opts.cwd,
       timeout: opts.timeoutMs ?? 3e4,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["ignore", "pipe", "pipe"],
+      env: opts.env ? { ...process.env, ...opts.env } : void 0
     });
     let stdout = "";
     let stderr = "";
@@ -7151,6 +7153,430 @@ var init_guard = __esm({
   }
 });
 
+// src/environment-config.ts
+import { readFile as readFile8 } from "node:fs/promises";
+import path9 from "node:path";
+function makeSummary(configPath) {
+  return {
+    exists: true,
+    path: configPath,
+    ok: true,
+    fields_present: [],
+    install: false,
+    test: false,
+    start: false,
+    symlink_directories_count: 0,
+    sparse_paths_count: 0,
+    errors: [],
+    warnings: []
+  };
+}
+function isAbsolutePath(p) {
+  return path9.isAbsolute(p);
+}
+function hasParentDirTraversal(p) {
+  const normalized = path9.normalize(p);
+  const segments = p.split("/").filter(Boolean);
+  if (segments.some((s) => s === "..")) return true;
+  const normSegments = normalized.split("/").filter(Boolean);
+  if (normSegments[0] === "..") return true;
+  return false;
+}
+function hasShellTokens(name) {
+  for (const ch of name) {
+    if (SHELL_TOKENS.has(ch)) return true;
+  }
+  return false;
+}
+function fieldKind(field) {
+  if (SUPPORTED_COMMAND_FIELDS.includes(field)) return "command" /* Command */;
+  if (field === "symlink_directories" || field === "sparse_paths") return "string_array" /* StringArray */;
+  return null;
+}
+function validateField(key, value) {
+  const errors = [];
+  const warnings = [];
+  if (!VALID_FIELDS.has(key) && !PHASE2_TOP_KEYS.has(key)) {
+    return { errors: [], warnings: [{ field: key, message: `Unknown field "${key}"` }], ok: true };
+  }
+  const kind = fieldKind(key);
+  if (kind === "command" /* Command */) {
+    if (value === void 0 || value === null) {
+      return { errors: [], warnings: [], ok: true };
+    }
+    if (typeof value !== "string") {
+      errors.push({ field: key, message: `"${key}" must be a string` });
+      return { errors, warnings, ok: false };
+    }
+    if (value === "") {
+      errors.push({ field: key, message: `"${key}" must not be empty` });
+      return { errors, warnings, ok: false };
+    }
+    if (value.length > COMMAND_MAX_LENGTH) {
+      errors.push({ field: key, message: `"${key}" exceeds maximum length of ${COMMAND_MAX_LENGTH} characters` });
+      return { errors, warnings, ok: false };
+    }
+  }
+  if (kind === "string_array" /* StringArray */) {
+    if (!Array.isArray(value)) {
+      errors.push({ field: key, message: `"${key}" must be an array of strings` });
+      return { errors, warnings, ok: false };
+    }
+    const seen = /* @__PURE__ */ new Set();
+    for (let i = 0; i < value.length; i++) {
+      const item = value[i];
+      if (typeof item !== "string" || item === "") {
+        errors.push({ field: `${key}[${i}]`, message: `"${key}[${i}]" must be a non-empty string` });
+      } else if (key === "symlink_directories") {
+        if (!isAbsolutePath(item)) {
+          errors.push({ field: `${key}[${i}]`, message: `"${key}[${i}]" must be an absolute path` });
+        } else if (seen.has(item)) {
+        } else {
+          seen.add(item);
+        }
+      } else if (key === "sparse_paths") {
+        if (isAbsolutePath(item)) {
+          errors.push({ field: `${key}[${i}]`, message: `"${key}[${i}]" must be a relative path, not absolute` });
+        } else if (hasParentDirTraversal(item)) {
+          errors.push({ field: `${key}[${i}]`, message: `"${key}[${i}]" must not contain ".." segments` });
+        } else if (seen.has(item)) {
+        } else {
+          seen.add(item);
+        }
+      }
+    }
+    if (errors.length > 0) {
+      return { errors, warnings, ok: false };
+    }
+  }
+  return { errors, warnings, ok: true };
+}
+function validatePhase2Field(key, value) {
+  const errors = [];
+  const warnings = [];
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    errors.push({ field: key, message: `"${key}" must be an object` });
+    return { errors, warnings, ok: false };
+  }
+  const obj = value;
+  if (key === "verification") {
+    return validateVerification(obj);
+  }
+  if (key === "artifacts") {
+    return validateArtifacts(obj);
+  }
+  if (key === "environment") {
+    return validateEnvironment(obj);
+  }
+  return { errors, warnings, ok: true };
+}
+function validateVerification(obj) {
+  const errors = [];
+  const warnings = [];
+  let ok = true;
+  for (const [subKey, subValue] of Object.entries(obj)) {
+    if (subKey === "allowedScripts") {
+      if (!Array.isArray(subValue)) {
+        errors.push({ field: "verification.allowedScripts", message: `"verification.allowedScripts" must be an array of strings` });
+        ok = false;
+        continue;
+      }
+      if (subValue.length > MAX_ALLOWED_SCRIPTS) {
+        errors.push({ field: "verification.allowedScripts", message: `"verification.allowedScripts" exceeds maximum of ${MAX_ALLOWED_SCRIPTS} entries` });
+        ok = false;
+        continue;
+      }
+      const seen = /* @__PURE__ */ new Set();
+      for (let i = 0; i < subValue.length; i++) {
+        const item = subValue[i];
+        if (typeof item !== "string" || item === "") {
+          errors.push({ field: `verification.allowedScripts[${i}]`, message: `"verification.allowedScripts[${i}]" must be a non-empty string` });
+          ok = false;
+          continue;
+        }
+        if (item.length > MAX_SCRIPT_NAME_LENGTH) {
+          errors.push({ field: `verification.allowedScripts[${i}]`, message: `"verification.allowedScripts[${i}]" exceeds maximum length of ${MAX_SCRIPT_NAME_LENGTH} characters` });
+          ok = false;
+          continue;
+        }
+        if (hasShellTokens(item)) {
+          errors.push({ field: `verification.allowedScripts[${i}]`, message: `"verification.allowedScripts[${i}]" contains shell-ish tokens` });
+          ok = false;
+          continue;
+        }
+        if (FORBIDDEN_SCRIPT_NAMES.has(item)) {
+          errors.push({ field: `verification.allowedScripts[${i}]`, message: `"verification.allowedScripts[${i}]" is a forbidden script name: "${item}"` });
+          ok = false;
+          continue;
+        }
+        if (!SCRIPT_NAME_RE.test(item)) {
+          errors.push({ field: `verification.allowedScripts[${i}]`, message: `"verification.allowedScripts[${i}]" contains invalid characters (allowed: alphanumeric, :, _, -)` });
+          ok = false;
+          continue;
+        }
+        if (seen.has(item)) {
+          warnings.push({ field: `verification.allowedScripts[${i}]`, message: `Duplicate script name "${item}"` });
+        } else {
+          seen.add(item);
+        }
+      }
+    } else if (subKey === "timeoutSec") {
+      if (typeof subValue !== "number" || !Number.isInteger(subValue)) {
+        errors.push({ field: "verification.timeoutSec", message: `"verification.timeoutSec" must be an integer` });
+        ok = false;
+      } else if (subValue < 10 || subValue > 300) {
+        errors.push({ field: "verification.timeoutSec", message: `"verification.timeoutSec" must be between 10 and 300` });
+        ok = false;
+      }
+    } else {
+      warnings.push({ field: `verification.${subKey}`, message: `Unknown subfield "verification.${subKey}"` });
+    }
+  }
+  return { errors, warnings, ok };
+}
+function validateArtifacts(obj) {
+  const errors = [];
+  const warnings = [];
+  let ok = true;
+  for (const [subKey, subValue] of Object.entries(obj)) {
+    if (subKey === "retentionDays") {
+      if (typeof subValue !== "number" || !Number.isInteger(subValue)) {
+        errors.push({ field: "artifacts.retentionDays", message: `"artifacts.retentionDays" must be an integer` });
+        ok = false;
+      } else if (subValue < 1 || subValue > 365) {
+        errors.push({ field: "artifacts.retentionDays", message: `"artifacts.retentionDays" must be between 1 and 365` });
+        ok = false;
+      }
+    } else {
+      warnings.push({ field: `artifacts.${subKey}`, message: `Unknown subfield "artifacts.${subKey}"` });
+    }
+  }
+  return { errors, warnings, ok };
+}
+function validateEnvironment(obj) {
+  const errors = [];
+  const warnings = [];
+  let ok = true;
+  for (const [subKey, subValue] of Object.entries(obj)) {
+    if (subKey === "passthrough") {
+      if (!Array.isArray(subValue)) {
+        errors.push({ field: "environment.passthrough", message: `"environment.passthrough" must be an array of strings` });
+        ok = false;
+        continue;
+      }
+      if (subValue.length > MAX_PASSTHROUGH_ENTRIES) {
+        errors.push({ field: "environment.passthrough", message: `"environment.passthrough" exceeds maximum of ${MAX_PASSTHROUGH_ENTRIES} entries` });
+        ok = false;
+        continue;
+      }
+      const seen = /* @__PURE__ */ new Set();
+      for (let i = 0; i < subValue.length; i++) {
+        const item = subValue[i];
+        if (typeof item !== "string" || item === "") {
+          errors.push({ field: `environment.passthrough[${i}]`, message: `"environment.passthrough[${i}]" must be a non-empty string` });
+          ok = false;
+          continue;
+        }
+        if (item.length > MAX_PASSTHROUGH_NAME_LENGTH) {
+          errors.push({ field: `environment.passthrough[${i}]`, message: `"environment.passthrough[${i}]" exceeds maximum length of ${MAX_PASSTHROUGH_NAME_LENGTH} characters` });
+          ok = false;
+          continue;
+        }
+        if (!PASSTHROUGH_NAME_RE.test(item)) {
+          errors.push({ field: `environment.passthrough[${i}]`, message: `"environment.passthrough[${i}]" is not a valid environment variable name` });
+          ok = false;
+          continue;
+        }
+        if (isSensitiveName(item)) {
+          errors.push({ field: `environment.passthrough[${i}]`, message: `"environment.passthrough[${i}]" matches a sensitive name pattern` });
+          ok = false;
+          continue;
+        }
+        if (seen.has(item)) {
+          warnings.push({ field: `environment.passthrough[${i}]`, message: `Duplicate passthrough name "${item}"` });
+        } else {
+          seen.add(item);
+        }
+      }
+    } else {
+      warnings.push({ field: `environment.${subKey}`, message: `Unknown subfield "environment.${subKey}"` });
+    }
+  }
+  return { errors, warnings, ok };
+}
+function extractPhase2Config(config2, summaryOk) {
+  if (!summaryOk) return void 0;
+  const result = {};
+  let hasAny = false;
+  const verification = config2["verification"];
+  if (verification && typeof verification === "object" && !Array.isArray(verification)) {
+    const v = verification;
+    const vConfig = {};
+    if (Array.isArray(v.allowedScripts)) {
+      const scripts = v.allowedScripts.filter((s) => typeof s === "string" && s.length > 0 && s.length <= MAX_SCRIPT_NAME_LENGTH && SCRIPT_NAME_RE.test(s) && !FORBIDDEN_SCRIPT_NAMES.has(s) && !hasShellTokens(s));
+      const deduped = [...new Set(scripts)].slice(0, MAX_ALLOWED_SCRIPTS);
+      vConfig.allowedScripts = deduped;
+    }
+    if (typeof v.timeoutSec === "number" && Number.isInteger(v.timeoutSec) && v.timeoutSec >= 10 && v.timeoutSec <= 300) {
+      vConfig.timeoutSec = v.timeoutSec;
+    }
+    if (vConfig.allowedScripts || vConfig.timeoutSec !== void 0) {
+      result.verification = vConfig;
+      hasAny = true;
+    }
+  }
+  const artifacts = config2["artifacts"];
+  if (artifacts && typeof artifacts === "object" && !Array.isArray(artifacts)) {
+    const a = artifacts;
+    if (typeof a.retentionDays === "number" && Number.isInteger(a.retentionDays) && a.retentionDays >= 1 && a.retentionDays <= 365) {
+      result.artifacts = { retentionDays: a.retentionDays };
+      hasAny = true;
+    }
+  }
+  const environment = config2["environment"];
+  if (environment && typeof environment === "object" && !Array.isArray(environment)) {
+    const e = environment;
+    if (Array.isArray(e.passthrough)) {
+      const names = e.passthrough.filter(
+        (n) => typeof n === "string" && n.length > 0 && n.length <= MAX_PASSTHROUGH_NAME_LENGTH && PASSTHROUGH_NAME_RE.test(n) && !isSensitiveName(n)
+      );
+      const deduped = [...new Set(names)].slice(0, MAX_PASSTHROUGH_ENTRIES);
+      if (deduped.length > 0) {
+        result.environment = { passthrough: deduped };
+        hasAny = true;
+      }
+    }
+  }
+  return hasAny ? result : void 0;
+}
+function populatePhase2Summary(summary, config2) {
+  const verification = config2["verification"];
+  if (verification && typeof verification === "object" && !Array.isArray(verification)) {
+    const v = verification;
+    if (Array.isArray(v.allowedScripts)) {
+      const valid = v.allowedScripts.filter(
+        (s) => typeof s === "string" && s.length > 0 && s.length <= MAX_SCRIPT_NAME_LENGTH && SCRIPT_NAME_RE.test(s) && !FORBIDDEN_SCRIPT_NAMES.has(s) && !hasShellTokens(s)
+      );
+      summary.verification_allowed_scripts_count = valid.length;
+      summary.verification_allowed_scripts = [...new Set(valid)].slice(0, MAX_ALLOWED_SCRIPTS);
+    }
+    if (typeof v.timeoutSec === "number" && Number.isInteger(v.timeoutSec)) {
+      summary.verification_timeout_sec = v.timeoutSec;
+    }
+  }
+  const artifacts = config2["artifacts"];
+  if (artifacts && typeof artifacts === "object" && !Array.isArray(artifacts)) {
+    const a = artifacts;
+    if (typeof a.retentionDays === "number" && Number.isInteger(a.retentionDays)) {
+      summary.artifacts_retention_days = a.retentionDays;
+    }
+  }
+  const environment = config2["environment"];
+  if (environment && typeof environment === "object" && !Array.isArray(environment)) {
+    const e = environment;
+    if (Array.isArray(e.passthrough)) {
+      const names = e.passthrough.filter(
+        (n) => typeof n === "string" && n.length > 0 && n.length <= MAX_PASSTHROUGH_NAME_LENGTH && PASSTHROUGH_NAME_RE.test(n) && !isSensitiveName(n)
+      );
+      summary.environment_passthrough_count = names.length;
+      summary.environment_passthrough = [...new Set(names)].slice(0, MAX_PASSTHROUGH_ENTRIES);
+    }
+  }
+}
+async function readEnvironmentConfig(cwd) {
+  const configPath = path9.join(cwd, ".codex-claude-delegate", "environment.json");
+  const summary = makeSummary(configPath);
+  let raw;
+  try {
+    raw = await readFile8(configPath, "utf8");
+  } catch (err) {
+    if (typeof err === "object" && err !== null && "code" in err && err.code === "ENOENT") {
+      return null;
+    }
+    summary.ok = false;
+    summary.errors.push({ field: "file", message: "Unable to read environment config file" });
+    return { summary };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    summary.ok = false;
+    summary.errors.push({ field: "file", message: "File is not valid JSON" });
+    return { summary };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    summary.ok = false;
+    summary.errors.push({ field: "file", message: "File must contain a JSON object" });
+    return { summary };
+  }
+  const config2 = parsed;
+  const sanitized = {};
+  for (const [key, value] of Object.entries(config2)) {
+    if (PHASE2_TOP_KEYS.has(key)) {
+      const result2 = validatePhase2Field(key, value);
+      for (const err of result2.errors) summary.errors.push(err);
+      for (const warn of result2.warnings) summary.warnings.push(warn);
+      if (!result2.ok) {
+        summary.ok = false;
+      }
+      continue;
+    }
+    const result = validateField(key, value);
+    for (const err of result.errors) summary.errors.push(err);
+    for (const warn of result.warnings) summary.warnings.push(warn);
+    if (!result.ok) {
+      summary.ok = false;
+    }
+    if (VALID_FIELDS.has(key)) {
+      summary.fields_present.push(key);
+    }
+    if (SUPPORTED_COMMAND_FIELDS.includes(key) && typeof value === "string" && value.length > 0 && value.length <= COMMAND_MAX_LENGTH) {
+      summary[key] = true;
+    }
+    if (key === "symlink_directories" && Array.isArray(value)) {
+      summary.symlink_directories_count = new Set(value.filter((item) => typeof item === "string" && isAbsolutePath(item))).size;
+    }
+    if (key === "sparse_paths" && Array.isArray(value)) {
+      summary.sparse_paths_count = new Set(value.filter((item) => typeof item === "string" && item !== "" && !isAbsolutePath(item) && !hasParentDirTraversal(item))).size;
+    }
+    if (VALID_FIELDS.has(key)) {
+      sanitized[key] = true;
+    }
+  }
+  populatePhase2Summary(summary, config2);
+  const phase2 = summary.ok ? extractPhase2Config(config2, summary.ok) : void 0;
+  return { summary, _raw: sanitized, phase2 };
+}
+var VALID_FIELDS, PHASE2_TOP_KEYS, COMMAND_MAX_LENGTH, SUPPORTED_COMMAND_FIELDS, FORBIDDEN_SCRIPT_NAMES, SCRIPT_NAME_RE, MAX_ALLOWED_SCRIPTS, MAX_SCRIPT_NAME_LENGTH, MAX_PASSTHROUGH_ENTRIES, PASSTHROUGH_NAME_RE, MAX_PASSTHROUGH_NAME_LENGTH, SHELL_TOKENS;
+var init_environment_config = __esm({
+  "src/environment-config.ts"() {
+    "use strict";
+    init_guard();
+    VALID_FIELDS = /* @__PURE__ */ new Set(["install", "test", "start", "symlink_directories", "sparse_paths"]);
+    PHASE2_TOP_KEYS = /* @__PURE__ */ new Set(["verification", "artifacts", "environment"]);
+    COMMAND_MAX_LENGTH = 1e3;
+    SUPPORTED_COMMAND_FIELDS = ["install", "test", "start"];
+    FORBIDDEN_SCRIPT_NAMES = /* @__PURE__ */ new Set([
+      "add",
+      "deploy",
+      "install",
+      "publish",
+      "remove",
+      "serve",
+      "start",
+      "uninstall"
+    ]);
+    SCRIPT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9:_-]*$/;
+    MAX_ALLOWED_SCRIPTS = 50;
+    MAX_SCRIPT_NAME_LENGTH = 100;
+    MAX_PASSTHROUGH_ENTRIES = 100;
+    PASSTHROUGH_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+    MAX_PASSTHROUGH_NAME_LENGTH = 256;
+    SHELL_TOKENS = /* @__PURE__ */ new Set(["&&", "||", ";", "|", ">", ">>", "<", "&", "$", "`", "!", "(", ")", "{", "}", "\\", "'", '"', "\n", "\r", " "]);
+  }
+});
+
 // src/transaction.ts
 var transaction_exports = {};
 __export(transaction_exports, {
@@ -7162,7 +7588,7 @@ __export(transaction_exports, {
 import { writeFile as fsWriteFile, mkdir as fsMkdir, readFile as fsReadFile, rm as fsRm } from "node:fs/promises";
 import { existsSync as fsExistsSync } from "node:fs";
 import { randomUUID as randomUUID3 } from "node:crypto";
-import path10 from "node:path";
+import path12 from "node:path";
 function __setTestFSOps(ops) {
   __testFSOps = ops;
 }
@@ -7171,50 +7597,100 @@ function fs() {
 }
 async function applyChangesTransactional(cwd, worktreeRoot, changes) {
   const f = fs();
-  const backupDir = path10.join(cwd, ".codex-claude-delegate", "apply-backups", randomUUID3());
+  const backupDir = path12.join(cwd, ".codex-claude-delegate", "apply-backups", randomUUID3());
   const backups = [];
   const appliedFiles = [];
+  const backupEndIndices = [];
   for (const change of changes) {
-    const dest = path10.join(cwd, change.file);
-    const bakPath = path10.join(backupDir, change.file);
-    const destExists = f.exists(dest);
-    if (destExists) {
-      await f.mkdir(path10.dirname(bakPath));
-      try {
-        const content = await f.readFile(dest);
-        await f.writeFile(bakPath, content);
-        backups.push({ file: change.file, backupPath: bakPath, existed: true });
-      } catch (err) {
-        await f.rm(backupDir).catch(() => {
-        });
-        const backupError = err instanceof Error ? err.message : String(err);
-        return {
-          applied_files: [],
-          error: `Backup failed for ${change.file}: ${backupError}`
-        };
-      }
-    } else {
-      backups.push({ file: change.file, backupPath: bakPath, existed: false });
+    const entitiesToBackup = [change.file];
+    if (change.status === "R" && change.old_file) {
+      entitiesToBackup.push(change.old_file);
     }
+    for (const file2 of entitiesToBackup) {
+      const dest = path12.join(cwd, file2);
+      const bakPath = path12.join(backupDir, file2);
+      const destExists = f.exists(dest);
+      if (destExists) {
+        await f.mkdir(path12.dirname(bakPath));
+        try {
+          const content = await f.readFile(dest);
+          await f.writeFile(bakPath, content);
+          backups.push({ file: file2, backupPath: bakPath, existed: true });
+        } catch (err) {
+          await f.rm(backupDir).catch(() => {
+          });
+          const backupError = err instanceof Error ? err.message : String(err);
+          return {
+            applied_files: [],
+            error: `Backup failed for ${file2}: ${backupError}`
+          };
+        }
+      } else {
+        backups.push({ file: file2, backupPath: bakPath, existed: false });
+      }
+    }
+    backupEndIndices.push(backups.length);
   }
   for (let i = 0; i < changes.length; i++) {
     const c = changes[i];
-    const dest = path10.join(cwd, c.file);
+    const dest = path12.join(cwd, c.file);
+    if (!["A", "M", "D", "R", "C"].includes(c.status)) {
+      const rollbackOk = await rollbackApplied(cwd, backups.slice(0, backupEndIndices[i]), f);
+      await f.rm(backupDir).catch(() => {
+      });
+      if (rollbackOk.ok) {
+        return {
+          applied_files: [],
+          error: `Unsupported change status "${c.status}" for ${c.file}`
+        };
+      }
+      return {
+        applied_files: [],
+        dirty_recovery_needed: true,
+        dirty_files: rollbackOk.dirtyFiles,
+        rollback_error: rollbackOk.error,
+        error: `Unsupported change status "${c.status}" for ${c.file}. Rollback also failed.`
+      };
+    }
+    if ((c.status === "R" || c.status === "C") && !c.old_file) {
+      const rollbackOk = await rollbackApplied(cwd, backups.slice(0, backupEndIndices[i]), f);
+      await f.rm(backupDir).catch(() => {
+      });
+      if (rollbackOk.ok) {
+        return {
+          applied_files: [],
+          error: `Change "${c.status} ${c.file}" is missing a source path (old_file)`
+        };
+      }
+      return {
+        applied_files: [],
+        dirty_recovery_needed: true,
+        dirty_files: rollbackOk.dirtyFiles,
+        rollback_error: rollbackOk.error,
+        error: `Change "${c.status} ${c.file}" is missing a source path (old_file). Rollback also failed.`
+      };
+    }
     try {
       if (c.status === "D") {
         if (f.exists(dest)) {
           await f.rm(dest);
         }
       } else {
-        const src = path10.join(worktreeRoot, c.file);
+        const src = path12.join(worktreeRoot, c.file);
         const content = await f.readFile(src);
-        await f.mkdir(path10.dirname(dest));
+        await f.mkdir(path12.dirname(dest));
         await f.writeFile(dest, content);
+        if (c.status === "R" && c.old_file) {
+          const oldDest = path12.join(cwd, c.old_file);
+          if (f.exists(oldDest)) {
+            await f.rm(oldDest);
+          }
+        }
       }
       appliedFiles.push(c.file);
     } catch (err) {
       const applyError = err instanceof Error ? err.message : String(err);
-      const rollbackOk = await rollbackApplied(cwd, backups.slice(0, i + 1), f);
+      const rollbackOk = await rollbackApplied(cwd, backups.slice(0, backupEndIndices[i]), f);
       if (rollbackOk.ok) {
         await f.rm(backupDir).catch(() => {
         });
@@ -7241,10 +7717,10 @@ async function rollbackApplied(cwd, backups, f) {
   let firstError;
   for (let i = backups.length - 1; i >= 0; i--) {
     const bk = backups[i];
-    const dest = path10.join(cwd, bk.file);
+    const dest = path12.join(cwd, bk.file);
     try {
       if (bk.existed) {
-        await f.mkdir(path10.dirname(dest));
+        await f.mkdir(path12.dirname(dest));
         const content = await f.readFile(bk.backupPath);
         await f.writeFile(dest, content);
       } else {
@@ -7817,10 +8293,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path12) {
-  if (!path12)
+function getElementAtPath(obj, path14) {
+  if (!path14)
     return obj;
-  return path12.reduce((acc, key) => acc?.[key], obj);
+  return path14.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -8229,11 +8705,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path12, issues) {
+function prefixIssues(path14, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path12);
+    iss.path.unshift(path14);
     return iss;
   });
 }
@@ -8380,16 +8856,16 @@ function flattenError(error51, mapper = (issue2) => issue2.message) {
 }
 function formatError(error51, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error52, path12 = []) => {
+  const processError = (error52, path14 = []) => {
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path12, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path14, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path14, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path14, ...issue2.path]);
       } else {
-        const fullpath = [...path12, ...issue2.path];
+        const fullpath = [...path14, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -8416,17 +8892,17 @@ function formatError(error51, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error51, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error52, path12 = []) => {
+  const processError = (error52, path14 = []) => {
     var _a3, _b;
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path12, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path14, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path14, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path14, ...issue2.path]);
       } else {
-        const fullpath = [...path12, ...issue2.path];
+        const fullpath = [...path14, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -8458,8 +8934,8 @@ function treeifyError(error51, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path12 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path12) {
+  const path14 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path14) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -21451,13 +21927,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path12 = ref.slice(1).split("/").filter(Boolean);
-  if (path12.length === 0) {
+  const path14 = ref.slice(1).split("/").filter(Boolean);
+  if (path14.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path12[0] === defsKey) {
-    const key = path12[1];
+  if (path14[0] === defsKey) {
+    const key = path14[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -25300,10 +25776,11 @@ async function configureCodexAllowRoot(rawCwd) {
 
 // src/claude-cli.ts
 init_guard();
-import { writeFile as writeFile7, mkdir as mkdir7, readdir as readdir4, stat as stat5, unlink as unlink2 } from "node:fs/promises";
+import { writeFile as writeFile8, mkdir as mkdir8, readFile as readFile10, readdir as readdir4, stat as stat6, lstat, unlink as unlink3 } from "node:fs/promises";
 import { existsSync as existsSync3 } from "node:fs";
 import { randomUUID as randomUUID4, createHash as createHash4 } from "node:crypto";
-import path11 from "node:path";
+import path13 from "node:path";
+import os from "node:os";
 
 // src/worktree-observer.ts
 init_guard();
@@ -25459,8 +25936,71 @@ function parseRunLifecycle(raw) {
   }
   return "unknown";
 }
+function summarizeServerVerified(raw) {
+  if (!raw || typeof raw !== "object") return void 0;
+  const obj = raw;
+  const status = obj.status;
+  if (status !== "passed" && status !== "failed" && status !== "skipped") return void 0;
+  if (!Array.isArray(obj.commands)) return void 0;
+  let passed = 0;
+  let failed = 0;
+  let skipped = 0;
+  for (const cmd of obj.commands) {
+    if (cmd && typeof cmd === "object") {
+      const cmdStatus = cmd.status;
+      if (cmdStatus === "passed") passed++;
+      else if (cmdStatus === "failed") failed++;
+      else if (cmdStatus === "skipped") skipped++;
+    }
+  }
+  return {
+    status,
+    command_count: obj.commands.length,
+    passed_count: passed,
+    failed_count: failed,
+    skipped_count: skipped
+  };
+}
+function summarizeToolCallAudit(report) {
+  if (!report || typeof report !== "object") return void 0;
+  const obj = report;
+  const denials = obj.permission_denials;
+  const commandsRun = obj.commands_run;
+  const hasDenials = Array.isArray(denials);
+  const hasCommands = Array.isArray(commandsRun);
+  if (!hasDenials && !hasCommands) return void 0;
+  let totalDenied = 0;
+  const toolNames = /* @__PURE__ */ new Set();
+  if (hasDenials) {
+    totalDenied = denials.length;
+    for (const denial of denials) {
+      if (denial && typeof denial === "object") {
+        const toolName = denial.tool_name;
+        if (typeof toolName === "string" && toolName.length > 0) {
+          toolNames.add(toolName);
+        }
+      }
+    }
+  }
+  const sortedTools = [...toolNames].sort();
+  const truncated = sortedTools.length > 20;
+  const uniqueTools = truncated ? sortedTools.slice(0, 20) : sortedTools;
+  const result = {
+    total_denied: totalDenied,
+    unique_denied_tools: uniqueTools
+  };
+  if (truncated) {
+    result.unique_denied_tools_truncated = true;
+  }
+  if (hasCommands) {
+    result.commands_run_count = commandsRun.length;
+  }
+  return result;
+}
 function summarizeRunLog(runId, raw, updatedAt) {
   const worktreePath = typeof raw.observed?.worktree_path === "string" ? raw.observed.worktree_path : typeof raw.input?.worktree_path === "string" ? raw.input.worktree_path : void 0;
+  const verified = summarizeServerVerified(raw.server_verified);
+  const audit = summarizeToolCallAudit(raw.report);
   return {
     run_id: runId,
     type: typeof raw.type === "string" ? raw.type : "unknown",
@@ -25475,7 +26015,9 @@ function summarizeRunLog(runId, raw, updatedAt) {
     returned_session_id: typeof raw.session?.returned_session_id === "string" || raw.session?.returned_session_id === null ? raw.session.returned_session_id : void 0,
     retried_after_session_expired: raw.retried_after_session_expired === true,
     started_at: typeof raw.started_at === "string" ? raw.started_at : updatedAt,
-    updated_at: typeof raw.updated_at === "string" ? raw.updated_at : updatedAt
+    updated_at: typeof raw.updated_at === "string" ? raw.updated_at : updatedAt,
+    ...verified ? { server_verified: verified } : {},
+    ...audit ? { tool_call_audit: audit } : {}
   };
 }
 function summarizeRecentRuns(entries) {
@@ -26017,11 +26559,19 @@ var claudeApplyInputSchema = external_exports.object({
   background: external_exports.boolean().optional(),
   confirmed_by_user: external_exports.boolean().optional(),
   include_patch: external_exports.boolean().optional(),
-  patch_max_bytes: external_exports.number().int().min(1024).max(5e5).optional()
+  patch_max_bytes: external_exports.number().int().min(1024).max(5e5).optional(),
+  preview_token: external_exports.string().length(64).regex(/^[a-f0-9]{64}$/, "preview_token must be a 64-char hex string").optional()
 }).strict().refine((value) => !(value.preview === true && value.cleanup === true), {
   message: "preview=true cannot be combined with cleanup=true",
   path: ["cleanup"]
 });
+var claudeExportInputSchema = external_exports.object({
+  cwd: cwdSchema,
+  worktree_path: external_exports.string().trim().min(1, "worktree_path is required"),
+  branch: external_exports.string().trim().min(1, "branch is required"),
+  message: external_exports.string().trim().min(1).optional(),
+  force: external_exports.boolean().optional()
+}).strict();
 var claudeCleanupInputSchema = external_exports.object({
   cwd: cwdSchema,
   older_than_hours: external_exports.number().nonnegative().max(24 * 365).optional().default(24),
@@ -26084,8 +26634,8 @@ var claudeReviewGateInputSchema = external_exports.object({
 function validationErrorMessage(err) {
   if (err instanceof external_exports.ZodError) {
     return err.issues.map((issue2) => {
-      const path12 = issue2.path.length ? issue2.path.join(".") : "input";
-      return `${path12}: ${issue2.message}`;
+      const path14 = issue2.path.length ? issue2.path.join(".") : "input";
+      return `${path14}: ${issue2.message}`;
     }).join("; ");
   }
   return err instanceof Error ? err.message : String(err);
@@ -27105,13 +27655,145 @@ async function manageClaudeReviewGate(input) {
 }
 
 // src/workflow-results.ts
-import { readdir as readdir3, stat as stat4 } from "node:fs/promises";
-import path9 from "node:path";
+import { readdir as readdir3, stat as stat5 } from "node:fs/promises";
+import path11 from "node:path";
+init_environment_config();
+
+// src/artifact-index.ts
+import { mkdir as mkdir7, readFile as readFile9, rename as rename4, stat as stat4, writeFile as writeFile7, unlink as unlink2 } from "node:fs/promises";
+import path10 from "node:path";
+var ARTIFACT_DIR = ".codex-claude-delegate/artifacts";
+var INDEX_FILENAME = "artifacts.json";
+function getArtifactDir(cwd) {
+  return path10.join(cwd, ARTIFACT_DIR);
+}
+function getArtifactIndexPath(cwd) {
+  return path10.join(cwd, ARTIFACT_DIR, INDEX_FILENAME);
+}
+function emptyIndex() {
+  return {
+    version: 1,
+    entries: [],
+    updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
+}
+async function readArtifactIndex(cwd) {
+  const indexPath = getArtifactIndexPath(cwd);
+  try {
+    const raw = await readFile9(indexPath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.version === 1 && Array.isArray(parsed.entries)) {
+      return {
+        version: 1,
+        entries: parsed.entries.filter(
+          (e) => e !== null && typeof e === "object" && typeof e.type === "string" && typeof e.path === "string" && typeof e.sha256 === "string" && typeof e.sizeBytes === "number" && typeof e.createdAt === "string" && typeof e.producer === "string" && typeof e.sensitivity === "string"
+        ),
+        updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : (/* @__PURE__ */ new Date()).toISOString()
+      };
+    }
+    return emptyIndex();
+  } catch {
+    return emptyIndex();
+  }
+}
+async function writeArtifactIndex(cwd, index) {
+  const artifactDir = getArtifactDir(cwd);
+  await mkdir7(artifactDir, { recursive: true });
+  const indexPath = getArtifactIndexPath(cwd);
+  const tmpPath = indexPath + ".tmp." + Math.random().toString(36).slice(2, 8);
+  const content = JSON.stringify({ ...index, updatedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2);
+  await writeFile7(tmpPath, content, "utf8");
+  await rename4(tmpPath, indexPath);
+}
+async function addArtifactEntry(cwd, entry) {
+  try {
+    const index = await readArtifactIndex(cwd);
+    const fullEntry = {
+      ...entry,
+      createdAt: entry.createdAt ?? (/* @__PURE__ */ new Date()).toISOString()
+    };
+    index.entries.push(fullEntry);
+    await writeArtifactIndex(cwd, index);
+  } catch {
+  }
+}
+async function getArtifactSummary(cwd) {
+  try {
+    const index = await readArtifactIndex(cwd);
+    if (index.entries.length === 0 && index.updatedAt) {
+      return {
+        index_path: ARTIFACT_DIR + "/" + INDEX_FILENAME,
+        entry_count: 0,
+        type_counts: {},
+        sensitivity_counts: {},
+        latest_timestamp: null
+      };
+    }
+    const typeCounts = {};
+    const sensitivityCounts = {};
+    let latestTimestamp = null;
+    for (const entry of index.entries) {
+      typeCounts[entry.type] = (typeCounts[entry.type] ?? 0) + 1;
+      sensitivityCounts[entry.sensitivity] = (sensitivityCounts[entry.sensitivity] ?? 0) + 1;
+      if (!latestTimestamp || entry.createdAt > latestTimestamp) {
+        latestTimestamp = entry.createdAt;
+      }
+    }
+    return {
+      index_path: ARTIFACT_DIR + "/" + INDEX_FILENAME,
+      entry_count: index.entries.length,
+      type_counts: typeCounts,
+      sensitivity_counts: sensitivityCounts,
+      latest_timestamp: latestTimestamp
+    };
+  } catch {
+    return null;
+  }
+}
+async function registerPatchArtifact(cwd, runId, patchResult) {
+  if (patchResult.patch_path && patchResult.diff_sha256) {
+    const absPath = path10.resolve(cwd, patchResult.patch_path);
+    try {
+      const st = await stat4(absPath);
+      await addArtifactEntry(cwd, {
+        type: "patch",
+        path: patchResult.patch_path,
+        sha256: patchResult.diff_sha256,
+        sizeBytes: st.size,
+        producer: "claude_apply",
+        sensitivity: "safe",
+        runId,
+        metadata: {
+          truncated: true
+        }
+      });
+    } catch {
+    }
+    return;
+  }
+  if (patchResult.diff_sha256) {
+    await addArtifactEntry(cwd, {
+      type: "metadata_only",
+      path: `artifact:patch:${runId}`,
+      sha256: patchResult.diff_sha256,
+      sizeBytes: patchResult.patch_bytes ?? 0,
+      producer: "claude_apply",
+      sensitivity: "safe",
+      runId,
+      metadata: {
+        kind: "inline_patch",
+        truncated: false
+      }
+    });
+  }
+}
+
+// src/workflow-results.ts
 var stores = /* @__PURE__ */ new Map();
 async function getStore(cwd) {
   let sessionStore = stores.get(cwd);
   if (!sessionStore) {
-    const sessionDir = path9.join(cwd, ".codex-claude-delegate");
+    const sessionDir = path11.join(cwd, ".codex-claude-delegate");
     sessionStore = new SessionStore(sessionDir);
     await sessionStore.init();
     stores.set(cwd, sessionStore);
@@ -27229,14 +27911,14 @@ function compareRecency(a, b) {
   return aTime - bTime;
 }
 async function listDelegatedWorktrees(cwd) {
-  const worktreeDir = path9.join(cwd, ".claude", "worktrees");
+  const worktreeDir = path11.join(cwd, ".claude", "worktrees");
   const cutoff = Date.now() - 24 * 60 * 60 * 1e3;
   try {
     const entries = await readdir3(worktreeDir, { withFileTypes: true });
     const summarized = await Promise.all(entries.filter((entry) => entry.isDirectory() && entry.name.startsWith("codex-delegated-")).map(async (entry) => {
-      const worktreePath = path9.join(worktreeDir, entry.name);
+      const worktreePath = path11.join(worktreeDir, entry.name);
       try {
-        const details = await stat4(worktreePath);
+        const details = await stat5(worktreePath);
         return {
           worktree_name: entry.name,
           worktree_path: worktreePath,
@@ -27325,6 +28007,7 @@ async function getClaudeResult(input) {
   const session = await resolveWorkflowSessionSummary({ cwd: input.cwd, run: runEntry });
   const summary = resolvedJob?.summary ?? (runEntry ? buildResultSummaryFromRun(runEntry) : "Background job resolved");
   const jobIsActive = resolvedJob?.status === "queued" || resolvedJob?.status === "running";
+  const artifactSummary = await getArtifactSummary(input.cwd);
   return {
     source_type: resolvedJob ? "job" : "run",
     summary,
@@ -27341,7 +28024,8 @@ async function getClaudeResult(input) {
       related_runs: resolvedRun?.related_runs,
       session,
       change_count: changeCount
-    })
+    }),
+    artifact_summary: artifactSummary ?? void 0
   };
 }
 async function getWorkspaceStatus(input) {
@@ -27442,6 +28126,38 @@ async function getWorkspaceStatus(input) {
     }
     return actions;
   });
+  const recentArtifacts = [];
+  for (const run of recentRuns.entries) {
+    if (run.server_verified) {
+      recentArtifacts.push({
+        run_id: run.run_id,
+        run_type: run.type,
+        status: run.server_verified.status,
+        command_count: run.server_verified.command_count,
+        passed_count: run.server_verified.passed_count,
+        failed_count: run.server_verified.failed_count,
+        skipped_count: run.server_verified.skipped_count,
+        created_at: run.started_at,
+        updated_at: run.updated_at
+      });
+    }
+  }
+  const envConfigResult = await readEnvironmentConfig(input.cwd);
+  let environmentConfig = envConfigResult?.summary;
+  if (envConfigResult && !envConfigResult.summary.ok) {
+    attentionItems.push({
+      kind: "environment_config",
+      severity: "info",
+      message: `Environment config has validation errors (${envConfigResult.summary.errors.length} error(s), ${envConfigResult.summary.warnings.length} warning(s))`
+    });
+  } else if (envConfigResult && envConfigResult.summary.warnings.length > 0) {
+    attentionItems.push({
+      kind: "environment_config",
+      severity: "info",
+      message: `Environment config has warnings (${envConfigResult.summary.warnings.length} warning(s))`
+    });
+  }
+  const artifactSummary = await getArtifactSummary(input.cwd);
   return {
     workspace_root: input.cwd,
     running_jobs: runningJobs.entries,
@@ -27452,6 +28168,7 @@ async function getWorkspaceStatus(input) {
     recent_runs: recentRuns.entries,
     latest_sessions: latestSessions,
     delegated_worktrees: summarizedWorktrees,
+    recent_artifacts: recentArtifacts.length > 0 ? recentArtifacts : void 0,
     counts: {
       running_jobs: runningJobs.entries.length,
       queued_jobs: queuedJobs.entries.length,
@@ -27467,7 +28184,9 @@ async function getWorkspaceStatus(input) {
     },
     do_not_start_duplicate_job: activeJobs.length > 0 ? true : void 0,
     next_actions: workspaceNextActions.length > 0 ? workspaceNextActions : crashedNextActions.length > 0 ? crashedNextActions : void 0,
-    attention_items: attentionItems
+    attention_items: attentionItems,
+    environment_config: environmentConfig,
+    artifact_summary: artifactSummary ?? void 0
   };
 }
 
@@ -27486,7 +28205,7 @@ function log(msg) {
 `);
 }
 async function findImplementJobForWorktree(worktreePath, cwd) {
-  const wtName = path11.basename(worktreePath);
+  const wtName = path13.basename(worktreePath);
   const jobStore = await getJobStore2();
   const jobs = await jobStore.list({
     cwd,
@@ -27614,7 +28333,9 @@ function deriveClaudeTaskTopStatus(job, result) {
   return "success";
 }
 async function buildClaudeTaskInlineResult(input) {
-  const { cwd, job, jobRecord, delegatedMode, completedInline, waiting, staled, modeInference } = input;
+  const { cwd, job, jobRecord, delegatedMode, completedInline, waiting, staled, modeInference, reuseDecision } = input;
+  const dedupPolicy = dedupPolicyForJobType(job.type);
+  const effectiveReuseDecision = reuseDecision ?? "job_id";
   if (completedInline && !staled) {
     const claudeResult = await getClaudeResult({ cwd, job_id: job.job_id }).catch(() => null);
     if (claudeResult) {
@@ -27631,6 +28352,8 @@ async function buildClaudeTaskInlineResult(input) {
         related_runs: claudeResult.related_runs,
         completed_inline: true,
         do_not_start_duplicate_job: false,
+        dedup_policy: dedupPolicy,
+        reuse_decision: effectiveReuseDecision,
         wait: buildWaitMetadata2({
           completedInline: true,
           waiting: false,
@@ -27669,6 +28392,8 @@ async function buildClaudeTaskInlineResult(input) {
     completed_inline: completedInline || void 0,
     waiting: waiting || void 0,
     do_not_start_duplicate_job: staled || waiting ? true : false,
+    dedup_policy: dedupPolicy,
+    reuse_decision: effectiveReuseDecision,
     wait: buildWaitMetadata2({
       completedInline,
       waiting: waiting || staled,
@@ -27688,6 +28413,7 @@ async function runClaudeTask(input, _runId) {
         status: "failed",
         summary: `Job not found: ${input.job_id}`,
         do_not_start_duplicate_job: true,
+        reuse_decision: "not_found",
         wait: buildWaitMetadata2({
           timeoutSec: input.wait_timeout_sec ?? 540,
           completedInline: false,
@@ -27705,7 +28431,8 @@ async function runClaudeTask(input, _runId) {
         job,
         jobRecord: record2,
         delegatedMode: delegatedModeForJobType(job.type),
-        completedInline: true
+        completedInline: true,
+        reuseDecision: "job_id"
       });
     }
     const waitTimeoutMs = (input.wait_timeout_sec ?? 540) * 1e3;
@@ -27715,6 +28442,7 @@ async function runClaudeTask(input, _runId) {
         delegated_mode: delegatedModeForJobType(job.type),
         status: "failed",
         summary: `Job not found during wait: ${input.job_id}`,
+        reuse_decision: "not_found",
         wait: buildWaitMetadata2({
           timeoutSec: input.wait_timeout_sec ?? 540,
           completedInline: false,
@@ -27731,7 +28459,8 @@ async function runClaudeTask(input, _runId) {
         job: inlineResult.job,
         jobRecord: inlineResult.jobRecord,
         delegatedMode: delegatedModeForJobType(inlineResult.job.type),
-        completedInline: true
+        completedInline: true,
+        reuseDecision: "job_id"
       });
     }
     if (inlineResult.status === "stale") {
@@ -27742,7 +28471,8 @@ async function runClaudeTask(input, _runId) {
         jobRecord: staleRecord ?? record2,
         delegatedMode: delegatedModeForJobType(inlineResult.job.type),
         completedInline: false,
-        staled: true
+        staled: true,
+        reuseDecision: "job_id"
       });
     }
     const stillRunning = await jobStore.get(input.job_id);
@@ -27754,6 +28484,8 @@ async function runClaudeTask(input, _runId) {
       completed_inline: false,
       waiting: true,
       do_not_start_duplicate_job: true,
+      dedup_policy: dedupPolicyForJobType((stillRunning ?? record2).type),
+      reuse_decision: "job_id",
       wait: buildWaitMetadata2({
         timeoutSec: input.wait_timeout_sec ?? 540,
         completedInline: false,
@@ -27857,6 +28589,8 @@ async function runClaudeTask(input, _runId) {
         deduped: queued.deduped,
         completed_inline: false,
         do_not_start_duplicate_job: queued.do_not_start_duplicate_job ?? (queued.deduped ? true : void 0),
+        dedup_policy: dedupPolicyForJobType(queued.job.type),
+        reuse_decision: reuseDecisionForQueued(queued),
         wait: buildWaitMetadata2({
           mode: "background",
           timeoutSec: input.wait_timeout_sec ?? 540,
@@ -27885,6 +28619,8 @@ async function runClaudeTask(input, _runId) {
         summary: `Job ${queued.job.job_id} not found during inline wait.`,
         job: queued.job,
         deduped: queued.deduped,
+        dedup_policy: dedupPolicyForJobType(queued.job.type),
+        reuse_decision: reuseDecisionForQueued(queued),
         wait: buildWaitMetadata2({
           timeoutSec: input.wait_timeout_sec ?? 540,
           completedInline: false,
@@ -27902,7 +28638,8 @@ async function runClaudeTask(input, _runId) {
         jobRecord: inlineResult.jobRecord,
         delegatedMode,
         completedInline: true,
-        modeInference
+        modeInference,
+        reuseDecision: reuseDecisionForQueued(queued)
       });
     }
     if (inlineResult.status === "stale") {
@@ -27913,6 +28650,8 @@ async function runClaudeTask(input, _runId) {
           mode_inference: modeInference,
           status: "failed",
           summary: `Job ${queued.job.job_id} disappeared during inline wait.`,
+          dedup_policy: dedupPolicyForJobType(queued.job.type),
+          reuse_decision: reuseDecisionForQueued(queued),
           wait: buildWaitMetadata2({
             timeoutSec: input.wait_timeout_sec ?? 540,
             completedInline: false,
@@ -27930,7 +28669,8 @@ async function runClaudeTask(input, _runId) {
         delegatedMode,
         completedInline: false,
         staled: true,
-        modeInference
+        modeInference,
+        reuseDecision: reuseDecisionForQueued(queued)
       });
     }
     const stillRunning = await jobStore.get(queued.job.job_id);
@@ -27944,6 +28684,8 @@ async function runClaudeTask(input, _runId) {
       completed_inline: false,
       waiting: true,
       do_not_start_duplicate_job: true,
+      dedup_policy: dedupPolicyForJobType(queued.job.type),
+      reuse_decision: reuseDecisionForQueued(queued),
       wait: buildWaitMetadata2({
         timeoutSec: input.wait_timeout_sec ?? 540,
         completedInline: false,
@@ -27974,6 +28716,17 @@ function delegatedModeForJobType(type) {
     default:
       return "read";
   }
+}
+function dedupPolicyForJobType(type) {
+  if (type === "apply" || type === "cleanup") {
+    return { enabled: false, key: "none", applies_to: [] };
+  }
+  return { enabled: true, key: "task_fingerprint", applies_to: ["read", "review", "write"] };
+}
+function reuseDecisionForQueued(queued) {
+  if (queued.deduped) return "deduped";
+  if (queued.concurrency?.busy) return "busy_existing";
+  return "created";
 }
 async function startBackgroundReview2(input) {
   return startBackgroundReview(input);
@@ -28050,21 +28803,29 @@ async function preflightImplementDirtyState(input) {
   return { requestedFiles, dirtyFiles };
 }
 async function expandDirectoryChange(change, worktreeRoot) {
-  if (change.status === "D") return [change];
-  const sourcePath = path11.join(worktreeRoot, change.file);
+  if (change.status === "D" || change.status === "R" || change.status === "C") return [change];
+  const sourcePath = path13.join(worktreeRoot, change.file);
   let sourceStat;
   try {
-    sourceStat = await stat5(sourcePath);
+    sourceStat = await lstat(sourcePath);
   } catch {
     return [change];
   }
+  if (sourceStat.isSymbolicLink()) return [change];
   if (!sourceStat.isDirectory()) return [change];
   const expanded = [];
   const walk = async (relativeDir) => {
-    const dirPath = path11.join(worktreeRoot, relativeDir);
+    const dirPath = path13.join(worktreeRoot, relativeDir);
     const entries = await readdir4(dirPath, { withFileTypes: true });
     for (const entry of entries) {
-      const childRelative = path11.join(relativeDir, entry.name);
+      const childRelative = path13.join(relativeDir, entry.name);
+      if (entry.isSymbolicLink()) {
+        expanded.push({
+          status: change.status,
+          file: normalizeRepoPath(worktreeRoot, childRelative)
+        });
+        continue;
+      }
       if (entry.isDirectory()) {
         await walk(childRelative);
       } else if (entry.isFile()) {
@@ -28077,6 +28838,80 @@ async function expandDirectoryChange(change, worktreeRoot) {
   };
   await walk(change.file);
   return expanded.sort((a, b) => a.file.localeCompare(b.file));
+}
+async function collectSubmodulePaths(worktreeRoot, baseCommit) {
+  const submodules = /* @__PURE__ */ new Set();
+  const addLsTreeGitlinks = async (ref) => {
+    const output = await execCapture(
+      "git",
+      ["ls-tree", "-r", "-z", ref],
+      { cwd: worktreeRoot, timeoutMs: 1e4 }
+    ).catch(() => "");
+    for (const entry of output.split("\0")) {
+      if (!entry) continue;
+      const tabIndex = entry.indexOf("	");
+      if (tabIndex < 0) continue;
+      const mode = entry.slice(0, tabIndex).split(" ")[0];
+      const file2 = entry.slice(tabIndex + 1);
+      if (mode === "160000" && file2) submodules.add(file2);
+    }
+  };
+  await addLsTreeGitlinks("HEAD");
+  if (baseCommit && baseCommit !== "HEAD") {
+    await addLsTreeGitlinks(baseCommit);
+  }
+  const indexOutput = await execCapture(
+    "git",
+    ["ls-files", "--stage", "-z"],
+    { cwd: worktreeRoot, timeoutMs: 1e4 }
+  ).catch(() => "");
+  for (const entry of indexOutput.split("\0")) {
+    if (!entry) continue;
+    const tabIndex = entry.indexOf("	");
+    if (tabIndex < 0) continue;
+    const mode = entry.slice(0, tabIndex).split(" ")[0];
+    const file2 = entry.slice(tabIndex + 1);
+    if (mode === "160000" && file2) submodules.add(file2);
+  }
+  return [...submodules].sort((a, b) => a.localeCompare(b));
+}
+function containingSubmodule(file2, submodulePaths) {
+  for (const submodule of submodulePaths) {
+    if (file2 === submodule || file2.startsWith(`${submodule}/`)) return submodule;
+  }
+  return null;
+}
+async function collectIgnoredChanges(worktreeRoot) {
+  const rawIgnored = await execCapture(
+    "git",
+    ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
+    { cwd: worktreeRoot, timeoutMs: 1e4 }
+  ).catch(() => "");
+  const files = rawIgnored.split("\0").filter(Boolean).filter((file2) => !isIgnoredMainWorkspaceDirtyFile(file2)).sort((a, b) => a.localeCompare(b)).slice(0, 100);
+  if (files.length === 0) return [];
+  const ruleOutput = await execCapture(
+    "git",
+    ["check-ignore", "-v", "--", ...files],
+    { cwd: worktreeRoot, timeoutMs: 1e4 }
+  ).catch(() => "");
+  const ruleByFile = /* @__PURE__ */ new Map();
+  for (const line of ruleOutput.split("\n").filter(Boolean)) {
+    const tabIndex = line.indexOf("	");
+    if (tabIndex <= 0) continue;
+    const meta3 = line.slice(0, tabIndex);
+    const file2 = line.slice(tabIndex + 1);
+    if (!file2) continue;
+    const match = meta3.match(/^(.+?):(\d+):(.*)$/);
+    if (!match) continue;
+    const linenum = Number.parseInt(match[2], 10);
+    if (!Number.isFinite(linenum)) continue;
+    ruleByFile.set(file2, {
+      source: match[1],
+      linenum,
+      rule: match[3]
+    });
+  }
+  return files.map((file2) => ({ file: file2, ...ruleByFile.get(file2) }));
 }
 async function checkClaudeStatus(cwd) {
   const result = {
@@ -28134,7 +28969,7 @@ async function checkClaudeStatus(cwd) {
     }
   }
   result.cwd_valid = result.git_available && result.cwd_is_git_repo;
-  const worktreeDir = path11.join(cwd, ".claude", "worktrees");
+  const worktreeDir = path13.join(cwd, ".claude", "worktrees");
   try {
     const { readdirSync, statSync } = await import("node:fs");
     if (existsSync3(worktreeDir)) {
@@ -28144,7 +28979,7 @@ async function checkClaudeStatus(cwd) {
       const cutoff = Date.now() - 24 * 60 * 60 * 1e3;
       result.stale_worktrees_count = result.delegated_worktrees.filter((n) => {
         try {
-          return statSync(path11.join(worktreeDir, n)).mtimeMs < cutoff;
+          return statSync(path13.join(worktreeDir, n)).mtimeMs < cutoff;
         } catch {
           return false;
         }
@@ -28157,6 +28992,72 @@ async function checkClaudeStatus(cwd) {
   } catch {
   }
   return result;
+}
+async function computeApplyPreviewToken(changes, worktreeRoot, cwd) {
+  const hash2 = createHash4("sha256");
+  hash2.update("v2:");
+  const sorted = [...changes].sort((a, b) => {
+    const cmp = a.file.localeCompare(b.file);
+    if (cmp !== 0) return cmp;
+    return a.status.localeCompare(b.status);
+  });
+  hash2.update(`n:${sorted.length},`);
+  for (const c of sorted) {
+    hash2.update(`${c.status}:${c.file}`);
+    if (c.old_file) hash2.update(`>${c.old_file}`);
+    hash2.update(";");
+  }
+  for (const c of sorted) {
+    if (c.status === "D") {
+      hash2.update("D:");
+      hash2.update(c.file);
+      hash2.update(";");
+      continue;
+    }
+    const filePath = path13.join(worktreeRoot, c.file);
+    try {
+      const content = await readFile10(filePath);
+      const contentHash = createHash4("sha256").update(content).digest("hex");
+      hash2.update("F:");
+      hash2.update(c.file);
+      hash2.update(":");
+      hash2.update(contentHash);
+      hash2.update(";");
+    } catch {
+      hash2.update("X:");
+      hash2.update(c.file);
+      hash2.update(";");
+    }
+  }
+  const allTargets = /* @__PURE__ */ new Set();
+  for (const c of sorted) {
+    allTargets.add(c.file);
+    if (c.old_file) allTargets.add(c.old_file);
+  }
+  const sortedTargets = [...allTargets].sort();
+  hash2.update("T:");
+  for (const target of sortedTargets) {
+    const absPath = path13.join(cwd, target);
+    hash2.update(target);
+    hash2.update(":");
+    try {
+      const st = await stat6(absPath);
+      if (st.isDirectory()) {
+        hash2.update("D;");
+      } else if (st.isFile()) {
+        const content = await readFile10(absPath);
+        const contentHash = createHash4("sha256").update(content).digest("hex");
+        hash2.update("F:");
+        hash2.update(contentHash);
+        hash2.update(";");
+      } else {
+        hash2.update("U;");
+      }
+    } catch {
+      hash2.update("M;");
+    }
+  }
+  return hash2.digest("hex");
 }
 async function runClaudeApply(input, runId) {
   const startTime = Date.now();
@@ -28172,7 +29073,7 @@ async function runClaudeApply(input, runId) {
       error: result.error,
       duration_ms: Date.now() - startTime
     }, input.cwd);
-    const wtRelPath = path11.join(".claude", "worktrees", path11.basename(path11.resolve(input.cwd, input.worktree_path)));
+    const wtRelPath = path13.join(".claude", "worktrees", path13.basename(path13.resolve(input.cwd, input.worktree_path)));
     if (input.preview === true) {
       await updateImplementLifecycleForWorktree(wtRelPath, {
         current_lifecycle: result.error ? "apply_blocked" : "success",
@@ -28198,15 +29099,15 @@ async function runClaudeApply(input, runId) {
     }
     return result;
   };
-  const wtReal = path11.resolve(input.cwd, input.worktree_path);
-  const wtDir = path11.join(input.cwd, ".claude", "worktrees");
-  if (!wtReal.startsWith(wtDir + path11.sep)) {
+  const wtReal = path13.resolve(input.cwd, input.worktree_path);
+  const wtDir = path13.join(input.cwd, ".claude", "worktrees");
+  if (!wtReal.startsWith(wtDir + path13.sep)) {
     return finish({ applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: `worktree_path must be under ${wtDir}` });
   }
-  if (!wtReal.startsWith(wtDir + path11.sep + "codex-delegated-")) {
+  if (!wtReal.startsWith(wtDir + path13.sep + "codex-delegated-")) {
     return finish({ applied_files: [], diff_stat: "", cleanup_performed: false, conflicts: [], error: "worktree_path must be a delegated worktree (codex-delegated-*)" });
   }
-  const nestedMarker = `${path11.sep}.claude${path11.sep}worktrees${path11.sep}codex-delegated-`;
+  const nestedMarker = `${path13.sep}.claude${path13.sep}worktrees${path13.sep}codex-delegated-`;
   const firstMarkerIdx = wtReal.indexOf(nestedMarker);
   if (firstMarkerIdx >= 0 && wtReal.indexOf(nestedMarker, firstMarkerIdx + 1) >= 0) {
     return finish({
@@ -28224,7 +29125,7 @@ async function runClaudeApply(input, runId) {
   }
   const worktreeLock = await acquireFileLock({
     cwd: input.cwd,
-    resource: `worktree:${path11.basename(wtReal)}`
+    resource: `worktree:${path13.basename(wtReal)}`
   }).catch((err) => {
     if (err instanceof LockBusyError) return err;
     throw err;
@@ -28235,19 +29136,52 @@ async function runClaudeApply(input, runId) {
       diff_stat: "",
       cleanup_performed: false,
       conflicts: [],
-      error: `Another operation (implement/apply/cleanup) is already using delegated worktree ${path11.basename(wtReal)}. Retry after the current operation finishes.`,
+      error: `Another operation (implement/apply/cleanup) is already using delegated worktree ${path13.basename(wtReal)}. Retry after the current operation finishes.`,
       preview: input.preview === true,
       planned_changes: []
     });
   }
   try {
-    let addChange2 = function(change) {
-      if (hasObservedScope && !observedChangedFiles.some((observed) => isUnderRequestedFile(change.file, observed))) {
-        return;
+    let parseRCOldFiles2 = function(raw) {
+      const result = /* @__PURE__ */ new Map();
+      const entries = raw.split("\0");
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
+        if (!entry) continue;
+        const tabIdx = entry.indexOf("	");
+        let rawStatus, firstPath;
+        let consumed = false;
+        if (tabIdx > 0) {
+          rawStatus = entry.slice(0, tabIdx);
+          firstPath = entry.slice(tabIdx + 1);
+        } else if (/^[A-Z?][0-9]*$/.test(entry)) {
+          rawStatus = entry;
+          firstPath = entries[i + 1] ?? "";
+          consumed = true;
+        } else {
+          continue;
+        }
+        const code = rawStatus[0] ?? "?";
+        if ((code === "R" || code === "C") && firstPath) {
+          const dest = entries[i + (consumed ? 2 : 1)];
+          if (dest) {
+            result.set(dest, { status: code, old_file: firstPath });
+          }
+          if (consumed) i++;
+          if (dest) i++;
+        }
+      }
+      return result;
+    }, addChange2 = function(change) {
+      if (hasObservedScope) {
+        if (!observedChangedFiles.some(
+          (o) => isUnderRequestedFile(change.file, o) || change.file.endsWith("/") && isUnderRequestedFile(o, change.file)
+        )) return;
+        if (change.old_file && !observedChangedFiles.some((o) => isUnderRequestedFile(change.old_file, o))) return;
       }
       changesByFile.set(change.file, change);
     };
-    var addChange = addChange2;
+    var parseRCOldFiles = parseRCOldFiles2, addChange = addChange2;
     if (input.preview !== true && input.confirmed_by_user !== true) {
       return finish({
         applied_files: [],
@@ -28259,7 +29193,7 @@ async function runClaudeApply(input, runId) {
         planned_changes: []
       });
     }
-    const wtRelPath = path11.join(".claude", "worktrees", path11.basename(wtReal));
+    const wtRelPath = path13.join(".claude", "worktrees", path13.basename(wtReal));
     const jobMatch = await findImplementJobForWorktree(wtRelPath, input.cwd);
     let implementLog = null;
     if (jobMatch?.run_id) {
@@ -28277,7 +29211,7 @@ async function runClaudeApply(input, runId) {
     const hasObservedScope = baseCommit !== void 0 && observedChangedFiles.length > 0;
     const pathspecs = hasObservedScope ? observedChangedFiles : [];
     if (!baseCommit) {
-      const wtName = path11.basename(wtReal);
+      const wtName = path13.basename(wtReal);
       return finish({
         applied_files: [],
         diff_stat: "",
@@ -28291,28 +29225,57 @@ async function runClaudeApply(input, runId) {
     let diffStat = "";
     diffStat = await execCapture("git", ["diff", "--stat", baseCommit, "HEAD", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => "");
     const [trackedStatus, uncommittedStatus, untrackedStatus] = await Promise.all([
-      execCapture("git", ["diff", "--name-status", "-z", baseCommit, "HEAD", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => ""),
-      execCapture("git", ["diff", "--name-status", "-z", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => ""),
-      execCapture("git", ["status", "--porcelain=v1", "-z", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => "")
+      execCapture("git", ["diff", "--name-status", "-z", "--find-copies=100%", "--find-copies-harder", baseCommit, "HEAD"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => ""),
+      execCapture("git", ["diff", "--name-status", "-z", "--find-copies=100%", "--find-copies-harder"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => ""),
+      execCapture("git", ["status", "--porcelain=v1", "-z"], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => "")
     ]);
+    const rcMap = new Map([...parseRCOldFiles2(trackedStatus), ...parseRCOldFiles2(uncommittedStatus)]);
     const changesByFile = /* @__PURE__ */ new Map();
-    for (const change of parseNameStatusPorcelainZ(trackedStatus)) addChange2(change);
-    for (const change of parseNameStatusPorcelainZ(uncommittedStatus)) addChange2(change);
+    for (const change of parseNameStatusPorcelainZ(trackedStatus)) {
+      if (change.status === "unsupported" && rcMap.has(change.file)) {
+        const rc = rcMap.get(change.file);
+        addChange2({ status: rc.status, file: change.file, old_file: rc.old_file });
+      } else if (change.status === "unsupported") {
+        addChange2({ status: "unsupported", file: change.file });
+      } else {
+        addChange2(change);
+      }
+    }
+    for (const change of parseNameStatusPorcelainZ(uncommittedStatus)) {
+      if (change.status === "unsupported" && rcMap.has(change.file)) {
+        const rc = rcMap.get(change.file);
+        addChange2({ status: rc.status, file: change.file, old_file: rc.old_file });
+      } else if (change.status === "unsupported") {
+        addChange2({ status: "unsupported", file: change.file });
+      } else {
+        addChange2(change);
+      }
+    }
     for (const change of parseStatusPorcelainZ(untrackedStatus)) addChange2(change);
+    const submodulePaths = await collectSubmodulePaths(wtReal, baseCommit);
     const changes = (await Promise.all(
-      [...changesByFile.values()].map((change) => expandDirectoryChange(change, wtReal))
+      [...changesByFile.values()].map(
+        (change) => containingSubmodule(change.file, submodulePaths) === null ? expandDirectoryChange(change, wtReal) : Promise.resolve([change])
+      )
     )).flat().sort((a, b) => a.file.localeCompare(b.file));
     if (!diffStat.trim() && changes.length > 0) {
       diffStat = changes.map((c) => `${c.status}	${c.file}`).join("\n");
     }
-    const plannedChanges = changes.map((c) => ({ status: c.status, file: c.file }));
+    const plannedChanges = changes.map((c) => {
+      const planned = { status: c.status, file: c.file };
+      if (c.old_file) planned.old_file = c.old_file;
+      return planned;
+    });
+    const freshToken = await computeApplyPreviewToken(plannedChanges, wtReal, input.cwd);
+    const ignoredChanges = input.preview === true ? await collectIgnoredChanges(wtReal) : void 0;
+    const withIgnored = (result) => input.preview === true ? { ...result, ignored_changes: ignoredChanges ?? [] } : result;
     if (changes.length === 0) {
-      return finish({ applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts: [], error: "No changed files found in worktree", preview: input.preview === true, planned_changes: plannedChanges });
+      return finish(withIgnored({ applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts: [], error: "No changed files found in worktree", preview: input.preview === true, planned_changes: plannedChanges }));
     }
     const resourceLimits = implementLog?.observed?.resource_limits;
     if (resourceLimits?.changed_files_exceeded === true) {
       const warnings = Array.isArray(resourceLimits.warnings) ? resourceLimits.warnings.filter((item) => typeof item === "string") : [];
-      return finish({
+      return finish(withIgnored({
         applied_files: [],
         diff_stat: diffStat,
         cleanup_performed: false,
@@ -28320,12 +29283,12 @@ async function runClaudeApply(input, runId) {
         error: "Worktree exceeded implement resource limits; apply refused",
         preview: input.preview === true,
         planned_changes: plannedChanges
-      });
+      }));
     }
     const observedScope = implementLog?.observed?.scope;
     if (observedScope?.scope_exceeded === true) {
       const warnings = Array.isArray(observedScope.warnings) ? observedScope.warnings.filter((item) => typeof item === "string") : [];
-      return finish({
+      return finish(withIgnored({
         applied_files: [],
         diff_stat: diffStat,
         cleanup_performed: false,
@@ -28333,25 +29296,167 @@ async function runClaudeApply(input, runId) {
         error: "Worktree contains changes outside requested files; apply refused",
         preview: input.preview === true,
         planned_changes: plannedChanges
-      });
+      }));
     }
     const conflicts = [];
-    const validStatuses = /* @__PURE__ */ new Set(["A", "M", "D"]);
+    const conflictFiles = /* @__PURE__ */ new Set();
+    const validStatuses = /* @__PURE__ */ new Set(["A", "M", "D", "R", "C"]);
     for (const c of changes) {
       if (!validStatuses.has(c.status)) {
-        conflicts.push(`${c.file}: unsupported status "${c.status}" (only A/M/D supported)`);
+        conflicts.push(`${c.file}: unsupported status "${c.status}" (only A/M/D/R/C supported)`);
+        conflictFiles.add(c.file);
         continue;
       }
+      if ((c.status === "R" || c.status === "C") && !c.old_file) {
+        conflicts.push(`${c.file}: "${c.status}" change is missing a source path (old_file)`);
+        conflictFiles.add(c.file);
+        continue;
+      }
+      const checkFiles = c.old_file ? [c.file, c.old_file] : [c.file];
+      for (const checkFile of checkFiles) {
+        if (conflictFiles.has(checkFile)) continue;
+        const submodule = containingSubmodule(checkFile, submodulePaths);
+        if (submodule !== null) {
+          conflicts.push(
+            checkFile === submodule ? `${checkFile}: is a submodule (gitlink); submodule write/apply is not supported` : `${checkFile}: lies inside submodule "${submodule}"; submodule write/apply is not supported`
+          );
+          conflictFiles.add(checkFile);
+          continue;
+        }
+        const absPath = path13.join(input.cwd, checkFile);
+        if (c.status !== "D") {
+          try {
+            const mainSt = await stat6(absPath);
+            if (mainSt.isDirectory()) {
+              let wtIsDir = false;
+              let wtExists = false;
+              try {
+                const wtSt = await lstat(path13.join(wtReal, checkFile));
+                wtExists = true;
+                wtIsDir = wtSt.isDirectory();
+              } catch {
+              }
+              if (wtExists && !wtIsDir) {
+                conflicts.push(`${checkFile}: target path is a directory in main workspace but worktree plans a file`);
+                conflictFiles.add(checkFile);
+              }
+            }
+          } catch {
+          }
+        }
+        if (conflictFiles.has(checkFile)) continue;
+        {
+          const parts = checkFile.split("/");
+          for (let pi = 1; pi < parts.length; pi++) {
+            const parentRel = parts.slice(0, pi).join("/");
+            if (conflictFiles.has(parentRel)) {
+              conflictFiles.add(checkFile);
+              break;
+            }
+            try {
+              const parentStat = await stat6(path13.join(input.cwd, parentRel));
+              if (parentStat.isFile()) {
+                conflicts.push(`${checkFile}: parent path "${parentRel}" is a file in main workspace`);
+                conflictFiles.add(checkFile);
+                break;
+              }
+            } catch {
+            }
+          }
+        }
+        if (conflictFiles.has(checkFile)) continue;
+        {
+          const parentDir = path13.dirname(absPath);
+          const baseName = path13.basename(absPath);
+          try {
+            const entries = await readdir4(parentDir);
+            const lowerBase = baseName.toLowerCase();
+            for (const entry of entries) {
+              if (entry !== baseName && entry.toLowerCase() === lowerBase) {
+                conflicts.push(`${checkFile}: case-only sibling conflict with "${path13.join(path13.dirname(checkFile), entry)}"`);
+                conflictFiles.add(checkFile);
+                break;
+              }
+            }
+          } catch {
+          }
+        }
+        if (conflictFiles.has(checkFile)) continue;
+        const gitStatusOut = await execCapture("git", ["status", "--porcelain=v1", "-z", "--", checkFile], { cwd: input.cwd, timeoutMs: 1e4 }).catch(() => "");
+        if (gitStatusOut.trim()) {
+          for (const entry of gitStatusOut.split("\0")) {
+            if (!entry) continue;
+            const code = entry.slice(0, 2);
+            if (code === "??") {
+              conflicts.push(`${checkFile}: untracked file exists in main workspace`);
+            } else if (code.trim()) {
+              conflicts.push(`${checkFile}: main workspace has uncommitted changes (${entry.trim().slice(0, 80)})`);
+            }
+          }
+          conflictFiles.add(checkFile);
+          continue;
+        }
+        try {
+          await execCapture("git", ["check-ignore", "-q", "--", checkFile], { cwd: input.cwd, timeoutMs: 5e3 });
+          if (existsSync3(absPath)) {
+            conflicts.push(`${checkFile}: gitignored file exists in main workspace`);
+            conflictFiles.add(checkFile);
+          }
+        } catch {
+        }
+      }
+    }
+    for (const c of changes) {
+      if (c.status === "D") continue;
+      if (conflictFiles.has(c.file)) continue;
+      const symlinkPath = path13.join(wtReal, c.file);
       try {
-        const shortStat = await execCapture("git", ["status", "--short", "--", c.file], { cwd: input.cwd, timeoutMs: 1e4 });
-        if (shortStat.trim()) {
-          conflicts.push(`${c.file}: main workspace has uncommitted changes (${shortStat.trim().slice(0, 80)})`);
+        const lst = await lstat(symlinkPath);
+        if (lst.isSymbolicLink()) {
+          conflicts.push(`${c.file}: symlink writes are not supported`);
+          conflictFiles.add(c.file);
         }
       } catch {
       }
     }
+    const modeChangePaths = /* @__PURE__ */ new Set();
+    const parseRawModeChanges = (raw) => {
+      for (const line of raw.split("\n")) {
+        if (!line.startsWith(":")) continue;
+        const tabIdx = line.indexOf("	");
+        if (tabIdx < 0) continue;
+        const meta3 = line.slice(0, tabIdx);
+        const afterTabs = line.slice(tabIdx + 1);
+        const parts = afterTabs.split("	");
+        const file2 = parts[parts.length - 1];
+        if (!file2) continue;
+        const metaParts = meta3.slice(1).split(" ");
+        if (metaParts.length < 5) continue;
+        const oldMode = metaParts[0];
+        const newMode = metaParts[1];
+        const rawStatus = metaParts[4];
+        if (rawStatus !== "M") continue;
+        if (oldMode !== newMode) {
+          modeChangePaths.add(file2);
+        }
+      }
+    };
+    const [rawDiffTracked, rawDiffStaged, rawDiffUncommitted] = await Promise.all([
+      execCapture("git", ["diff", "--raw", baseCommit, "HEAD", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => ""),
+      execCapture("git", ["diff", "--raw", "--cached", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => ""),
+      execCapture("git", ["diff", "--raw", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 1e4 }).catch(() => "")
+    ]);
+    parseRawModeChanges(rawDiffTracked);
+    parseRawModeChanges(rawDiffStaged);
+    parseRawModeChanges(rawDiffUncommitted);
+    for (const c of changes) {
+      if (modeChangePaths.has(c.file) && !conflictFiles.has(c.file)) {
+        conflicts.push(`${c.file}: file mode change is not supported`);
+        conflictFiles.add(c.file);
+      }
+    }
     if (conflicts.length > 0) {
-      return finish({ applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts, error: "Main workspace has uncommitted or unsupported changes; apply refused", preview: input.preview === true, planned_changes: plannedChanges });
+      return finish(withIgnored({ applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts, error: "Main workspace has conflicts with planned changes; apply refused", preview: input.preview === true, planned_changes: plannedChanges }));
     }
     let patchResult = {};
     const patchMaxBytes = input.patch_max_bytes ?? 6e4;
@@ -28363,7 +29468,7 @@ async function runClaudeApply(input, runId) {
           timeoutMs: 3e4
         });
       } catch (err) {
-        return finish({
+        return finish(withIgnored({
           applied_files: [],
           diff_stat: diffStat,
           cleanup_performed: false,
@@ -28371,7 +29476,7 @@ async function runClaudeApply(input, runId) {
           error: `Patch generation failed: ${err instanceof Error ? err.message : String(err)}`,
           preview: input.preview === true,
           planned_changes: plannedChanges
-        });
+        }));
       }
       if (fullPatch.trim()) {
         const patchBuf = Buffer.from(fullPatch, "utf8");
@@ -28383,10 +29488,10 @@ async function runClaudeApply(input, runId) {
           patchResult.patch = fullPatch;
           patchResult.patch_truncated = false;
         } else {
-          const patchesDir = path11.join(input.cwd, ".claude", "patches");
-          await mkdir7(patchesDir, { recursive: true });
+          const patchesDir = path13.join(input.cwd, ".claude", "patches");
+          await mkdir8(patchesDir, { recursive: true });
           const patchPath = `.claude/patches/${runId}.patch`;
-          await writeFile7(path11.join(input.cwd, patchPath), fullPatch, "utf8");
+          await writeFile8(path13.join(input.cwd, patchPath), fullPatch, "utf8");
           patchResult.patch_truncated = true;
           patchResult.patch_path = patchPath;
         }
@@ -28406,15 +29511,40 @@ async function runClaudeApply(input, runId) {
         }
       }
     }
+    if (input.include_patch === true) {
+      registerPatchArtifact(input.cwd, runId, patchResult).catch(() => {
+      });
+    }
     if (input.preview) {
-      return finish({
+      return finish(withIgnored({
         applied_files: [],
         diff_stat: diffStat,
         cleanup_performed: false,
         conflicts: [],
         preview: true,
         planned_changes: plannedChanges,
+        preview_token: freshToken,
         ...patchResult
+      }));
+    }
+    if (!input.preview_token) {
+      return finish({
+        applied_files: [],
+        diff_stat: diffStat,
+        cleanup_performed: false,
+        conflicts,
+        error: "Non-preview apply requires preview_token. Call claude_apply(preview=true) first to obtain the token, verify the planned_changes are safe, then pass preview_token on the non-preview apply call.",
+        planned_changes: plannedChanges
+      });
+    }
+    if (input.preview_token !== freshToken) {
+      return finish({
+        applied_files: [],
+        diff_stat: diffStat,
+        cleanup_performed: false,
+        conflicts,
+        error: "preview_token mismatch. The worktree content has changed since the preview was generated. Re-run claude_apply(preview=true) to obtain a fresh token, re-inspect the planned_changes, then apply with the new token.",
+        planned_changes: plannedChanges
       });
     }
     const { applyChangesTransactional: applyChangesTransactional2 } = await Promise.resolve().then(() => (init_transaction(), transaction_exports));
@@ -28447,6 +29577,110 @@ async function runClaudeApply(input, runId) {
     await worktreeLock.release();
   }
 }
+async function runClaudeExport(input) {
+  const wtReal = path13.resolve(input.cwd, input.worktree_path);
+  const wtDir = path13.join(input.cwd, ".claude", "worktrees");
+  if (!wtReal.startsWith(wtDir + path13.sep)) {
+    return { error: `worktree_path must be under ${wtDir}` };
+  }
+  if (!wtReal.startsWith(wtDir + path13.sep + "codex-delegated-")) {
+    return { error: "worktree_path must be a delegated worktree (codex-delegated-*)" };
+  }
+  const nestedMarker = `${path13.sep}.claude${path13.sep}worktrees${path13.sep}codex-delegated-`;
+  const firstMarkerIdx = wtReal.indexOf(nestedMarker);
+  if (firstMarkerIdx >= 0 && wtReal.indexOf(nestedMarker, firstMarkerIdx + 1) >= 0) {
+    return { error: "Nested delegated worktrees are not supported by claude_export. Use the original repository cwd and top-level delegated worktree path instead." };
+  }
+  if (!existsSync3(wtReal)) {
+    return { error: `worktree directory not found: ${wtReal}` };
+  }
+  const worktreeLock = await acquireFileLock({
+    cwd: input.cwd,
+    resource: `worktree:${path13.basename(wtReal)}`
+  }).catch((err) => {
+    if (err instanceof LockBusyError) return err;
+    throw err;
+  });
+  if (worktreeLock instanceof LockBusyError) {
+    return {
+      error: `Another operation (implement/apply/cleanup/export) is already using delegated worktree ${path13.basename(wtReal)}. Retry after the current operation finishes.`
+    };
+  }
+  try {
+    const wtRelPath = path13.join(".claude", "worktrees", path13.basename(wtReal));
+    const jobMatch = await findImplementJobForWorktree(wtRelPath, input.cwd);
+    let implementLog = null;
+    if (jobMatch?.run_id) {
+      const raw = await readRunLogFile(jobMatch.run_id, input.cwd);
+      if (raw) {
+        implementLog = ImplementRunLogSchema.parse(raw);
+      }
+    }
+    if (!implementLog) {
+      implementLog = await findImplementLogForWorktree(wtRelPath, input.cwd);
+    }
+    const baseCommit = typeof implementLog?.observed?.base_commit === "string" ? implementLog.observed.base_commit.trim() : void 0;
+    const observedChangedFiles = Array.isArray(implementLog?.observed?.changed_files) ? implementLog.observed.changed_files.filter((item) => typeof item === "string" && item.length > 0) : [];
+    if (!baseCommit || observedChangedFiles.length === 0) {
+      return { error: `No implement metadata found for worktree "${path13.basename(wtReal)}". The implement run's base commit and changed files could not be resolved.` };
+    }
+    const resourceLimits = implementLog?.observed?.resource_limits;
+    if (resourceLimits?.changed_files_exceeded === true) {
+      return { error: "Worktree exceeded implement resource limits; export refused" };
+    }
+    const observedScope = implementLog?.observed?.scope;
+    if (observedScope?.scope_exceeded === true) {
+      return { error: "Worktree contains changes outside requested files; export refused" };
+    }
+    try {
+      await execCapture("git", ["check-ref-format", "--branch", input.branch], { cwd: input.cwd, timeoutMs: 5e3 });
+    } catch {
+      return { error: `Invalid branch name: "${input.branch}". Branch names must follow git ref format rules.` };
+    }
+    const branchExists = await execCapture("git", ["rev-parse", "--verify", `refs/heads/${input.branch}`], { cwd: input.cwd, timeoutMs: 5e3 }).then(() => true).catch(() => false);
+    if (branchExists && input.force !== true) {
+      return { error: `Branch "${input.branch}" already exists. Use force=true to overwrite.` };
+    }
+    const tmpIndex = path13.join(os.tmpdir(), `claude-export-${randomUUID4()}`);
+    const tempIndexEnv = { GIT_INDEX_FILE: tmpIndex };
+    try {
+      await execCapture("git", ["read-tree", baseCommit], { cwd: wtReal, timeoutMs: 1e4, env: tempIndexEnv });
+      const existingFiles = observedChangedFiles.filter((file2) => existsSync3(path13.join(wtReal, file2)));
+      if (existingFiles.length > 0) {
+        await execCapture("git", ["add", "--", ...existingFiles], { cwd: wtReal, timeoutMs: 3e4, env: tempIndexEnv });
+      }
+      const deletedFiles = observedChangedFiles.filter((file2) => !existsSync3(path13.join(wtReal, file2)));
+      if (deletedFiles.length > 0) {
+        await execCapture("git", ["rm", "--cached", "--", ...deletedFiles], { cwd: wtReal, timeoutMs: 1e4, env: tempIndexEnv });
+      }
+      const treeSha = await execCapture("git", ["write-tree"], { cwd: wtReal, timeoutMs: 1e4, env: tempIndexEnv });
+      const baseTreeSha = await execCapture("git", ["rev-parse", `${baseCommit}^{tree}`], { cwd: wtReal, timeoutMs: 5e3 });
+      if (treeSha === baseTreeSha) {
+        return { error: "No changes detected in observed files." };
+      }
+      const message = input.message ?? `Export changes from ${path13.basename(wtRelPath)}`;
+      const commitSha = await execCapture("git", ["commit-tree", treeSha, "-p", baseCommit, "-m", message], { cwd: wtReal, timeoutMs: 1e4 });
+      if (branchExists && input.force === true) {
+        await execCapture("git", ["branch", "-f", input.branch, commitSha], { cwd: input.cwd, timeoutMs: 1e4 });
+      } else {
+        await execCapture("git", ["branch", input.branch, commitSha], { cwd: input.cwd, timeoutMs: 1e4 });
+      }
+      return {
+        branch: input.branch,
+        commit_sha: commitSha,
+        base_commit: baseCommit,
+        tree_sha: treeSha,
+        file_count: observedChangedFiles.length,
+        worktree_path: input.worktree_path
+      };
+    } finally {
+      await unlink3(tmpIndex).catch(() => {
+      });
+    }
+  } finally {
+    await worktreeLock.release();
+  }
+}
 async function runClaudeCleanup(input, runId) {
   const startTime = Date.now();
   const dryRun = input.dry_run !== false;
@@ -28471,7 +29705,7 @@ async function runClaudeCleanup(input, runId) {
     };
   }
   try {
-    const worktreeDir = path11.join(input.cwd, ".claude", "worktrees");
+    const worktreeDir = path13.join(input.cwd, ".claude", "worktrees");
     const entries = [];
     let removedCount = 0;
     let failedCount = 0;
@@ -28484,8 +29718,8 @@ async function runClaudeCleanup(input, runId) {
       const dirs = readdirSync(worktreeDir, { withFileTypes: true }).filter((d) => d.isDirectory() && d.name.startsWith("codex-delegated-")).map((d) => d.name);
       const cutoff = olderThanHours > 0 ? Date.now() - olderThanHours * 60 * 60 * 1e3 : 0;
       for (const name of dirs) {
-        const dirPath = path11.join(worktreeDir, name);
-        const wtRelPath = path11.join(".claude", "worktrees", name);
+        const dirPath = path13.join(worktreeDir, name);
+        const wtRelPath = path13.join(".claude", "worktrees", name);
         const activeJob = await findActiveImplementByWorktree2({ cwd: input.cwd, worktree_name: name });
         if (activeJob) {
           entries.push({
@@ -28832,7 +30066,7 @@ var BASE_TOOL_DEFINITIONS = [
   },
   {
     name: "claude_apply",
-    description: "Default tool. Preview a delegated worktree diff, or apply it only after explicit user approval. Non-preview apply requires confirmed_by_user=true.",
+    description: "Default tool. Preview a delegated worktree diff, or apply it only after explicit user approval. Non-preview apply requires preview_token (obtained from preview=true) to prevent TOCTOU between preview and apply.",
     inputSchema: {
       type: "object",
       required: ["cwd", "worktree_path"],
@@ -28840,14 +30074,18 @@ var BASE_TOOL_DEFINITIONS = [
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
         worktree_path: { type: "string", description: "Path to worktree, e.g. .claude/worktrees/codex-delegated-xxx" },
         cleanup: { type: "boolean", description: "Remove worktree after successful apply (default false)" },
-        preview: { type: "boolean", description: "Preview which files would be applied without modifying the main working tree" },
+        preview: { type: "boolean", description: "Preview which files would be applied without modifying the main working tree. Returns a preview_token for binding the subsequent apply." },
         background: { type: "boolean", description: "Queue apply as a persistent background job" },
         confirmed_by_user: {
           type: "boolean",
           description: "Required for non-preview apply after the user explicitly approves applying the previewed diff. Not required for preview=true."
         },
         include_patch: { type: "boolean", description: "Generate a binary git diff patch for previewed planned_changes. The patch covers tracked committed and uncommitted changes within the observed scope." },
-        patch_max_bytes: { type: "number", description: "Maximum inline patch bytes before writing to a persistent .claude/patches/<runId>.patch file (default 60000, min 1024, max 500000)." }
+        patch_max_bytes: { type: "number", description: "Maximum inline patch bytes before writing to a persistent .claude/patches/<runId>.patch file (default 60000, min 1024, max 500000)." },
+        preview_token: {
+          type: "string",
+          description: "64-char hex token from a preview=true call. Required for non-preview apply. Binds the apply to the exact content that was previewed. If the worktree has changed since the preview, the apply will be rejected with a token mismatch error."
+        }
       }
     }
   },
@@ -28862,6 +30100,21 @@ var BASE_TOOL_DEFINITIONS = [
         older_than_hours: { type: "number", description: "Only remove worktrees older than this many hours (0 = all delegated worktrees)" },
         dry_run: { type: "boolean", description: "List worktrees without removing (default true)" },
         background: { type: "boolean", description: "Queue cleanup as a persistent background job" }
+      }
+    }
+  },
+  {
+    name: "claude_export",
+    description: "Advanced / Debug. Export a delegated worktree's observed changes to a local branch without modifying the main workspace. Creates a commit from the worktree's implement run metadata and creates a local branch ref.",
+    inputSchema: {
+      type: "object",
+      required: ["cwd", "worktree_path", "branch"],
+      properties: {
+        cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
+        worktree_path: { type: "string", description: "Path to worktree, e.g. .claude/worktrees/codex-delegated-xxx" },
+        branch: { type: "string", description: "Name of the local branch to create with exported changes" },
+        message: { type: "string", description: "Custom commit message (default: auto-generated)" },
+        force: { type: "boolean", description: "Overwrite existing branch if it already exists" }
       }
     }
   }
@@ -28954,6 +30207,11 @@ var DEFAULT_TOOL_METADATA = {
   },
   claude_cleanup: {
     title: "Clean Delegated Worktrees",
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+    outputSchema: { type: "object", additionalProperties: true }
+  },
+  claude_export: {
+    title: "Export Delegated Changes",
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
     outputSchema: { type: "object", additionalProperties: true }
   }
@@ -29351,16 +30609,16 @@ async function handleToolCall(name, args, runId = randomUUID5()) {
         const startTime = Date.now();
         const parsed = claudeApplyInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { cwd, worktree_path, cleanup, preview, background, confirmed_by_user, include_patch, patch_max_bytes } = parsed.data;
+        const { cwd, worktree_path, cleanup, preview, background, confirmed_by_user, include_patch, patch_max_bytes, preview_token } = parsed.data;
         const check2 = await validateCwd(cwd);
         if (!check2.ok) return errorResult(check2.error);
         if (background === true) {
           return jsonResult(await startBackgroundApply2(
-            { cwd: check2.resolved, worktree_path, cleanup, preview, background, confirmed_by_user, include_patch, patch_max_bytes }
+            { cwd: check2.resolved, worktree_path, cleanup, preview, background, confirmed_by_user, include_patch, patch_max_bytes, preview_token }
           ));
         }
         const result = await runClaudeApply(
-          { cwd: check2.resolved, worktree_path, cleanup, preview, confirmed_by_user, include_patch, patch_max_bytes },
+          { cwd: check2.resolved, worktree_path, cleanup, preview, confirmed_by_user, include_patch, patch_max_bytes, preview_token },
           runId
         );
         const payload = {
@@ -29370,7 +30628,7 @@ async function handleToolCall(name, args, runId = randomUUID5()) {
         };
         let applyInteraction;
         if (result.preview) {
-          applyInteraction = { headline: "Delegated changes are ready for review.", state: "apply_preview", next_step: "Review planned_changes. If safe, ask the user whether to apply these changes." };
+          applyInteraction = { headline: "Delegated changes are ready for review.", state: "apply_preview", next_step: "Review planned_changes. If safe, ask the user whether to apply these changes. To apply, pass the preview_token from this response to claude_apply with confirmed_by_user=true." };
         } else if (result.dirty_recovery_needed) {
           applyInteraction = { headline: "Apply rollback failed \u2014 workspace may be dirty.", state: "needs_user", next_step: "Inspect dirty_files and restore affected files manually. Backup data may be preserved." };
         } else if (result.error) {
@@ -29408,6 +30666,27 @@ async function handleToolCall(name, args, runId = randomUUID5()) {
           state: dry_run ? "cleanup_preview" : "cleaned",
           next_step: dry_run ? "Review entries. If these worktrees are no longer needed, call claude_cleanup with dry_run=false." : "Run claude_cleanup dry_run=true again only if you want to confirm no stale delegated worktrees remain."
         }));
+      }
+      case "claude_export": {
+        const startTime = Date.now();
+        const parsed = claudeExportInputSchema.safeParse(args);
+        if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
+        const { cwd, worktree_path, branch, message, force } = parsed.data;
+        const check2 = await validateCwd(cwd);
+        if (!check2.ok) return errorResult(check2.error);
+        const result = await runClaudeExport({
+          cwd: check2.resolved,
+          worktree_path,
+          branch,
+          message,
+          force
+        });
+        const payload = {
+          ...result,
+          execution: localExecution(startTime),
+          warnings: result.error ? [result.error] : []
+        };
+        return jsonResult(payload);
       }
       default:
         return errorResult(`Unknown tool: ${name}`);

@@ -13,6 +13,7 @@ export interface CliDependencies {
   writeErr?: (text: string) => void;
   startMcp?: () => Promise<void>;
   runUninstall?: (args: string[]) => number;
+  runMcpLaunchSmoke?: () => Promise<LaunchSmokeResult>;
 }
 
 export type DoctorStatus = "ready" | "not_ready" | "needs_setup" | "needs_attention";
@@ -276,7 +277,7 @@ function runLocalMcpLaunchSmoke(timeoutMs = MCP_LAUNCH_SMOKE_TIMEOUT_MS): Promis
   });
 }
 
-async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "writeErr">>, json?: boolean): Promise<number> {
+async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "writeErr">> & Pick<CliDependencies, "runMcpLaunchSmoke">, json?: boolean): Promise<number> {
   const { execCapture } = await import("./guard.js");
   const { scanClaudeDelegateConfig } = await import("./codex-config.js");
   const { getAllowRoots } = await import("./guard.js");
@@ -416,7 +417,7 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
     } else if (!result.checks.package.ok) {
       result.checks.mcp_server.launch_smoke = { ok: false, detail: "Skipped because package info could not be read." };
     } else {
-      const launchSmoke = await runLocalMcpLaunchSmoke();
+      const launchSmoke = await (deps.runMcpLaunchSmoke ?? runLocalMcpLaunchSmoke)();
       result.checks.mcp_server.launch_smoke = launchSmoke;
       if (!launchSmoke.ok) {
         notReady = true;
@@ -917,7 +918,7 @@ export async function runCli(argv = process.argv, deps: CliDependencies = {}): P
 
     if (command === "doctor") {
       const isJson = args.includes("--json");
-      const io: Required<Pick<CliDependencies, "writeOut" | "writeErr">> = { writeOut, writeErr };
+      const io: Required<Pick<CliDependencies, "writeOut" | "writeErr">> & Pick<CliDependencies, "runMcpLaunchSmoke"> = { writeOut, writeErr, runMcpLaunchSmoke: deps.runMcpLaunchSmoke };
       return doctorCommand(io, isJson);
     }
 
