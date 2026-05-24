@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6873,6 +6873,587 @@ describe("runClaudeImplement — permission_denials warnings", () => {
       expect(result.error).toContain("resource limits");
 
       vi.resetModules();
+    });
+  });
+
+  describe("runClaudeApply — main workspace collision matrix", () => {
+    it("a. refuses apply when a tracked target is dirty in main workspace", async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-dirty-"));
+      cleanupPaths.push(root);
+      const repo = path.join(root, "repo");
+      const logDir = path.join(root, "runs");
+      await mkdir(logDir, { recursive: true });
+      sh(root, "git", "init", repo);
+      sh(repo, "git", "config", "user.name", "Test User");
+      sh(repo, "git", "config", "user.email", "test@example.com");
+      await writeFile(path.join(repo, "target.txt"), "original\n");
+      await writeFile(path.join(repo, "README.md"), "# main\n");
+      sh(repo, "git", "add", ".");
+      sh(repo, "git", "commit", "-m", "init");
+
+      const worktreeRel = ".claude/worktrees/codex-delegated-dirty";
+      sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+      const worktree = path.join(repo, worktreeRel);
+      const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+      // Modify target in worktree
+      await writeFile(path.join(worktree, "target.txt"), "modified in worktree\n");
+      sh(worktree, "git", "add", "target.txt");
+      sh(worktree, "git", "commit", "-m", "modify target");
+
+      // Dirty the same file in main workspace
+      await writeFile(path.join(repo, "target.txt"), "dirty in main\n");
+
+      await writeApplyLog(logDir, "implement-dirty.json", worktreeRel, baseCommit, ["target.txt"]);
+
+      process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+      vi.resetModules();
+      const reloaded = await import("../src/claude-cli.js");
+      const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "run-dirty");
+
+      expect(preview.error).toContain("apply refused");
+      expect(preview.conflicts.some((c: string) => c.includes("target.txt") && c.includes("uncommitted changes"))).toBe(true);
+      expect(preview.applied_files).toEqual([]);
+    });
+
+    it("b. refuses apply when an untracked exact target exists in main workspace", async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-untracked-"));
+      cleanupPaths.push(root);
+      const repo = path.join(root, "repo");
+      const logDir = path.join(root, "runs");
+      await mkdir(logDir, { recursive: true });
+      sh(root, "git", "init", repo);
+      sh(repo, "git", "config", "user.name", "Test User");
+      sh(repo, "git", "config", "user.email", "test@example.com");
+      await writeFile(path.join(repo, "README.md"), "# main\n");
+      sh(repo, "git", "add", ".");
+      sh(repo, "git", "commit", "-m", "init");
+
+      const worktreeRel = ".claude/worktrees/codex-delegated-untracked";
+      sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+      const worktree = path.join(repo, worktreeRel);
+      const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+      // Add a new file in worktree
+      await writeFile(path.join(worktree, "newfile.txt"), "new content\n");
+      sh(worktree, "git", "add", "newfile.txt");
+      sh(worktree, "git", "commit", "-m", "add newfile");
+
+      // Create same file as untracked in main workspace
+      await writeFile(path.join(repo, "newfile.txt"), "untracked in main\n");
+
+      await writeApplyLog(logDir, "implement-untracked.json", worktreeRel, baseCommit, ["newfile.txt"]);
+
+      process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+      vi.resetModules();
+      const reloaded = await import("../src/claude-cli.js");
+      const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "run-untracked");
+
+      expect(preview.error).toContain("apply refused");
+      expect(preview.conflicts.some((c: string) => c.includes("newfile.txt") && c.includes("untracked"))).toBe(true);
+      expect(preview.applied_files).toEqual([]);
+    });
+
+    it("c. refuses apply when a gitignored exact target exists in main workspace", async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-ignored-"));
+      cleanupPaths.push(root);
+      const repo = path.join(root, "repo");
+      const logDir = path.join(root, "runs");
+      await mkdir(logDir, { recursive: true });
+      sh(root, "git", "init", repo);
+      sh(repo, "git", "config", "user.name", "Test User");
+      sh(repo, "git", "config", "user.email", "test@example.com");
+      await writeFile(path.join(repo, "README.md"), "# main\n");
+      await writeFile(path.join(repo, ".gitignore"), "ignored.txt\n");
+      sh(repo, "git", "add", ".");
+      sh(repo, "git", "commit", "-m", "init");
+
+      const worktreeRel = ".claude/worktrees/codex-delegated-ignored";
+      sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+      const worktree = path.join(repo, worktreeRel);
+      const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+      // Add ignored.txt in worktree (not ignored in worktree since it's committed)
+      await writeFile(path.join(worktree, "ignored.txt"), "new content\n");
+      sh(worktree, "git", "add", "-f", "ignored.txt");
+      sh(worktree, "git", "commit", "-m", "add ignored file");
+
+      // Create ignored.txt in main workspace (it IS ignored due to .gitignore)
+      await writeFile(path.join(repo, "ignored.txt"), "ignored in main\n");
+
+      await writeApplyLog(logDir, "implement-ignored.json", worktreeRel, baseCommit, ["ignored.txt"]);
+
+      process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+      vi.resetModules();
+      const reloaded = await import("../src/claude-cli.js");
+      const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "run-ignored");
+
+      expect(preview.error).toContain("apply refused");
+      expect(preview.conflicts.some((c: string) => c.includes("ignored.txt") && /gitignored|ignored/.test(c))).toBe(true);
+      expect(preview.applied_files).toEqual([]);
+    });
+
+    it("d. refuses apply when target path is a directory in main workspace but worktree plans a file", async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-dirfile-"));
+      cleanupPaths.push(root);
+      const repo = path.join(root, "repo");
+      const logDir = path.join(root, "runs");
+      await mkdir(logDir, { recursive: true });
+      sh(root, "git", "init", repo);
+      sh(repo, "git", "config", "user.name", "Test User");
+      sh(repo, "git", "config", "user.email", "test@example.com");
+      // Main repo has a directory "mydir" with a file inside
+      await mkdir(path.join(repo, "mydir"), { recursive: true });
+      await writeFile(path.join(repo, "mydir", "sub.txt"), "sub content\n");
+      await writeFile(path.join(repo, "README.md"), "# main\n");
+      sh(repo, "git", "add", ".");
+      sh(repo, "git", "commit", "-m", "init with directory");
+
+      const worktreeRel = ".claude/worktrees/codex-delegated-dirfile";
+      sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+      const worktree = path.join(repo, worktreeRel);
+      const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+      // Replace directory with a file in worktree
+      await rm(path.join(worktree, "mydir"), { recursive: true, force: true });
+      await writeFile(path.join(worktree, "mydir"), "now a file\n");
+      sh(worktree, "git", "add", "-A");
+      sh(worktree, "git", "commit", "-m", "replace dir with file");
+
+      await writeApplyLog(logDir, "implement-dirfile.json", worktreeRel, baseCommit, ["mydir"]);
+
+      process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+      vi.resetModules();
+      const reloaded = await import("../src/claude-cli.js");
+      const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "run-dirfile");
+
+      expect(preview.error).toContain("apply refused");
+      expect(preview.conflicts.some((c: string) => c.includes("mydir") && c.includes("directory"))).toBe(true);
+      expect(preview.applied_files).toEqual([]);
+    });
+
+    it("e. refuses apply when a nested file target has a parent that is a file in main workspace", async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-parent-"));
+      cleanupPaths.push(root);
+      const repo = path.join(root, "repo");
+      const logDir = path.join(root, "runs");
+      await mkdir(logDir, { recursive: true });
+      sh(root, "git", "init", repo);
+      sh(repo, "git", "config", "user.name", "Test User");
+      sh(repo, "git", "config", "user.email", "test@example.com");
+      await writeFile(path.join(repo, "parent"), "I am a file\n");
+      await writeFile(path.join(repo, "README.md"), "# main\n");
+      sh(repo, "git", "add", ".");
+      sh(repo, "git", "commit", "-m", "init with parent file");
+
+      const worktreeRel = ".claude/worktrees/codex-delegated-parent";
+      sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+      const worktree = path.join(repo, worktreeRel);
+      const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+      // Replace file "parent" with a directory containing a nested file
+      await rm(path.join(worktree, "parent"), { force: true });
+      await mkdir(path.join(worktree, "parent"), { recursive: true });
+      await writeFile(path.join(worktree, "parent", "child.txt"), "nested content\n");
+      sh(worktree, "git", "add", "-A");
+      sh(worktree, "git", "commit", "-m", "replace file with dir + nested file");
+
+      await writeApplyLog(logDir, "implement-parent.json", worktreeRel, baseCommit, ["parent/child.txt"]);
+
+      process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+      vi.resetModules();
+      const reloaded = await import("../src/claude-cli.js");
+      const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "run-parent");
+
+      expect(preview.error).toContain("apply refused");
+      expect(preview.conflicts.some((c: string) => c.includes("parent") && c.includes("file in main"))).toBe(true);
+      expect(preview.applied_files).toEqual([]);
+    });
+
+    it("f. refuses case-only sibling conflict and no self-conflict false positive", async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-case-"));
+      cleanupPaths.push(root);
+      const repo = path.join(root, "repo");
+      const logDir = path.join(root, "runs");
+      await mkdir(logDir, { recursive: true });
+      sh(root, "git", "init", repo);
+      sh(repo, "git", "config", "user.name", "Test User");
+      sh(repo, "git", "config", "user.email", "test@example.com");
+
+      // Use distinctly-cased filenames
+      await writeFile(path.join(repo, "MyFile.txt"), "original\n");
+      await writeFile(path.join(repo, "README.md"), "# main\n");
+      sh(repo, "git", "add", ".");
+      sh(repo, "git", "commit", "-m", "init with MyFile.txt");
+
+      const worktreeRel = ".claude/worktrees/codex-delegated-case";
+      sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+      const worktree = path.join(repo, worktreeRel);
+      const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+      // Add a case-variant sibling in worktree. On case-insensitive filesystems
+      // this cannot be represented as a distinct path, so the conflict case is
+      // only asserted where the fixture can actually create the sibling.
+      await writeFile(path.join(worktree, "myfile.txt"), "different case\n");
+      sh(worktree, "git", "add", "myfile.txt");
+      // Also modify the original file so we can test no self-conflict
+      await writeFile(path.join(worktree, "README.md"), "# updated\n");
+      sh(worktree, "git", "add", "README.md");
+      let canRepresentCaseSibling = true;
+      try {
+        sh(worktree, "git", "commit", "-m", "add case variant");
+      } catch {
+        canRepresentCaseSibling = false;
+      }
+      const worktreeEntries = await readdir(worktree);
+      canRepresentCaseSibling = canRepresentCaseSibling
+        && worktreeEntries.includes("MyFile.txt")
+        && worktreeEntries.includes("myfile.txt");
+
+      await writeApplyLog(logDir, "implement-case.json", worktreeRel, baseCommit, ["myfile.txt", "MyFile.txt", "README.md"]);
+
+      process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+      vi.resetModules();
+      const reloaded = await import("../src/claude-cli.js");
+      const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "run-case");
+
+      const caseConflicts = preview.conflicts.filter((c: string) => c.includes("case-only sibling conflict"));
+      // No self-conflict false positive: README.md must not appear
+      expect(caseConflicts.some((c: string) => c.includes("README.md"))).toBe(false);
+      if (canRepresentCaseSibling) {
+        expect(caseConflicts.some((c: string) => c.includes("myfile.txt") && c.includes("MyFile.txt"))).toBe(true);
+        expect(preview.error).toContain("apply refused");
+        expect(preview.applied_files).toEqual([]);
+      }
+    });
+
+    it("g. refuses apply when rename old_file has a dirty collision in main workspace", async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-rename-dirty-"));
+      cleanupPaths.push(root);
+      const repo = path.join(root, "repo");
+      const logDir = path.join(root, "runs");
+      await mkdir(logDir, { recursive: true });
+      sh(root, "git", "init", repo);
+      sh(repo, "git", "config", "user.name", "Test User");
+      sh(repo, "git", "config", "user.email", "test@example.com");
+      await writeFile(path.join(repo, "old.txt"), "old content\n");
+      await writeFile(path.join(repo, "README.md"), "# main\n");
+      sh(repo, "git", "add", ".");
+      sh(repo, "git", "commit", "-m", "init");
+
+      const worktreeRel = ".claude/worktrees/codex-delegated-rename-dirty";
+      sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+      const worktree = path.join(repo, worktreeRel);
+      const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+      // Perform rename in worktree
+      sh(worktree, "git", "mv", "old.txt", "new.txt");
+      await writeFile(path.join(worktree, "new.txt"), "renamed content\n");
+      sh(worktree, "git", "add", "new.txt");
+      sh(worktree, "git", "commit", "-m", "rename old -> new");
+
+      // Dirty the old_file path in main workspace
+      await writeFile(path.join(repo, "old.txt"), "dirty old in main\n");
+
+      await writeApplyLog(logDir, "implement-rename-dirty.json", worktreeRel, baseCommit, ["old.txt", "new.txt"]);
+
+      process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+      vi.resetModules();
+      const reloaded = await import("../src/claude-cli.js");
+      const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "run-rename-dirty");
+
+      expect(preview.error).toContain("apply refused");
+      expect(preview.conflicts.some((c: string) => c.includes("old.txt") && c.includes("uncommitted changes"))).toBe(true);
+      expect(preview.applied_files).toEqual([]);
+    });
+
+    it("h. refuses apply when copy old_file has a dirty collision in main workspace", async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-copy-dirty-"));
+      cleanupPaths.push(root);
+      const repo = path.join(root, "repo");
+      const logDir = path.join(root, "runs");
+      await mkdir(logDir, { recursive: true });
+      sh(root, "git", "init", repo);
+      sh(repo, "git", "config", "user.name", "Test User");
+      sh(repo, "git", "config", "user.email", "test@example.com");
+      await writeFile(path.join(repo, "source.txt"), "same content for copy detection\n");
+      await writeFile(path.join(repo, "README.md"), "# main\n");
+      sh(repo, "git", "add", ".");
+      sh(repo, "git", "commit", "-m", "init");
+
+      const worktreeRel = ".claude/worktrees/codex-delegated-copy-dirty";
+      sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+      const worktree = path.join(repo, worktreeRel);
+      const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+      // Enable copy detection in the worktree
+      sh(worktree, "git", "config", "diff.renames", "copies");
+
+      // Copy source.txt to dest.txt in worktree with same content
+      await writeFile(path.join(worktree, "dest.txt"), "same content for copy detection\n");
+      sh(worktree, "git", "add", "dest.txt");
+      sh(worktree, "git", "commit", "-m", "copy source -> dest");
+
+      // Dirty the source (old_file) in main workspace
+      await writeFile(path.join(repo, "source.txt"), "dirty source in main\n");
+
+      await writeApplyLog(logDir, "implement-copy-dirty.json", worktreeRel, baseCommit, ["source.txt", "dest.txt"]);
+
+      process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+      vi.resetModules();
+      const reloaded = await import("../src/claude-cli.js");
+      const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "run-copy-dirty");
+
+      // source.txt is a planned change old_file (copy source) and dirty in main
+      expect(preview.error).toContain("apply refused");
+      expect(preview.conflicts.some((c: string) => c.includes("source.txt") && c.includes("uncommitted changes"))).toBe(true);
+      expect(preview.applied_files).toEqual([]);
+    });
+
+    it("i. refuses apply when delete target has a dirty collision in main workspace", async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-delete-dirty-"));
+      cleanupPaths.push(root);
+      const repo = path.join(root, "repo");
+      const logDir = path.join(root, "runs");
+      await mkdir(logDir, { recursive: true });
+      sh(root, "git", "init", repo);
+      sh(repo, "git", "config", "user.name", "Test User");
+      sh(repo, "git", "config", "user.email", "test@example.com");
+      await writeFile(path.join(repo, "remove.txt"), "will be removed\n");
+      await writeFile(path.join(repo, "README.md"), "# main\n");
+      sh(repo, "git", "add", ".");
+      sh(repo, "git", "commit", "-m", "init");
+
+      const worktreeRel = ".claude/worktrees/codex-delegated-delete-dirty";
+      sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+      const worktree = path.join(repo, worktreeRel);
+      const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+      // Delete file in worktree
+      sh(worktree, "git", "rm", "remove.txt");
+      sh(worktree, "git", "commit", "-m", "delete remove.txt");
+
+      // Dirty the same file in main workspace
+      await writeFile(path.join(repo, "remove.txt"), "dirty in main after delete\n");
+
+      await writeApplyLog(logDir, "implement-delete-dirty.json", worktreeRel, baseCommit, ["remove.txt"]);
+
+      process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+      vi.resetModules();
+      const reloaded = await import("../src/claude-cli.js");
+      const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "run-delete-dirty");
+
+      expect(preview.error).toContain("apply refused");
+      expect(preview.conflicts.some((c: string) => c.includes("remove.txt") && c.includes("uncommitted changes"))).toBe(true);
+      expect(preview.applied_files).toEqual([]);
+    });
+
+    it("j. clean valid apply succeeds with preview_token", async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-clean-"));
+      cleanupPaths.push(root);
+      const repo = path.join(root, "repo");
+      const stateDir = path.join(root, ".codex-claude-delegate");
+      const logDir = path.join(stateDir, "runs");
+      await mkdir(logDir, { recursive: true });
+      sh(root, "git", "init", repo);
+      sh(repo, "git", "config", "user.name", "Test User");
+      sh(repo, "git", "config", "user.email", "test@example.com");
+      await writeFile(path.join(repo, "README.md"), "# original\n");
+      sh(repo, "git", "add", ".");
+      sh(repo, "git", "commit", "-m", "init");
+
+      const worktreeRel = ".claude/worktrees/codex-delegated-clean";
+      sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+      const worktree = path.join(repo, worktreeRel);
+      const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+      await writeFile(path.join(worktree, "README.md"), "# changed\n");
+      sh(worktree, "git", "add", "README.md");
+      sh(worktree, "git", "commit", "-m", "modify");
+
+      await writeApplyLog(logDir, "implement-clean.json", worktreeRel, baseCommit, ["README.md"]);
+
+      process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+      vi.resetModules();
+      const reloaded = await import("../src/claude-cli.js");
+
+      const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "preview-clean");
+      expect(preview.preview_token).toBeTruthy();
+      expect(preview.error).toBeUndefined();
+      expect(preview.planned_changes).toEqual([{ status: "M", file: "README.md" }]);
+
+      const result = await reloaded.runClaudeApply({
+        cwd: repo,
+        worktree_path: worktreeRel,
+        confirmed_by_user: true,
+        preview_token: preview.preview_token,
+      }, "apply-clean");
+
+      expect(result.error).toBeUndefined();
+      expect(result.applied_files).toEqual(["README.md"]);
+      expect(await readFile(path.join(repo, "README.md"), "utf8")).toBe("# changed\n");
+    });
+
+    it("k. preview_token mismatch when main workspace target content changes after preview", async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-token-target-"));
+      cleanupPaths.push(root);
+      const repo = path.join(root, "repo");
+      const stateDir = path.join(root, ".codex-claude-delegate");
+      const logDir = path.join(stateDir, "runs");
+      await mkdir(logDir, { recursive: true });
+      sh(root, "git", "init", repo);
+      sh(repo, "git", "config", "user.name", "Test User");
+      sh(repo, "git", "config", "user.email", "test@example.com");
+      await writeFile(path.join(repo, "data.txt"), "v1\n");
+      await writeFile(path.join(repo, "README.md"), "# main\n");
+      sh(repo, "git", "add", ".");
+      sh(repo, "git", "commit", "-m", "init");
+
+      const worktreeRel = ".claude/worktrees/codex-delegated-token-target";
+      sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+      const worktree = path.join(repo, worktreeRel);
+      const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+      await writeFile(path.join(worktree, "data.txt"), "v2 from worktree\n");
+      sh(worktree, "git", "add", "data.txt");
+      sh(worktree, "git", "commit", "-m", "modify data");
+
+      await writeApplyLog(logDir, "implement-token-target.json", worktreeRel, baseCommit, ["data.txt"]);
+
+      process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+      vi.resetModules();
+      const reloaded = await import("../src/claude-cli.js");
+
+      // Preview when main workspace data.txt is "v1"
+      const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "preview-token-target");
+      expect(preview.preview_token).toBeTruthy();
+      expect(preview.error).toBeUndefined();
+
+      // Change main workspace target content after preview and commit it
+      // so the preflight passes (clean committed file) and token detects the mismatch
+      await writeFile(path.join(repo, "data.txt"), "v1 modified in main after preview\n");
+      sh(repo, "git", "add", "data.txt");
+      sh(repo, "git", "commit", "-m", "modify data in main after preview");
+
+      const result = await reloaded.runClaudeApply({
+        cwd: repo,
+        worktree_path: worktreeRel,
+        confirmed_by_user: true,
+        preview_token: preview.preview_token,
+      }, "apply-token-target");
+
+      expect(result.error).toContain("preview_token mismatch");
+      expect(result.applied_files).toEqual([]);
+      // Main workspace must be unchanged
+      expect(await readFile(path.join(repo, "data.txt"), "utf8")).toBe("v1 modified in main after preview\n");
+    });
+
+    it("l. preview_token mismatch when ignored file appears after preview", async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-token-ignored-"));
+      cleanupPaths.push(root);
+      const repo = path.join(root, "repo");
+      const stateDir = path.join(root, ".codex-claude-delegate");
+      const logDir = path.join(stateDir, "runs");
+      await mkdir(logDir, { recursive: true });
+      sh(root, "git", "init", repo);
+      sh(repo, "git", "config", "user.name", "Test User");
+      sh(repo, "git", "config", "user.email", "test@example.com");
+      // No .gitignore — the file appears as a committed addition after preview
+      await writeFile(path.join(repo, "README.md"), "# main\n");
+      sh(repo, "git", "add", ".");
+      sh(repo, "git", "commit", "-m", "init");
+
+      const worktreeRel = ".claude/worktrees/codex-delegated-token-ignored";
+      sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+      const worktree = path.join(repo, worktreeRel);
+      const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+      // Worktree creates a new file
+      await writeFile(path.join(worktree, "new_target.txt"), "worktree content\n");
+      sh(worktree, "git", "add", "new_target.txt");
+      sh(worktree, "git", "commit", "-m", "add new_target");
+
+      await writeApplyLog(logDir, "implement-token-ignored.json", worktreeRel, baseCommit, ["new_target.txt"]);
+
+      process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+      vi.resetModules();
+      const reloaded = await import("../src/claude-cli.js");
+
+      // Preview when main workspace has no new_target.txt
+      const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "preview-token-ignored");
+      expect(preview.preview_token).toBeTruthy();
+      expect(preview.error).toBeUndefined();
+
+      // Create new_target.txt in main workspace AND commit it so preflight passes
+      // (clean committed file won't trigger dirty/untracked/gitignored checks)
+      await writeFile(path.join(repo, "new_target.txt"), "appeared after preview\n");
+      sh(repo, "git", "add", "new_target.txt");
+      sh(repo, "git", "commit", "-m", "add new_target in main");
+
+      const result = await reloaded.runClaudeApply({
+        cwd: repo,
+        worktree_path: worktreeRel,
+        confirmed_by_user: true,
+        preview_token: preview.preview_token,
+      }, "apply-token-ignored");
+
+      // Token must mismatch: main workspace target state went from missing to file
+      expect(result.error).toContain("preview_token mismatch");
+      expect(result.applied_files).toEqual([]);
+    });
+
+    it("m. unrelated dirty file does not invalidate preview_token and does not block preview/apply", async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-unrelated-"));
+      cleanupPaths.push(root);
+      const repo = path.join(root, "repo");
+      const stateDir = path.join(root, ".codex-claude-delegate");
+      const logDir = path.join(stateDir, "runs");
+      await mkdir(logDir, { recursive: true });
+      sh(root, "git", "init", repo);
+      sh(repo, "git", "config", "user.name", "Test User");
+      sh(repo, "git", "config", "user.email", "test@example.com");
+      await writeFile(path.join(repo, "target.txt"), "original target\n");
+      await writeFile(path.join(repo, "unrelated.txt"), "original unrelated\n");
+      await writeFile(path.join(repo, "README.md"), "# main\n");
+      sh(repo, "git", "add", ".");
+      sh(repo, "git", "commit", "-m", "init");
+
+      const worktreeRel = ".claude/worktrees/codex-delegated-unrelated";
+      sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+      const worktree = path.join(repo, worktreeRel);
+      const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+
+      await writeFile(path.join(worktree, "target.txt"), "modified target\n");
+      sh(worktree, "git", "add", "target.txt");
+      sh(worktree, "git", "commit", "-m", "modify target");
+
+      // Dirty an unrelated file in main workspace
+      await writeFile(path.join(repo, "unrelated.txt"), "dirty unrelated\n");
+
+      await writeApplyLog(logDir, "implement-unrelated.json", worktreeRel, baseCommit, ["target.txt"]);
+
+      process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+      vi.resetModules();
+      const reloaded = await import("../src/claude-cli.js");
+
+      // Preview should succeed (unrelated dirty file doesn't affect target)
+      const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "preview-unrelated");
+      expect(preview.preview_token).toBeTruthy();
+      expect(preview.error).toBeUndefined();
+
+      // Apply should succeed with the preview_token
+      const result = await reloaded.runClaudeApply({
+        cwd: repo,
+        worktree_path: worktreeRel,
+        confirmed_by_user: true,
+        preview_token: preview.preview_token,
+      }, "apply-unrelated");
+
+      expect(result.error).toBeUndefined();
+      expect(result.applied_files).toEqual(["target.txt"]);
+      expect(await readFile(path.join(repo, "target.txt"), "utf8")).toBe("modified target\n");
+      // Unrelated file should still be dirty in main
+      expect(await readFile(path.join(repo, "unrelated.txt"), "utf8")).toBe("dirty unrelated\n");
     });
   });
 });

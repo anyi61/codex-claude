@@ -550,6 +550,46 @@ describe("applyChangesTransactional rollback", () => {
     expect(result.applied_files).toEqual([]);
     expect(result.dirty_files!.some((d) => d.status === "rollback_remove_failed")).toBe(true);
   });
+
+  it("sets dirty_recovery_needed with rollback_restore_failed when rollback cannot restore a previously existing file", async () => {
+    const { cwd, worktree } = await makeFixture("rb-dirty-restore");
+
+    // apply write succeeds for first file, fails for second.
+    // During rollback, restore of the first file's backup fails.
+    let applySucceeded = false;
+    const failingOps: TransactionFSOps = {
+      ...defaultFSOps,
+      async writeFile(filePath: string, data: Buffer): Promise<void> {
+        // First: normal write for modify.txt
+        if (!applySucceeded && !filePath.includes(".codex-claude-delegate")) {
+          applySucceeded = true;
+          return defaultFSOps.writeFile(filePath, data);
+        }
+        // Second: fail when writing add.txt
+        if (applySucceeded && filePath.endsWith("add.txt") && !filePath.includes(".codex-claude-delegate")) {
+          throw new Error("ENOSPC: no space");
+        }
+        // During rollback, fail when trying to restore modify.txt from backup
+        if (filePath.endsWith("modify.txt") && !filePath.includes("worktree") && !filePath.includes(".codex-claude-delegate") && applySucceeded) {
+          throw new Error("EIO: restore failed");
+        }
+        return defaultFSOps.writeFile(filePath, data);
+      },
+    };
+    __setTestFSOps(failingOps);
+
+    const changes = [
+      { status: "M", file: "modify.txt" },
+      { status: "A", file: "add.txt" },
+    ];
+
+    const result = await applyChangesTransactional(cwd, worktree, changes);
+
+    expect(result.dirty_recovery_needed).toBe(true);
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_files!.some((d) => d.status === "rollback_restore_failed")).toBe(true);
+    expect(result.rollback_error).toBeTruthy();
+  });
 });
 
 // Helper for temp dir (async version of mkdtemp)

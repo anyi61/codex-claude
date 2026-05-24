@@ -2099,11 +2099,12 @@ export async function runClaudeImplement(
 export async function computeApplyPreviewToken(
   changes: ApplyPlannedChange[],
   worktreeRoot: string,
+  cwd: string,
 ): Promise<string> {
   const hash = createHash("sha256");
 
-  // Algorithm marker: catches accidental algorithm drift
-  hash.update("v1:");
+  // Algorithm marker: v2 adds main workspace target state
+  hash.update("v2:");
 
   // 1. Sorted normalized planned_changes
   const sorted = [...changes].sort((a, b) => {
@@ -2140,6 +2141,36 @@ export async function computeApplyPreviewToken(
       hash.update("X:"); // missing or unreadable
       hash.update(c.file);
       hash.update(";");
+    }
+  }
+
+  // 3. Main workspace target state (deterministic per-target hash)
+  const allTargets = new Set<string>();
+  for (const c of sorted) {
+    allTargets.add(c.file);
+    if (c.old_file) allTargets.add(c.old_file);
+  }
+  const sortedTargets = [...allTargets].sort();
+  hash.update("T:");
+  for (const target of sortedTargets) {
+    const absPath = path.join(cwd, target);
+    hash.update(target);
+    hash.update(":");
+    try {
+      const st = await stat(absPath);
+      if (st.isDirectory()) {
+        hash.update("D;");
+      } else if (st.isFile()) {
+        const content = await readFile(absPath);
+        const contentHash = createHash("sha256").update(content).digest("hex");
+        hash.update("F:");
+        hash.update(contentHash);
+        hash.update(";");
+      } else {
+        hash.update("U;"); // symlink or other unsupported type
+      }
+    } catch {
+      hash.update("M;"); // missing
     }
   }
 
@@ -2288,8 +2319,8 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   diffStat = await execCapture("git", ["diff", "--stat", baseCommit, "HEAD", "--", ...pathspecs], { cwd: wtReal, timeoutMs: 10000 }).catch(() => "");
 
   const [trackedStatus, uncommittedStatus, untrackedStatus] = await Promise.all([
-    execCapture("git", ["diff", "--name-status", "-z", baseCommit, "HEAD"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
-    execCapture("git", ["diff", "--name-status", "-z"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
+    execCapture("git", ["diff", "--name-status", "-z", "--find-copies=100%", "--find-copies-harder", baseCommit, "HEAD"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
+    execCapture("git", ["diff", "--name-status", "-z", "--find-copies=100%", "--find-copies-harder"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
     execCapture("git", ["status", "--porcelain=v1", "-z"], { cwd: wtReal, timeoutMs: 10000 }).catch(() => ""),
   ]);
 
@@ -2386,7 +2417,7 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
 
   // Compute preview_token from planned_changes + worktree file content.
   // Always computed: returned for preview, verified for non-preview.
-  const freshToken = await computeApplyPreviewToken(plannedChanges, wtReal);
+  const freshToken = await computeApplyPreviewToken(plannedChanges, wtReal, input.cwd);
 
   const ignoredChanges = input.preview === true ? await collectIgnoredChanges(wtReal) : undefined;
   const withIgnored = (result: ClaudeApplyResult): ClaudeApplyResult =>
@@ -2427,22 +2458,28 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
     }));
   }
 
-  // Preflight: check for uncommitted changes in main workspace and
+  // Preflight: check for collisions in main workspace and
   // unsupported status codes. If any issues found, refuse the entire apply.
   const conflicts: string[] = [];
+  const conflictFiles = new Set<string>();
   const validStatuses = new Set(["A", "M", "D", "R", "C"]);
 
   for (const c of changes) {
     if (!validStatuses.has(c.status)) {
       conflicts.push(`${c.file}: unsupported status "${c.status}" (only A/M/D/R/C supported)`);
+      conflictFiles.add(c.file);
       continue;
     }
     if ((c.status === "R" || c.status === "C") && !c.old_file) {
       conflicts.push(`${c.file}: "${c.status}" change is missing a source path (old_file)`);
+      conflictFiles.add(c.file);
       continue;
     }
     const checkFiles = c.old_file ? [c.file, c.old_file] : [c.file];
     for (const checkFile of checkFiles) {
+      if (conflictFiles.has(checkFile)) continue;
+
+      // Check submodule collisions
       const submodule = containingSubmodule(checkFile, submodulePaths);
       if (submodule !== null) {
         conflicts.push(
@@ -2450,25 +2487,101 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
             ? `${checkFile}: is a submodule (gitlink); submodule write/apply is not supported`
             : `${checkFile}: lies inside submodule "${submodule}"; submodule write/apply is not supported`
         );
+        conflictFiles.add(checkFile);
         continue;
       }
+
+      const absPath = path.join(input.cwd, checkFile);
+
+      // Directory vs file collision: only when worktree path exists as a non-directory
+      if (c.status !== "D") {
+        try {
+          const mainSt = await stat(absPath);
+          if (mainSt.isDirectory()) {
+            let wtIsDir = false;
+            let wtExists = false;
+            try {
+              const wtSt = await lstat(path.join(wtReal, checkFile));
+              wtExists = true;
+              wtIsDir = wtSt.isDirectory();
+            } catch {}
+            if (wtExists && !wtIsDir) {
+              conflicts.push(`${checkFile}: target path is a directory in main workspace but worktree plans a file`);
+              conflictFiles.add(checkFile);
+            }
+          }
+        } catch {}
+      }
+
+      if (conflictFiles.has(checkFile)) continue;
+
+      // Parent path is a file check
+      {
+        const parts = checkFile.split("/");
+        for (let pi = 1; pi < parts.length; pi++) {
+          const parentRel = parts.slice(0, pi).join("/");
+          if (conflictFiles.has(parentRel)) {
+            conflictFiles.add(checkFile);
+            break;
+          }
+          try {
+            const parentStat = await stat(path.join(input.cwd, parentRel));
+            if (parentStat.isFile()) {
+              conflicts.push(`${checkFile}: parent path "${parentRel}" is a file in main workspace`);
+              conflictFiles.add(checkFile);
+              break;
+            }
+          } catch {}
+        }
+      }
+
+      if (conflictFiles.has(checkFile)) continue;
+
+      // Case-only sibling conflict (avoid flagging exact same path as self-conflict)
+      {
+        const parentDir = path.dirname(absPath);
+        const baseName = path.basename(absPath);
+        try {
+          const entries = await readdir(parentDir);
+          const lowerBase = baseName.toLowerCase();
+          for (const entry of entries) {
+            if (entry !== baseName && entry.toLowerCase() === lowerBase) {
+              conflicts.push(`${checkFile}: case-only sibling conflict with "${path.join(path.dirname(checkFile), entry)}"`);
+              conflictFiles.add(checkFile);
+              break;
+            }
+          }
+        } catch {}
+      }
+
+      if (conflictFiles.has(checkFile)) continue;
+
+      // Git dirty/untracked/ignored checks
+      const gitStatusOut = await execCapture("git", ["status", "--porcelain=v1", "-z", "--", checkFile], { cwd: input.cwd, timeoutMs: 10000 }).catch(() => "");
+      if (gitStatusOut.trim()) {
+        for (const entry of gitStatusOut.split("\0")) {
+          if (!entry) continue;
+          const code = entry.slice(0, 2);
+          if (code === "??") {
+            conflicts.push(`${checkFile}: untracked file exists in main workspace`);
+          } else if (code.trim()) {
+            conflicts.push(`${checkFile}: main workspace has uncommitted changes (${entry.trim().slice(0, 80)})`);
+          }
+        }
+        conflictFiles.add(checkFile);
+        continue;
+      }
+
+      // Check gitignored target
       try {
-        const shortStat = await execCapture("git", ["status", "--short", "--", checkFile], { cwd: input.cwd, timeoutMs: 10000 });
-        if (shortStat.trim()) {
-          conflicts.push(`${checkFile}: main workspace has uncommitted changes (${shortStat.trim().slice(0, 80)})`);
+        await execCapture("git", ["check-ignore", "-q", "--", checkFile], { cwd: input.cwd, timeoutMs: 5000 });
+        if (existsSync(absPath)) {
+          conflicts.push(`${checkFile}: gitignored file exists in main workspace`);
+          conflictFiles.add(checkFile);
         }
       } catch {}
     }
   }
-
-  // Track files already flagged in the first preflight pass to avoid
-  // adding redundant conflicts from symlink/mode detectors.
-  const conflictFiles = new Set(
-    conflicts.map((c) => {
-      const colonIdx = c.indexOf(":");
-      return colonIdx >= 0 ? c.slice(0, colonIdx) : c;
-    })
-  );
 
   // Detect symlink destination files; symlink writes are not supported.
   // Use lstat to avoid following symlinks; only check files that exist in the worktree.
@@ -2529,7 +2642,7 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   }
 
   if (conflicts.length > 0) {
-    return finish(withIgnored({ applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts, error: "Main workspace has uncommitted or unsupported changes; apply refused", preview: input.preview === true, planned_changes: plannedChanges }));
+    return finish(withIgnored({ applied_files: [], diff_stat: diffStat, cleanup_performed: false, conflicts, error: "Main workspace has conflicts with planned changes; apply refused", preview: input.preview === true, planned_changes: plannedChanges }));
   }
 
   // Patch generation for preview-with-patch mode
