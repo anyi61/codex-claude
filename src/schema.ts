@@ -539,6 +539,7 @@ export interface ClaudeApplyInput {
   confirmed_by_user?: boolean;
   include_patch?: boolean;
   patch_max_bytes?: number;
+  preview_token?: string;
 }
 
 export interface ApplyPlannedChange {
@@ -577,6 +578,7 @@ export interface ClaudeApplyResult {
   diff_sha256?: string;
   patch_bytes?: number;
   untracked_not_in_patch?: boolean;
+  preview_token?: string;
 }
 
 // ---- Export types ----
@@ -828,6 +830,7 @@ export const claudeApplyInputSchema = z.object({
   confirmed_by_user: z.boolean().optional(),
   include_patch: z.boolean().optional(),
   patch_max_bytes: z.number().int().min(1024).max(500000).optional(),
+  preview_token: z.string().length(64).regex(/^[a-f0-9]{64}$/, "preview_token must be a 64-char hex string").optional(),
 }).strict().refine((value) => !(value.preview === true && value.cleanup === true), {
   message: "preview=true cannot be combined with cleanup=true",
   path: ["cleanup"],

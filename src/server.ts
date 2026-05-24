@@ -345,7 +345,7 @@ const BASE_TOOL_DEFINITIONS = [
   {
     name: "claude_apply",
     description:
-      "Default tool. Preview a delegated worktree diff, or apply it only after explicit user approval. Non-preview apply requires confirmed_by_user=true.",
+      "Default tool. Preview a delegated worktree diff, or apply it only after explicit user approval. Non-preview apply requires preview_token (obtained from preview=true) to prevent TOCTOU between preview and apply.",
     inputSchema: {
       type: "object",
       required: ["cwd", "worktree_path"],
@@ -353,7 +353,7 @@ const BASE_TOOL_DEFINITIONS = [
           cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
           worktree_path: { type: "string", description: "Path to worktree, e.g. .claude/worktrees/codex-delegated-xxx" },
           cleanup: { type: "boolean", description: "Remove worktree after successful apply (default false)" },
-          preview: { type: "boolean", description: "Preview which files would be applied without modifying the main working tree" },
+          preview: { type: "boolean", description: "Preview which files would be applied without modifying the main working tree. Returns a preview_token for binding the subsequent apply." },
           background: { type: "boolean", description: "Queue apply as a persistent background job" },
           confirmed_by_user: {
             type: "boolean",
@@ -361,6 +361,10 @@ const BASE_TOOL_DEFINITIONS = [
           },
           include_patch: { type: "boolean", description: "Generate a binary git diff patch for previewed planned_changes. The patch covers tracked committed and uncommitted changes within the observed scope." },
           patch_max_bytes: { type: "number", description: "Maximum inline patch bytes before writing to a persistent .claude/patches/<runId>.patch file (default 60000, min 1024, max 500000)." },
+          preview_token: {
+            type: "string",
+            description: "64-char hex token from a preview=true call. Required for non-preview apply. Binds the apply to the exact content that was previewed. If the worktree has changed since the preview, the apply will be rejected with a token mismatch error.",
+          },
         },
       },
     },
@@ -950,19 +954,19 @@ export async function handleToolCall(name: string, args: unknown, runId = random
         const startTime = Date.now();
         const parsed = claudeApplyInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { cwd, worktree_path, cleanup, preview, background, confirmed_by_user, include_patch, patch_max_bytes } = parsed.data;
+        const { cwd, worktree_path, cleanup, preview, background, confirmed_by_user, include_patch, patch_max_bytes, preview_token } = parsed.data;
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
 
         if (background === true) {
           return jsonResult(await startBackgroundApply(
-            { cwd: check.resolved, worktree_path, cleanup, preview, background, confirmed_by_user, include_patch, patch_max_bytes },
+            { cwd: check.resolved, worktree_path, cleanup, preview, background, confirmed_by_user, include_patch, patch_max_bytes, preview_token },
           ));
         }
 
         const result = await runClaudeApply(
-          { cwd: check.resolved, worktree_path, cleanup, preview, confirmed_by_user, include_patch, patch_max_bytes },
+          { cwd: check.resolved, worktree_path, cleanup, preview, confirmed_by_user, include_patch, patch_max_bytes, preview_token },
           runId
         );
         const payload = {
@@ -972,7 +976,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
         };
         let applyInteraction: InteractionBlock;
         if (result.preview) {
-          applyInteraction = { headline: "Delegated changes are ready for review.", state: "apply_preview", next_step: "Review planned_changes. If safe, ask the user whether to apply these changes." };
+          applyInteraction = { headline: "Delegated changes are ready for review.", state: "apply_preview", next_step: "Review planned_changes. If safe, ask the user whether to apply these changes. To apply, pass the preview_token from this response to claude_apply with confirmed_by_user=true." };
         } else if (result.dirty_recovery_needed) {
           applyInteraction = { headline: "Apply rollback failed — workspace may be dirty.", state: "needs_user", next_step: "Inspect dirty_files and restore affected files manually. Backup data may be preserved." };
         } else if (result.error) {

@@ -324,6 +324,48 @@ describe("schema definitions", () => {
     }).success).toBe(false);
   });
 
+  it("accepts valid 64-char hex preview_token on claude_apply", () => {
+    expect(claudeApplyInputSchema.safeParse({
+      cwd: "/repo",
+      worktree_path: ".claude/worktrees/codex-delegated-x",
+      preview_token: "a".repeat(64),
+    }).success).toBe(true);
+  });
+
+  it("rejects preview_token with wrong length", () => {
+    expect(claudeApplyInputSchema.safeParse({
+      cwd: "/repo",
+      worktree_path: ".claude/worktrees/codex-delegated-x",
+      preview_token: "abc",
+    }).success).toBe(false);
+    expect(claudeApplyInputSchema.safeParse({
+      cwd: "/repo",
+      worktree_path: ".claude/worktrees/codex-delegated-x",
+      preview_token: "a".repeat(63),
+    }).success).toBe(false);
+    expect(claudeApplyInputSchema.safeParse({
+      cwd: "/repo",
+      worktree_path: ".claude/worktrees/codex-delegated-x",
+      preview_token: "a".repeat(65),
+    }).success).toBe(false);
+  });
+
+  it("rejects preview_token with non-hex chars", () => {
+    expect(claudeApplyInputSchema.safeParse({
+      cwd: "/repo",
+      worktree_path: ".claude/worktrees/codex-delegated-x",
+      preview_token: "g".repeat(64),
+    }).success).toBe(false);
+  });
+
+  it("claude_apply rejects unknown fields (strict)", () => {
+    expect(claudeApplyInputSchema.safeParse({
+      cwd: "/repo",
+      worktree_path: ".claude/worktrees/codex-delegated-x",
+      unknown_field: "should fail",
+    }).success).toBe(false);
+  });
+
   it("validates run inspect inputs", () => {
     expect(claudeRunInspectInputSchema.safeParse({ cwd: "/repo", run_id: "abc" }).success).toBe(true);
     expect(claudeRunInspectInputSchema.safeParse({ cwd: "/repo", run_id: "" }).success).toBe(false);

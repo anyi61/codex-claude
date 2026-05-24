@@ -2081,6 +2081,61 @@ export async function runClaudeImplement(
 
 // ---- Apply worktree diff to main workspace ----
 
+/**
+ * Compute a deterministic apply preview token that binds to planned_changes AND
+ * worktree file content.  A token over paths/statuses alone would pass TOCTOU
+ * if content changed under the same paths.
+ */
+export async function computeApplyPreviewToken(
+  changes: ApplyPlannedChange[],
+  worktreeRoot: string,
+): Promise<string> {
+  const hash = createHash("sha256");
+
+  // Algorithm marker: catches accidental algorithm drift
+  hash.update("v1:");
+
+  // 1. Sorted normalized planned_changes
+  const sorted = [...changes].sort((a, b) => {
+    const cmp = a.file.localeCompare(b.file);
+    if (cmp !== 0) return cmp;
+    return a.status.localeCompare(b.status);
+  });
+  hash.update(`n:${sorted.length},`);
+  for (const c of sorted) {
+    hash.update(`${c.status}:${c.file}`);
+    if (c.old_file) hash.update(`>${c.old_file}`);
+    hash.update(";");
+  }
+
+  // 2. Per-file content hashes (or deletion markers)
+  for (const c of sorted) {
+    if (c.status === "D") {
+      hash.update("D:");
+      hash.update(c.file);
+      hash.update(";");
+      continue;
+    }
+    // A/M/R/C: read worktree file content and hash it
+    const filePath = path.join(worktreeRoot, c.file);
+    try {
+      const content = await readFile(filePath);
+      const contentHash = createHash("sha256").update(content).digest("hex");
+      hash.update("F:");
+      hash.update(c.file);
+      hash.update(":");
+      hash.update(contentHash);
+      hash.update(";");
+    } catch {
+      hash.update("X:"); // missing or unreadable
+      hash.update(c.file);
+      hash.update(";");
+    }
+  }
+
+  return hash.digest("hex");
+}
+
 export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Promise<ClaudeApplyResult> {
   const startTime = Date.now();
   const finish = async (result: ClaudeApplyResult): Promise<ClaudeApplyResult> => {
@@ -2269,7 +2324,9 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
   function addChange(change: { status: string; file: string; old_file?: string }): void {
     if (hasObservedScope) {
       // Destination must be in observed scope
-      if (!observedChangedFiles.some((o) => isUnderRequestedFile(change.file, o))) return;
+      if (!observedChangedFiles.some((o) =>
+        isUnderRequestedFile(change.file, o) || (change.file.endsWith("/") && isUnderRequestedFile(o, change.file))
+      )) return;
       // For R/C, source (old_file) must also be in observed scope
       if (change.old_file && !observedChangedFiles.some((o) => isUnderRequestedFile(change.old_file!, o))) return;
     }
@@ -2316,6 +2373,11 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
     if (c.old_file) planned.old_file = c.old_file;
     return planned;
   });
+
+  // Compute preview_token from planned_changes + worktree file content.
+  // Always computed: returned for preview, verified for non-preview.
+  const freshToken = await computeApplyPreviewToken(plannedChanges, wtReal);
+
   const ignoredChanges = input.preview === true ? await collectIgnoredChanges(wtReal) : undefined;
   const withIgnored = (result: ClaudeApplyResult): ClaudeApplyResult =>
     input.preview === true ? { ...result, ignored_changes: ignoredChanges ?? [] } : result;
@@ -2471,11 +2533,35 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
       conflicts: [],
       preview: true,
       planned_changes: plannedChanges,
+      preview_token: freshToken,
       ...patchResult,
     }));
   }
 
   // Apply changes transactionally
+  // Token verification: non-preview apply must include the matching preview_token.
+  // This prevents TOCTOU where content changes between preview and apply.
+  if (!input.preview_token) {
+    return finish({
+      applied_files: [],
+      diff_stat: diffStat,
+      cleanup_performed: false,
+      conflicts,
+      error: "Non-preview apply requires preview_token. Call claude_apply(preview=true) first to obtain the token, verify the planned_changes are safe, then pass preview_token on the non-preview apply call.",
+      planned_changes: plannedChanges,
+    });
+  }
+  if (input.preview_token !== freshToken) {
+    return finish({
+      applied_files: [],
+      diff_stat: diffStat,
+      cleanup_performed: false,
+      conflicts,
+      error: "preview_token mismatch. The worktree content has changed since the preview was generated. Re-run claude_apply(preview=true) to obtain a fresh token, re-inspect the planned_changes, then apply with the new token.",
+      planned_changes: plannedChanges,
+    });
+  }
+
   // Dynamic import to avoid circular dependency during module loading
   const { applyChangesTransactional } = await import("./transaction.js");
   const txResult = await applyChangesTransactional(input.cwd, wtReal, changes);

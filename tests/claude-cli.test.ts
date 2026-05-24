@@ -1007,6 +1007,7 @@ describe("claude cli argument construction", () => {
     expect(preview.preview).toBe(true);
     expect(preview.planned_changes).toEqual([{ status: "M", file: "README.md" }]);
     expect(preview.applied_files).toEqual([]);
+    expect(preview.preview_token).toMatch(/^[a-f0-9]{64}$/);
     expect(await readFile(path.join(repo, "README.md"), "utf8")).toBe("# main\n");
     delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
     vi.resetModules();
@@ -1172,10 +1173,19 @@ describe("claude cli argument construction", () => {
     process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
     vi.resetModules();
     const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+    }, "preview-instruction-files");
+
+    expect(preview.preview_token).toMatch(/^[a-f0-9]{64}$/);
+
     const applied = await reloaded.runClaudeApply({
       cwd: repo,
       worktree_path: worktreeRel,
       confirmed_by_user: true,
+      preview_token: preview.preview_token,
     }, "apply-instruction-files");
 
     expect(applied.error).toBeUndefined();
@@ -1226,6 +1236,12 @@ describe("claude cli argument construction", () => {
     process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
     vi.resetModules();
     const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+    }, "preview-explicit-scope");
+
     const applied = await reloaded.runClaudeApply({
       cwd: repo,
       worktree_path: worktreeRel,
@@ -1274,10 +1290,16 @@ describe("claude cli argument construction", () => {
     process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
     vi.resetModules();
     const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+    }, "preview-lifecycle-run");
     const applied = await reloaded.runClaudeApply({
       cwd: repo,
       worktree_path: worktreeRel,
       confirmed_by_user: true,
+      preview_token: preview.preview_token,
     }, "apply-run");
     expect(applied.applied_files).toEqual(["README.md"]);
     let runs = await reloaded.listRunLogs({ cwd: repo, type: "implement" });
@@ -1569,10 +1591,16 @@ describe("claude cli argument construction", () => {
     process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
     vi.resetModules();
     const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+    }, "preview-apply-directory");
     const applied = await reloaded.runClaudeApply({
       cwd: repo,
       worktree_path: worktreeRel,
       confirmed_by_user: true,
+      preview_token: preview.preview_token,
     }, "apply-directory");
 
     expect(applied.error).toBeUndefined();
@@ -3918,10 +3946,16 @@ describe("claude cli argument construction", () => {
     });
 
     const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+    }, "preview-tx-apply-rb");
     const result = await reloaded.runClaudeApply({
       cwd: repo,
       worktree_path: worktreeRel,
       confirmed_by_user: true,
+      preview_token: preview.preview_token,
     }, "tx-apply-rb");
 
     expect(result.error).toContain("ENOSPC");
@@ -3988,10 +4022,16 @@ describe("claude cli argument construction", () => {
     });
 
     const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+    }, "preview-tx-apply-del-rb");
     const result = await reloaded.runClaudeApply({
       cwd: repo,
       worktree_path: worktreeRel,
       confirmed_by_user: true,
+      preview_token: preview.preview_token,
     }, "tx-apply-del-rb");
 
     expect(result.error).toContain("EBUSY");
@@ -4066,10 +4106,16 @@ describe("claude cli argument construction", () => {
     });
 
     const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+    }, "preview-tx-apply-dirty");
     const result = await reloaded.runClaudeApply({
       cwd: repo,
       worktree_path: worktreeRel,
       confirmed_by_user: true,
+      preview_token: preview.preview_token,
     }, "tx-apply-dirty");
 
     expect(result.dirty_recovery_needed).toBe(true);
@@ -4813,10 +4859,16 @@ describe("review gate metadata integration", () => {
     await manageGate2({ cwd: repo, action: "enable" });
 
     const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+    }, "preview-apply-run-id-test");
     const result = await reloaded.runClaudeApply({
       cwd: repo,
       worktree_path: worktreeRel,
       confirmed_by_user: true,
+      preview_token: preview.preview_token,
     }, "apply-run-id-test");
 
     expect(result.applied_files).toEqual(["README.md"]);
@@ -5028,15 +5080,328 @@ describe("runClaudeApply — ignored_changes in preview", () => {
     process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
     vi.resetModules();
     const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+    }, "preview-ignored-non-preview");
     const result = await reloaded.runClaudeApply({
       cwd: repo,
       worktree_path: worktreeRel,
       confirmed_by_user: true,
+      preview_token: preview.preview_token,
     }, "ignored-non-preview-run");
 
     expect(result.error).toBeUndefined();
     expect(result.applied_files).toEqual(["README.md"]);
     expect(result.ignored_changes).toBeUndefined();
+
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("preview returns 64-char hex preview_token", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-token-preview-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+    const worktreeRel = ".claude/worktrees/codex-delegated-token-preview";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(logDir, "token-preview-run.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["README.md"],
+        scope: { requested_files: ["README.md"], out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 1, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+    }, "token-preview-run");
+
+    expect(preview.preview_token).toMatch(/^[a-f0-9]{64}$/);
+    expect(preview.preview).toBe(true);
+
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("missing preview_token on non-preview apply fails closed with clear error", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-token-missing-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+    const worktreeRel = ".claude/worktrees/codex-delegated-token-missing";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(logDir, "token-missing-run.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["README.md"],
+        scope: { requested_files: ["README.md"], out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 1, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      confirmed_by_user: true,
+    }, "token-missing-apply");
+
+    expect(result.error).toContain("preview_token");
+    expect(result.applied_files).toEqual([]);
+    const mainContent = await readFile(path.join(repo, "README.md"), "utf8");
+    expect(mainContent).toBe("# main\n");
+
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("mismatched preview_token fails closed", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-token-bad-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+    const worktreeRel = ".claude/worktrees/codex-delegated-token-bad";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(logDir, "token-bad-run.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["README.md"],
+        scope: { requested_files: ["README.md"], out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 1, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      confirmed_by_user: true,
+      preview_token: "0000000000000000000000000000000000000000000000000000000000000000",
+    }, "token-bad-apply");
+
+    expect(result.error).toContain("token");
+    expect(result.applied_files).toEqual([]);
+    const mainContent = await readFile(path.join(repo, "README.md"), "utf8");
+    expect(mainContent).toBe("# main\n");
+
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("apply with stale token after tracked file content changed fails closed", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-token-stale-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+    const worktreeRel = ".claude/worktrees/codex-delegated-token-stale";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(logDir, "token-stale-run.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["README.md"],
+        scope: { requested_files: ["README.md"], out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 1, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+    }, "preview-token-stale");
+
+    expect(preview.preview_token).toMatch(/^[a-f0-9]{64}$/);
+
+    // Modify worktree file content without changing path/status
+    await writeFile(path.join(worktree, "README.md"), "# totally different content\n");
+
+    const result = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      confirmed_by_user: true,
+      preview_token: preview.preview_token,
+    }, "token-stale-apply");
+
+    expect(result.error).toContain("token");
+    expect(result.applied_files).toEqual([]);
+    const mainContent = await readFile(path.join(repo, "README.md"), "utf8");
+    expect(mainContent).toBe("# main\n");
+
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("apply with stale token after untracked file content changed fails closed", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-token-untracked-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+    const worktreeRel = ".claude/worktrees/codex-delegated-token-untracked";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    // Create an untracked file in the worktree
+    await writeFile(path.join(worktree, "new-file.txt"), "initial untracked\n");
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(logDir, "token-untracked-run.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["new-file.txt"],
+        scope: { requested_files: undefined, out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 1, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+    }, "preview-token-untracked");
+
+    expect(preview.preview_token).toMatch(/^[a-f0-9]{64}$/);
+
+    // Modify untracked file content without changing path/status
+    await writeFile(path.join(worktree, "new-file.txt"), "modified after preview\n");
+
+    const result = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      confirmed_by_user: true,
+      preview_token: preview.preview_token,
+    }, "token-untracked-apply");
+
+    expect(result.error).toContain("token");
+    expect(result.applied_files).toEqual([]);
+    expect(existsSync(path.join(repo, "new-file.txt"))).toBe(false);
+
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("preview=true with incoming stale token ignores it and returns current token", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-token-ignore-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(repo, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+    const worktreeRel = ".claude/worktrees/codex-delegated-token-ignore";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(logDir, "token-ignore-run.json"), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["README.md"],
+        scope: { requested_files: ["README.md"], out_of_scope_files: [], scope_exceeded: false, warnings: [] },
+        resource_limits: { actual_changed_files: 1, changed_files_exceeded: false, warnings: [] },
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+
+    // Call preview with a stale (random) preview_token — should be ignored
+    const result = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      preview: true,
+      preview_token: "deadbeef00000000000000000000000000000000000000000000000000000000",
+    }, "token-ignore-preview");
+
+    expect(result.preview_token).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.preview_token).not.toBe("deadbeef00000000000000000000000000000000000000000000000000000000");
+    expect(result.preview).toBe(true);
 
     delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
     vi.resetModules();

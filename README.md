@@ -40,9 +40,9 @@ One Message To Codex：
 2. claude_task(mode="read", ...)         → 委托读取任务，等待并返回结果
 3. claude_task(mode="write", ...)        → 委托写入任务，等待并返回结果
 4. Result includes worktree path
-5. claude_apply(preview=true, ...)       → 预览 diff
+5. claude_apply(preview=true, ...)       → 预览 diff，返回 preview_token
 6. user approval                         → 用户确认
-7. claude_apply(cleanup=true, ...)       → 应用变更并清理 worktree
+7. claude_apply(cleanup=true, preview_token=..., ...) → 应用变更并清理 worktree
 8. claude_cleanup(dry_run=true, ...)     → 确认没有残留 worktree
 ```
 
@@ -168,7 +168,7 @@ claude_task(mode="read", cwd="/path/to/repo", task="解释认证的工作原理"
 claude_task(mode="write", cwd="/path/to/repo", task="实现特性 X")
   → 内联等待完成 → 返回 { status: "success", completed_inline: true, ... }
   → claude_apply(cwd="...", worktree_path="...", preview=true)
-  → user confirms → claude_apply(cwd="...", worktree_path="...", cleanup=true, confirmed_by_user=true)
+  → user confirms → claude_apply(cwd="...", worktree_path="...", cleanup=true, confirmed_by_user=true, preview_token="<from-preview>")
   → claude_cleanup(cwd="...", dry_run=true)
 ```
 
@@ -259,7 +259,7 @@ enabled_tools = [
 - **后台模式：** 使用 `wait_strategy="background"` 或 `background=true` 让 `claude_task` 立即返回，稍后用 `claude_task(job_id=...)` 获取结果。
 - **内部执行超时：** Claude CLI 的内部执行超时固定为 3600 秒（1 小时），独立于 `wait_timeout_sec`。这确保长任务可以在多个等待周期后完成。
 - **回合上限：** `claude_task` 不接受 `max_turns`。需要显式回合限制时，使用高级工具（`claude_query` / `claude_review` / `claude_implement`）。
-- **应用安全：** `preview=true` 不会修改主工作区。非预览模式的 `claude_apply` 需要用户确认后设置 `confirmed_by_user=true`。
+- **应用安全：** `preview=true` 不会修改主工作区，并返回 `preview_token`（64 位十六进制）。非预览模式的 `claude_apply` 需要用户确认后设置 `confirmed_by_user=true`，且必须传入匹配的 `preview_token`。如果 worktree 内容在预览和 apply 之间被修改，token 不匹配会导致 apply 被拒绝，防止 TOCTOU 攻击。
 - **无效组合：** `preview=true` + `cleanup=true` 会被拒绝——预览不应删除 worktree。
 - **下一步操作：** `claude_result` 和已完成的内联等待仅建议预览操作（`preview=true`），绝不直接建议非预览应用。
 - **Diff patch 预览：** 使用 `include_patch=true` 生成包含 `diff --git` 内容的二进制 git diff patch。patch 覆盖 tracked 的已提交和未提交变更。patch 过大时（超出 `patch_max_bytes`，默认 60000，范围 1024–500000），完整 patch 写入 `.claude/patches/<runId>.patch`，结果中返回 `patch_truncated=true`、`patch_path` 和 `diff_sha256`（完整 patch 的 SHA-256）。注意：git diff 不包括未跟踪文件，此时 `untracked_not_in_patch=true` 会在 planned_changes 包含未跟踪文件时设置。
@@ -351,6 +351,8 @@ npm run check:plugin
 | 任务过期 | 使用 claude_result 检查；高级工具中可使用 claude_job_cancel |
 | 应用被拒：工作区有未提交变更 | 提交或 stash 变更，或使用 `dirty_policy=committed` |
 | 缺少 `confirmed_by_user` | 展示预览并获得用户明确批准后再应用 |
+| 缺少 `preview_token` | 先调用 `claude_apply(preview=true)` 获取 token，确认 planned_changes 安全后，传入 token 再次 apply |
+| `preview_token` 不匹配 | worktree 内容在预览和 apply 之间发生了变化。重新调用 `claude_apply(preview=true)` 获取新 token |
 | `preview=true` + `cleanup=true` | 拆分为预览和已确认的应用+清理两步 |
 | 残留 worktree | `claude_cleanup(cwd="...", dry_run=true)` 然后 `dry_run=false` |
 | 旧 job/run log 状态产物 | `codex-claude cleanup-artifacts` 预览后再加 `--execute` |
