@@ -319,11 +319,48 @@ CODEX_CLAUDE_ENV_PASSTHROUGH = "MY_ORG_API_URL,CI_PIPELINE_ID"
   "test": "npm run typecheck",
   "start": "npm run dev",
   "symlink_directories": ["/absolute/cache/path"],
-  "sparse_paths": ["src", "tests"]
+  "sparse_paths": ["src", "tests"],
+
+  "verification": {
+    "allowedScripts": ["typecheck", "lint", "test:unit"],
+    "timeoutSec": 180
+  },
+  "artifacts": {
+    "retentionDays": 30
+  },
+  "environment": {
+    "passthrough": ["MY_CUSTOM_VAR", "NODE_OPTIONS"]
+  }
 }
 ```
 
-当前版本只读取并校验该文件，并在 `codex-claude doctor` 与 `claude_workspace_status` 中显示安全摘要。不会执行 `install`、`test` 或 `start`，也不会创建 symlink 或 sparse checkout。摘要只包含字段名、计数和校验错误，不回显命令内容。
+#### Phase 1 字段（基础）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `install` | string | 安装命令（诊断回显，不自动执行） |
+| `test` | string | 测试命令（诊断回显，不自动执行） |
+| `start` | string | 启动命令（诊断回显，不自动执行） |
+| `symlink_directories` | string[] | 符号链接目录（诊断回显，不自动创建） |
+| `sparse_paths` | string[] | 稀疏检出路径（诊断回显，不自动设置） |
+
+#### Phase 2 字段（环境/验证/产物配置） — 非提权，仅约束或诊断
+
+| 字段 | 类型 | 约束 | 执行效果 |
+|------|------|------|----------|
+| `verification.allowedScripts` | string[] | 最多 50 项，每项 ≤100 字符，匹配 `[A-Za-z0-9][A-Za-z0-9:_-]*`，禁止 `install`/`deploy`/`publish`/`start`/`serve`/`add`/`remove`/`uninstall`，禁止 shell 元字符，重复自动去重 | **限制性**：仅约束 `npm run <script>` / `yarn run <script>` / `pnpm run <script>` 的脚本名，不扩展命令范围。非 run-script 命令不受影响 |
+| `verification.timeoutSec` | integer | 10–300 | **限制性**：约束验证超时上限，默认 120s |
+| `artifacts.retentionDays` | integer | 1–365 | **仅诊断**：在 doctor 和 workspace_status 中展示，不影响实际清理行为 |
+| `environment.passthrough` | string[] | 最多 100 项，每项 ≤256 字符，匹配 `[A-Za-z_][A-Za-z0-9_]*`，敏感名称（含 KEY/SECRET/TOKEN 等）被拒绝，重复自动去重 | **仅诊断**：在 doctor 和 workspace_status 中展示，不改变 env forwarding 行为 |
+
+#### 向后兼容
+
+- 当 `.codex-claude-delegate/environment.json` 不存在或仅包含 Phase 1 字段时，行为与之前版本完全一致。
+- Phase 2 字段均为可选，未知顶层字段和未知子字段产生警告而非错误（保持向前兼容）。
+- 配置校验失败时，Phase 2 执行设置不回退：`verification.allowedScripts` 和 `verification.timeoutSec` 仅在配置整体有效时生效。
+- 摘要（summary）绝不暴露 `install`/`test`/`start` 的命令字符串值或任何 secret 值，但可暴露允许的脚本名称和安全的 passthrough 变量名。
+
+当前版本只读取并校验该文件，并在 `codex-claude doctor` 与 `claude_workspace_status` 中显示安全摘要。不会执行 `install`、`test` 或 `start`，也不会创建 symlink 或 sparse checkout。
 
 ### 开发 / 维护
 

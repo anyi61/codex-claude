@@ -225,4 +225,96 @@ describe("workflow results", () => {
     expect(result.environment_config!.errors.length).toBeGreaterThan(0);
     expect(result.attention_items.some((item) => item.kind === "environment_config")).toBe(true);
   });
+
+  // Phase 2 workspace status tests
+
+  it("workspace status includes Phase 2 environment_config summary when present", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-workflow-p2-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const configDir = path.join(repo, ".codex-claude-delegate");
+    await mkdir(repo, { recursive: true });
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      path.join(configDir, "environment.json"),
+      JSON.stringify({
+        test: "npx vitest run",
+        verification: {
+          allowedScripts: ["test:unit", "lint"],
+          timeoutSec: 180,
+        },
+        artifacts: { retentionDays: 30 },
+        environment: { passthrough: ["MY_VAR"] },
+      }),
+    );
+
+    const { getWorkspaceStatus } = await import("../src/workflow-results.js");
+    const result = await getWorkspaceStatus({ cwd: repo });
+
+    expect(result.environment_config).toBeDefined();
+    expect(result.environment_config!.ok).toBe(true);
+    expect(result.environment_config!.verification_allowed_scripts_count).toBe(2);
+    expect(result.environment_config!.verification_allowed_scripts).toEqual(["test:unit", "lint"]);
+    expect(result.environment_config!.verification_timeout_sec).toBe(180);
+    expect(result.environment_config!.artifacts_retention_days).toBe(30);
+    expect(result.environment_config!.environment_passthrough_count).toBe(1);
+    expect(result.environment_config!.environment_passthrough).toEqual(["MY_VAR"]);
+    // Must not leak command values
+    const jsonStr = JSON.stringify(result.environment_config);
+    expect(jsonStr).not.toContain("vitest");
+  });
+
+  it("attention items work for Phase 2 errors", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-workflow-p2bad-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const configDir = path.join(repo, ".codex-claude-delegate");
+    await mkdir(repo, { recursive: true });
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      path.join(configDir, "environment.json"),
+      JSON.stringify({
+        verification: { allowedScripts: ["install"] },
+      }),
+    );
+
+    const { getWorkspaceStatus } = await import("../src/workflow-results.js");
+    const result = await getWorkspaceStatus({ cwd: repo });
+
+    expect(result.environment_config).toBeDefined();
+    expect(result.environment_config!.ok).toBe(false);
+    expect(result.attention_items.some((item) =>
+      item.kind === "environment_config" && item.message.includes("error"),
+    )).toBe(true);
+  });
+
+  it("attention items work for Phase 2 warnings", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-workflow-p2warn-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const configDir = path.join(repo, ".codex-claude-delegate");
+    await mkdir(repo, { recursive: true });
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      path.join(configDir, "environment.json"),
+      JSON.stringify({
+        unknown_field: "value",
+      }),
+    );
+
+    const { getWorkspaceStatus } = await import("../src/workflow-results.js");
+    const result = await getWorkspaceStatus({ cwd: repo });
+
+    expect(result.environment_config).toBeDefined();
+    expect(result.environment_config!.warnings.length).toBeGreaterThan(0);
+    expect(result.attention_items.some((item) =>
+      item.kind === "environment_config" && item.message.includes("warning"),
+    )).toBe(true);
+  });
 });

@@ -138,6 +138,146 @@ describe("verification command parsing and execution", () => {
     const { runVerificationCommands } = await import("../src/verification.js");
     await expect(runVerificationCommands(undefined, repo, 5000)).resolves.toBeUndefined();
   });
+
+  // ---- Phase 2 allowedScripts tests ----
+
+  it("allowedScripts allows listed run script", async () => {
+    const calls = mockSpawn([{ code: 0, stdout: "ok" }]);
+    const repo = await createFixture();
+    const { runVerificationCommands } = await import("../src/verification.js");
+    const result = await runVerificationCommands(
+      ["npm run test:unit"],
+      repo,
+      5000,
+      { allowedScripts: ["test:unit", "lint"] },
+    );
+
+    expect(result?.status).toBe("passed");
+    expect(result?.commands[0].status).toBe("passed");
+    expect(calls.length).toBe(1);
+    expect(calls[0].bin).toBe("npm");
+    expect(calls[0].args).toEqual(["run", "test:unit"]);
+  });
+
+  it("allowedScripts skips unlisted run script", async () => {
+    const calls = mockSpawn([{ code: 0 }]);
+    const repo = await createFixture();
+    const { runVerificationCommands } = await import("../src/verification.js");
+    const result = await runVerificationCommands(
+      ["npm run build"],
+      repo,
+      5000,
+      { allowedScripts: ["test:unit", "lint"] },
+    );
+
+    expect(result?.status).toBe("failed");
+    expect(result?.commands[0].status).toBe("skipped");
+    expect(calls.length).toBe(0);
+  });
+
+  it("forbidden script names are still skipped even if listed in allowedScripts", async () => {
+    const calls = mockSpawn([{ code: 0 }]);
+    const repo = await createFixture();
+    const { runVerificationCommands } = await import("../src/verification.js");
+    const result = await runVerificationCommands(
+      ["npm run install"],
+      repo,
+      5000,
+      { allowedScripts: ["install", "test:unit"] },
+    );
+
+    expect(result?.status).toBe("failed");
+    expect(result?.commands[0].status).toBe("skipped");
+    expect(calls.length).toBe(0);
+  });
+
+  it("empty allowedScripts skips all run scripts", async () => {
+    const calls = mockSpawn([{ code: 0 }]);
+    const repo = await createFixture();
+    const { runVerificationCommands } = await import("../src/verification.js");
+    const result = await runVerificationCommands(
+      ["npm run lint", "yarn run build"],
+      repo,
+      5000,
+      { allowedScripts: [] },
+    );
+
+    expect(result?.status).toBe("failed");
+    expect(result!.commands.every((c) => c.status === "skipped")).toBe(true);
+    expect(calls.length).toBe(0);
+  });
+
+  it("non-run commands like npm test and npx vitest remain governed by existing policy (allowedScripts does not affect them)", async () => {
+    const calls = mockSpawn([{ code: 0 }, { code: 0 }]);
+    const repo = await createFixture();
+    const { runVerificationCommands } = await import("../src/verification.js");
+    const result = await runVerificationCommands(
+      ["npm test", "npx vitest run"],
+      repo,
+      5000,
+      { allowedScripts: [] },
+    );
+
+    // npm test and npx vitest are not run-script forms — allowedScripts should not block them
+    expect(result?.status).toBe("passed");
+    expect(result!.commands.every((c) => c.status === "passed")).toBe(true);
+    expect(calls.length).toBe(2);
+  });
+
+  it("yarn/pnpm run scripts are also restricted by allowedScripts", async () => {
+    const calls = mockSpawn([{ code: 0 }, { code: 0 }]);
+    const repo = await createFixture();
+    const { runVerificationCommands } = await import("../src/verification.js");
+    const result = await runVerificationCommands(
+      ["yarn run lint", "pnpm run build"],
+      repo,
+      5000,
+      { allowedScripts: ["lint"] },
+    );
+
+    // "lint" is in allowedScripts, "build" is not
+    expect(result?.status).toBe("failed");
+    expect(result!.commands[0].status).toBe("passed");
+    expect(result!.commands[1].status).toBe("skipped");
+  });
+
+  it("timeout option from VerificationOptions works", async () => {
+    const calls = mockSpawn([{ hang: true }]);
+    const repo = await createFixture();
+    const { runVerificationCommands } = await import("../src/verification.js");
+    const result = await runVerificationCommands(
+      ["npm test"],
+      repo,
+      5000,
+      { timeoutMs: 10 },
+    );
+
+    expect(calls[0].bin).toBe("npm");
+    expect(result?.status).toBe("failed");
+    expect(result?.commands[0].timed_out).toBe(true);
+  }, 1000);
+
+  it("timeout option is bounded to MAX_TIMEOUT_MS", async () => {
+    const { MAX_TIMEOUT_MS, clampVerificationTimeout } = await import("../src/verification.js");
+
+    expect(clampVerificationTimeout(999_999_999)).toBe(MAX_TIMEOUT_MS);
+    expect(clampVerificationTimeout(10_000)).toBe(10_000);
+  });
+
+  it("default timeout still works when VerificationOptions has no timeoutMs", async () => {
+    const calls = mockSpawn([{ code: 0 }]);
+    const repo = await createFixture();
+    const { runVerificationCommands } = await import("../src/verification.js");
+    const result = await runVerificationCommands(
+      ["npm test"],
+      repo,
+      5000,
+      { allowedScripts: undefined },
+    );
+
+    expect(result?.status).toBe("passed");
+    expect(calls.length).toBe(1);
+  });
 });
 
 describe("buildVerificationWarnings", () => {

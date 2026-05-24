@@ -92,6 +92,13 @@ export interface DoctorCheckEnvironmentConfig {
   errors: number;
   warnings: number;
   fields_present: string[];
+  // Phase 2 fields
+  verification_allowed_scripts_count?: number;
+  verification_allowed_scripts?: string[];
+  verification_timeout_sec?: number;
+  artifacts_retention_days?: number;
+  environment_passthrough_count?: number;
+  environment_passthrough?: string[];
 }
 
 export interface DoctorResult {
@@ -547,6 +554,12 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
         errors: s.errors.length,
         warnings: s.warnings.length,
         fields_present: s.fields_present,
+        verification_allowed_scripts_count: s.verification_allowed_scripts_count,
+        verification_allowed_scripts: s.verification_allowed_scripts,
+        verification_timeout_sec: s.verification_timeout_sec,
+        artifacts_retention_days: s.artifacts_retention_days,
+        environment_passthrough_count: s.environment_passthrough_count,
+        environment_passthrough: s.environment_passthrough,
       };
       if (!s.ok) {
         needsAttention = true;
@@ -648,9 +661,27 @@ async function doctorCommand(deps: Required<Pick<CliDependencies, "writeOut" | "
     if (ec.exists) {
       const parts: string[] = [];
       if (ec.fields_present.length > 0) parts.push(`fields: ${ec.fields_present.join(", ")}`);
+      if (ec.verification_allowed_scripts_count !== undefined && ec.verification_allowed_scripts_count > 0) {
+        parts.push(`allowed scripts: ${ec.verification_allowed_scripts_count}`);
+      }
+      if (ec.verification_timeout_sec !== undefined) {
+        parts.push(`timeout: ${ec.verification_timeout_sec}s`);
+      }
+      if (ec.artifacts_retention_days !== undefined) {
+        parts.push(`retention: ${ec.artifacts_retention_days}d`);
+      }
+      if (ec.environment_passthrough_count !== undefined && ec.environment_passthrough_count > 0) {
+        parts.push(`passthrough: ${ec.environment_passthrough_count}`);
+      }
       if (ec.errors > 0) parts.push(`${ec.errors} error(s)`);
       if (ec.warnings > 0) parts.push(`${ec.warnings} warning(s)`);
       emit(`Environment config: ${parts.join("; ")}`, ec.ok);
+      if (ec.verification_allowed_scripts && ec.verification_allowed_scripts.length > 0) {
+        deps.writeOut(`  Allowed scripts: ${ec.verification_allowed_scripts.join(", ")}\n`);
+      }
+      if (ec.environment_passthrough && ec.environment_passthrough.length > 0) {
+        deps.writeOut(`  Passthrough: ${ec.environment_passthrough.join(", ")}\n`);
+      }
     }
 
     deps.writeOut(`\nStatus: ${result.status}\n`);

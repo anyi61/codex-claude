@@ -6,6 +6,7 @@ import type {
 } from "./schema.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
+export const MAX_TIMEOUT_MS = 300_000;
 const TAIL_CHARS = 4000;
 const FORBIDDEN_SCRIPT_NAMES = new Set([
   "add",
@@ -19,6 +20,17 @@ const FORBIDDEN_SCRIPT_NAMES = new Set([
 ]);
 const ALLOWED_NPX_TOOLS = new Set(["vitest", "jest", "tsc", "eslint"]);
 const FORBIDDEN_ARG_TOKENS = new Set(["&&", "||", ";", "|", ">", ">>", "<", "&"]);
+
+export interface VerificationOptions {
+  /** Restrictive: only these script names are allowed for run-script commands */
+  allowedScripts?: string[];
+  /** Override timeout (bounded to MAX_TIMEOUT_MS) */
+  timeoutMs?: number;
+}
+
+export function clampVerificationTimeout(timeoutMs: number): number {
+  return Math.min(timeoutMs, MAX_TIMEOUT_MS);
+}
 
 function truncateTail(value: string, maxChars = TAIL_CHARS): string {
   return value.length <= maxChars ? value : value.slice(-maxChars);
@@ -70,18 +82,24 @@ export function parseVerificationCommand(command: string): string[] {
   return tokens;
 }
 
-function scriptNameIsAllowed(scriptName: string | undefined): boolean {
-  return !!scriptName && !FORBIDDEN_SCRIPT_NAMES.has(scriptName);
+function scriptNameIsAllowed(scriptName: string | undefined, allowedScripts?: string[]): boolean {
+  if (!scriptName) return false;
+  if (FORBIDDEN_SCRIPT_NAMES.has(scriptName)) return false;
+  // If an allowlist is provided, the script must be in it (restrictive only)
+  if (allowedScripts !== undefined) {
+    return allowedScripts.includes(scriptName);
+  }
+  return true;
 }
 
-function verificationArgvIsAllowed(argv: string[]): boolean {
+function verificationArgvIsAllowed(argv: string[], allowedScripts?: string[]): boolean {
   const [bin, first, second] = argv;
   if (!bin) return false;
   if (argv.some((arg) => FORBIDDEN_ARG_TOKENS.has(arg))) return false;
 
   if (bin === "npm") {
     if (first === "test") return true;
-    if (first === "run") return scriptNameIsAllowed(second);
+    if (first === "run") return scriptNameIsAllowed(second, allowedScripts);
     return false;
   }
   if (bin === "npx") {
@@ -89,7 +107,7 @@ function verificationArgvIsAllowed(argv: string[]): boolean {
   }
   if (bin === "yarn" || bin === "pnpm") {
     if (first === "test") return true;
-    if (first === "run") return scriptNameIsAllowed(second);
+    if (first === "run") return scriptNameIsAllowed(second, allowedScripts);
     return false;
   }
   if (bin === "pytest" || bin === "tsc" || bin === "eslint") return true;
@@ -115,6 +133,7 @@ async function runSingleVerificationCommand(
   command: string,
   cwd: string,
   timeoutMs: number,
+  allowedScripts?: string[],
 ): Promise<ServerVerifiedCommand> {
   let argv: string[];
   try {
@@ -123,7 +142,7 @@ async function runSingleVerificationCommand(
     return skippedResult(command, err instanceof Error ? err.message : String(err));
   }
 
-  if (!verificationArgvIsAllowed(argv)) {
+  if (!verificationArgvIsAllowed(argv, allowedScripts)) {
     return skippedResult(command, "Command is not allowed by server verification policy.");
   }
 
@@ -186,12 +205,18 @@ export async function runVerificationCommands(
   commands: string[] | undefined,
   cwd: string,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  opts?: VerificationOptions,
 ): Promise<ServerVerified | undefined> {
   if (!commands || commands.length === 0) return undefined;
 
+  const effectiveTimeout = opts?.timeoutMs !== undefined
+    ? clampVerificationTimeout(opts.timeoutMs)
+    : timeoutMs;
+  const allowedScripts = opts?.allowedScripts;
+
   const results: ServerVerifiedCommand[] = [];
   for (const command of commands) {
-    results.push(await runSingleVerificationCommand(command, cwd, timeoutMs));
+    results.push(await runSingleVerificationCommand(command, cwd, effectiveTimeout, allowedScripts));
   }
 
   return {

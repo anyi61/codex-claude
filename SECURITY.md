@@ -143,6 +143,8 @@ Read(./.pypirc), Read(./**/.pypirc), Read(./credentials*), Read(./**/credentials
 - 允许范围限于测试、类型检查、lint 类命令族：`npm test`、`npm run <script>`、`npx vitest/jest/tsc/eslint ...`、`yarn test/run ...`、`pnpm test/run ...`、`pytest ...`、`go test ...`、`cargo test ...`、`tsc ...`、`eslint ...`。
 - `install`、`publish`、`deploy`、`start`、`serve`、删除、权限提升、网络拉取、容器/集群操作等命令会被拒绝或跳过。
 - 验证失败会让 implement 返回 `partial` 并保留 worktree 供预览/检查；不会自动 apply 或自动 cleanup。
+- **环境配置约束（Phase 2）**：`.codex-claude-delegate/environment.json` 中的 `verification.allowedScripts` 仅对 `npm run <script>` / `yarn run <script>` / `pnpm run <script>` 形式施加**额外限制**（白名单过滤），不允许扩展命令范围。已有的硬编码禁止名称（install、deploy、publish、start 等）始终优先生效，不会因出现在 `allowedScripts` 中而被放行。`npm test`、`yarn test`、`pnpm test`、`npx vitest`、`npx tsc`、`pytest`、`go test`、`cargo test` 等非 run-script 形式不受 `allowedScripts` 影响。
+- **超时约束**：`verification.timeoutSec` 可限制验证超时时间，上限 300 秒，默认 120 秒。该值仅在环境配置有效时生效。
 
 #### 只读模式（query / review）允许的命令
 
@@ -236,6 +238,7 @@ yarn add/remove, pnpm add/remove
 5. **不在白名单且未在 passthrough 中声明的变量一律丢弃**
 6. **`CODEX_CLAUDE_ENV_PASSTHROUGH` 本身从不转发到子进程**
 7. **递归深度**：注入 `BRIDGE_DEPTH` 防止递归委托
+8. **环境配置 passthrough 仅诊断**：`.codex-claude-delegate/environment.json` 中的 `environment.passthrough` 字段在本轮仅为诊断/状态展示用途，不会影响实际的 env forwarding 行为。实际的 env forwarding 仍由 `CODEX_CLAUDE_ENV_PASSTHROUGH` 环境变量控制。
 
 `codex-claude doctor` 报告环境净化诊断（分类计数和名称），但从不暴露变量值。被拦截的 passthrough 条目不会导致 doctor 状态变为 `not_ready`。
 

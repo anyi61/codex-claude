@@ -332,7 +332,7 @@ export interface EnvSanitizationDiagnostics {
   blocked_passthrough_names: string[];
 }
 
-function isSensitiveName(name: string): boolean {
+export function isSensitiveName(name: string): boolean {
   const upper = name.toUpperCase();
   if (SENSITIVE_EXACT_NAMES.has(upper)) return true;
   return SENSITIVE_KEYWORDS.some((kw) => upper.includes(kw));

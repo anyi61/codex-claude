@@ -1270,4 +1270,128 @@ describe("codex-claude CLI", () => {
     });
     expect(io.stdout).not.toContain("Environment config:");
   });
+
+  // Phase 2 doctor tests
+
+  it("doctor --json exposes Phase 2 verification summary safely", async () => {
+    await setupDoctorMocks({
+      execCapture: async (cmd, args) => {
+        if (args[0] === "auth") return "logged in";
+        return "1.0.0";
+      },
+      allowRoots: [process.cwd()],
+      scanResult: {
+        configPath: "/fake/.codex/config.toml",
+        exists: true,
+        hasAllowRoots: false,
+        allowRootsValue: null,
+        mcpClassification: { origin: "manual", hasCommand: true, hasArgs: true, hasEnv: false },
+        mcpServerKeys: ["command", "enabled_tools"],
+        envKeys: [],
+        mcpCommand: "codex-claude",
+        mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"],
+        mcpToolTimeoutSec: 600,
+      },
+    });
+    await setupEnvConfigMock({
+      summary: {
+        exists: true,
+        path: "/fake/path",
+        ok: true,
+        fields_present: ["test"],
+        install: false,
+        test: true,
+        start: false,
+        symlink_directories_count: 0,
+        sparse_paths_count: 0,
+        errors: [],
+        warnings: [],
+        verification_allowed_scripts_count: 2,
+        verification_allowed_scripts: ["test:unit", "lint"],
+        verification_timeout_sec: 180,
+        artifacts_retention_days: 30,
+        environment_passthrough_count: 1,
+        environment_passthrough: ["MY_VAR"],
+      },
+    });
+
+    const io = makeIo();
+    await runCli(["node", "codex-claude", "doctor", "--json"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+    const parsed = JSON.parse(io.stdout);
+    expect(parsed.checks.environment_config.verification_allowed_scripts_count).toBe(2);
+    expect(parsed.checks.environment_config.verification_allowed_scripts).toEqual(["test:unit", "lint"]);
+    expect(parsed.checks.environment_config.verification_timeout_sec).toBe(180);
+    expect(parsed.checks.environment_config.artifacts_retention_days).toBe(30);
+    expect(parsed.checks.environment_config.environment_passthrough_count).toBe(1);
+    expect(parsed.checks.environment_config.environment_passthrough).toEqual(["MY_VAR"]);
+    // Must not leak command values
+    const jsonStr = JSON.stringify(parsed.checks.environment_config);
+    expect(jsonStr).not.toContain("vitest");
+    expect(jsonStr).not.toContain("secret");
+    expect(jsonStr).not.toContain("token");
+  });
+
+  it("doctor text output includes Phase 2 safe summary", async () => {
+    await setupDoctorMocks({
+      execCapture: async (cmd, args) => {
+        if (args[0] === "auth") return "logged in";
+        return "1.0.0";
+      },
+      allowRoots: [process.cwd()],
+      scanResult: {
+        configPath: "/fake/.codex/config.toml",
+        exists: true,
+        hasAllowRoots: false,
+        allowRootsValue: null,
+        mcpClassification: { origin: "manual", hasCommand: true, hasArgs: true, hasEnv: false },
+        mcpServerKeys: ["command", "enabled_tools"],
+        envKeys: [],
+        mcpCommand: "codex-claude",
+        mcpEnabledTools: ["claude_setup", "claude_task", "claude_result", "claude_apply", "claude_cleanup"],
+        mcpToolTimeoutSec: 600,
+      },
+    });
+    await setupEnvConfigMock({
+      summary: {
+        exists: true,
+        path: "/fake/path",
+        ok: true,
+        fields_present: ["test"],
+        install: false,
+        test: true,
+        start: false,
+        symlink_directories_count: 0,
+        sparse_paths_count: 0,
+        errors: [],
+        warnings: [],
+        verification_allowed_scripts_count: 2,
+        verification_allowed_scripts: ["test:unit", "lint"],
+        verification_timeout_sec: 180,
+        artifacts_retention_days: 30,
+        environment_passthrough_count: 1,
+        environment_passthrough: ["MY_VAR"],
+      },
+    });
+
+    const io = makeIo();
+    await runCli(["node", "codex-claude", "doctor"], {
+      writeOut: io.writeOut.bind(io),
+      writeErr: io.writeErr.bind(io),
+      startMcp: vi.fn(),
+    });
+    expect(io.stdout).toContain("Environment config:");
+    expect(io.stdout).toContain("allowed scripts: 2");
+    expect(io.stdout).toContain("timeout: 180s");
+    expect(io.stdout).toContain("retention: 30d");
+    expect(io.stdout).toContain("passthrough: 1");
+    expect(io.stdout).toContain("Allowed scripts: test:unit, lint");
+    expect(io.stdout).toContain("Passthrough: MY_VAR");
+    // Must not leak command values
+    expect(io.stdout).not.toContain("vitest");
+    expect(io.stdout).not.toContain("secret");
+  });
 });

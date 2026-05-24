@@ -152,7 +152,7 @@ export const __test = backgroundJobsTestState;
 
 import { getStore, resolveWorkflowSessionSummary, buildNextActions, getClaudeResult } from "./workflow-results.js";
 export { getClaudeResult, getWorkspaceStatus } from "./workflow-results.js";
-import { runVerificationCommands, buildVerificationWarnings } from "./verification.js";
+import { runVerificationCommands, buildVerificationWarnings, type VerificationOptions } from "./verification.js";
 
 const getBackgroundStateDir = getBackgroundStateDirCore;
 const getJobStore = getJobStoreCore;
@@ -2023,7 +2023,27 @@ export async function runClaudeImplement(
   // Run server-side verification commands if specified
   let serverVerified: ServerVerified | undefined;
   if (implementInput.verification_commands && implementInput.verification_commands.length > 0) {
-    serverVerified = await runVerificationCommands(implementInput.verification_commands, worktreePath);
+    // Read environment config for Phase 2 verification settings (restrictive only)
+    let verificationOpts: VerificationOptions | undefined;
+    try {
+      const { readEnvironmentConfig } = await import("./environment-config.js");
+      const envConfig = await readEnvironmentConfig(implementInput.cwd);
+      if (envConfig?.phase2?.verification) {
+        const v = envConfig.phase2.verification;
+        verificationOpts = {
+          allowedScripts: v.allowedScripts,
+          timeoutMs: v.timeoutSec !== undefined ? v.timeoutSec * 1000 : undefined,
+        };
+      }
+    } catch {
+      // Fall back to defaults if config read fails
+    }
+    serverVerified = await runVerificationCommands(
+      implementInput.verification_commands,
+      worktreePath,
+      undefined,
+      verificationOpts,
+    );
     log(`Server-side verification: ${serverVerified?.status ?? "skipped"}`);
   }
 

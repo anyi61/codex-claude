@@ -235,4 +235,380 @@ describe("readEnvironmentConfig", () => {
     expect(jsonStr).not.toContain("vitest");
     expect(jsonStr).not.toContain("token");
   });
+
+  // ---- Phase 2 tests ----
+
+  it("validates all Phase 2 fields together", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      install: "npm install",
+      test: "npx vitest run",
+      verification: {
+        allowedScripts: ["test:unit", "lint", "build"],
+        timeoutSec: 180,
+      },
+      artifacts: {
+        retentionDays: 30,
+      },
+      environment: {
+        passthrough: ["MY_VAR", "NODE_OPTIONS"],
+      },
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result).not.toBeNull();
+    expect(result!.summary.ok).toBe(true);
+    expect(result!.summary.fields_present).toEqual(
+      expect.arrayContaining(["install", "test"]),
+    );
+    // Phase 2 summary
+    expect(result!.summary.verification_allowed_scripts_count).toBe(3);
+    expect(result!.summary.verification_allowed_scripts).toEqual(["test:unit", "lint", "build"]);
+    expect(result!.summary.verification_timeout_sec).toBe(180);
+    expect(result!.summary.artifacts_retention_days).toBe(30);
+    expect(result!.summary.environment_passthrough_count).toBe(2);
+    expect(result!.summary.environment_passthrough).toEqual(["MY_VAR", "NODE_OPTIONS"]);
+    // Phase 2 config for execution
+    expect(result!.phase2).toBeDefined();
+    expect(result!.phase2!.verification).toBeDefined();
+    expect(result!.phase2!.verification!.allowedScripts).toEqual(["test:unit", "lint", "build"]);
+    expect(result!.phase2!.verification!.timeoutSec).toBe(180);
+    expect(result!.phase2!.artifacts).toBeDefined();
+    expect(result!.phase2!.artifacts!.retentionDays).toBe(30);
+    expect(result!.phase2!.environment).toBeDefined();
+    expect(result!.phase2!.environment!.passthrough).toEqual(["MY_VAR", "NODE_OPTIONS"]);
+  });
+
+  it("Phase 1 and Phase 2 fields coexist without issues", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      install: "npm install",
+      test: "npx vitest run",
+      start: "npm start",
+      symlink_directories: ["/path/a"],
+      sparse_paths: ["src/"],
+      verification: { allowedScripts: ["test:unit"] },
+      artifacts: { retentionDays: 7 },
+      environment: { passthrough: ["MY_VAR"] },
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result!.summary.ok).toBe(true);
+    expect(result!.summary.fields_present).toEqual(
+      expect.arrayContaining(["install", "test", "start", "symlink_directories", "sparse_paths"]),
+    );
+    expect(result!.summary.verification_allowed_scripts).toEqual(["test:unit"]);
+    expect(result!.summary.artifacts_retention_days).toBe(7);
+    expect(result!.summary.environment_passthrough).toEqual(["MY_VAR"]);
+    expect(result!.phase2).toBeDefined();
+  });
+
+  it("absent Phase 2 fields are backward compatible", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      install: "npm install",
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result!.summary.ok).toBe(true);
+    expect(result!.summary.verification_allowed_scripts).toBeUndefined();
+    expect(result!.summary.verification_timeout_sec).toBeUndefined();
+    expect(result!.summary.artifacts_retention_days).toBeUndefined();
+    expect(result!.summary.environment_passthrough).toBeUndefined();
+    expect(result!.phase2).toBeUndefined();
+  });
+
+  it("Phase 1-only config (no Phase 2 fields) is backward compatible", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      test: "npx vitest run",
+      sparse_paths: ["src/"],
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result!.summary.ok).toBe(true);
+    expect(result!.summary.test).toBe(true);
+    expect(result!.summary.sparse_paths_count).toBe(1);
+    expect(result!.summary.verification_allowed_scripts).toBeUndefined();
+    expect(result!.phase2).toBeUndefined();
+  });
+
+  it("rejects allowedScripts forbidden names", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      verification: {
+        allowedScripts: ["install", "deploy", "start"],
+      },
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result!.summary.ok).toBe(false);
+    expect(result!.summary.errors).toHaveLength(3);
+    const msgs = result!.summary.errors.map((e) => e.message);
+    expect(msgs.some((m) => m.includes("install") && m.includes("forbidden"))).toBe(true);
+    expect(msgs.some((m) => m.includes("deploy") && m.includes("forbidden"))).toBe(true);
+    expect(msgs.some((m) => m.includes("start") && m.includes("forbidden"))).toBe(true);
+    expect(result!.phase2).toBeUndefined();
+  });
+
+  it("rejects allowedScripts with shell-ish tokens", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      verification: {
+        allowedScripts: ["test & echo", "foo;bar"],
+      },
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result!.summary.ok).toBe(false);
+    expect(result!.summary.errors.length).toBeGreaterThanOrEqual(2);
+    const msgs = result!.summary.errors.map((e) => e.message);
+    expect(msgs.some((m) => m.includes("shell-ish"))).toBe(true);
+  });
+
+  it("rejects allowedScripts with wrong type", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      verification: {
+        allowedScripts: "not-an-array",
+      },
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result!.summary.ok).toBe(false);
+    expect(result!.summary.errors.some((e) => e.field === "verification.allowedScripts")).toBe(true);
+  });
+
+  it("rejects allowedScripts exceeding max entries", async () => {
+    const dir = await makeDir();
+    const scripts = Array.from({ length: 51 }, (_, i) => `script${i}`);
+    await writeConfig(dir, {
+      verification: { allowedScripts: scripts },
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result!.summary.ok).toBe(false);
+    expect(result!.summary.errors.some((e) => e.message.includes("exceeds maximum"))).toBe(true);
+  });
+
+  it("rejects allowedScripts with invalid pattern", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      verification: {
+        allowedScripts: ["valid", "invalid$name", "@bad"],
+      },
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result!.summary.ok).toBe(false);
+    expect(result!.summary.errors.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("rejects verification.timeoutSec out of bounds", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      verification: { timeoutSec: 5 },
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result!.summary.ok).toBe(false);
+    expect(result!.summary.errors.some((e) => e.field === "verification.timeoutSec")).toBe(true);
+  });
+
+  it("rejects verification.timeoutSec above max", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      verification: { timeoutSec: 500 },
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result!.summary.ok).toBe(false);
+  });
+
+  it("rejects verification.timeoutSec non-integer", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      verification: { timeoutSec: 3.14 },
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result!.summary.ok).toBe(false);
+    expect(result!.summary.errors.some((e) => e.message.includes("integer"))).toBe(true);
+  });
+
+  it("rejects artifacts.retentionDays out of bounds", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      artifacts: { retentionDays: 0 },
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result!.summary.ok).toBe(false);
+    expect(result!.summary.errors.some((e) => e.field === "artifacts.retentionDays")).toBe(true);
+  });
+
+  it("rejects artifacts.retentionDays above max", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      artifacts: { retentionDays: 400 },
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result!.summary.ok).toBe(false);
+  });
+
+  it("validates passthrough with valid names", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      environment: {
+        passthrough: ["MY_VAR", "NODE_OPTIONS", "DEBUG_MODE"],
+      },
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result!.summary.ok).toBe(true);
+    expect(result!.summary.environment_passthrough_count).toBe(3);
+    expect(result!.summary.environment_passthrough).toEqual(["MY_VAR", "NODE_OPTIONS", "DEBUG_MODE"]);
+    expect(result!.phase2!.environment!.passthrough).toEqual(["MY_VAR", "NODE_OPTIONS", "DEBUG_MODE"]);
+  });
+
+  it("rejects passthrough with secret-like names", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      environment: {
+        passthrough: ["GITHUB_TOKEN", "OPENAI_API_KEY", "DATABASE_URL"],
+      },
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result!.summary.ok).toBe(false);
+    expect(result!.summary.errors).toHaveLength(3);
+  });
+
+  it("rejects passthrough with invalid env var names", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      environment: {
+        passthrough: ["123invalid", "not valid", ""],
+      },
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result!.summary.ok).toBe(false);
+    expect(result!.summary.errors.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("warns on duplicate passthrough names", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      environment: {
+        passthrough: ["MY_VAR", "MY_VAR", "OTHER_VAR"],
+      },
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result!.summary.warnings.some((w) => w.message.includes("Duplicate"))).toBe(true);
+    // Deduped in phase2 config
+    expect(result!.phase2!.environment!.passthrough).toEqual(["MY_VAR", "OTHER_VAR"]);
+  });
+
+  it("warns on unknown Phase 2 subfields", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      verification: {
+        allowedScripts: ["test"],
+        unknownSub: true,
+      },
+      artifacts: {
+        retentionDays: 7,
+        unknownField: 42,
+      },
+      environment: {
+        passthrough: ["MY_VAR"],
+        extraField: "value",
+      },
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result!.summary.warnings.length).toBeGreaterThanOrEqual(3);
+    expect(result!.summary.warnings.some((w) => w.field === "verification.unknownSub")).toBe(true);
+    expect(result!.summary.warnings.some((w) => w.field === "artifacts.unknownField")).toBe(true);
+    expect(result!.summary.warnings.some((w) => w.field === "environment.extraField")).toBe(true);
+  });
+
+  it("warns on unknown top-level fields (forward compat)", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      future_feature: { enabled: true },
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result!.summary.ok).toBe(true);
+    expect(result!.summary.warnings).toHaveLength(1);
+    expect(result!.summary.warnings[0].field).toBe("future_feature");
+  });
+
+  it("summary never leaks command string values or secret values", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      install: "npx secret-cmd --token supersecret",
+      test: "npm run test:secret",
+      verification: {
+        allowedScripts: ["test:unit", "build"],
+      },
+      environment: {
+        passthrough: ["MY_SAFE_VAR"],
+      },
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    const jsonStr = JSON.stringify(result!.summary);
+    expect(jsonStr).not.toContain("secret-cmd");
+    expect(jsonStr).not.toContain("supersecret");
+    expect(jsonStr).not.toContain("test:secret");
+    // Allowed script names and safe passthrough names may be present
+    expect(jsonStr).toContain("test:unit");
+    expect(jsonStr).toContain("build");
+    expect(jsonStr).toContain("MY_SAFE_VAR");
+  });
+
+  it("deduplicates allowedScripts with warning", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      verification: {
+        allowedScripts: ["test:unit", "lint", "test:unit"],
+      },
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result!.summary.warnings.some((w) => w.message.includes("Duplicate"))).toBe(true);
+    expect(result!.phase2!.verification!.allowedScripts).toEqual(["test:unit", "lint"]);
+  });
+
+  it("preserves empty allowedScripts as an execution restriction", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      verification: {
+        allowedScripts: [],
+      },
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result!.summary.ok).toBe(true);
+    expect(result!.summary.verification_allowed_scripts_count).toBe(0);
+    expect(result!.summary.verification_allowed_scripts).toEqual([]);
+    expect(result!.phase2!.verification!.allowedScripts).toEqual([]);
+  });
+
+  it("invalid config does not produce phase2 execution config", async () => {
+    const dir = await makeDir();
+    await writeConfig(dir, {
+      install: "",
+      verification: { allowedScripts: ["test"] },
+    });
+
+    const result = await readEnvironmentConfig(dir);
+    expect(result!.summary.ok).toBe(false);
+    expect(result!.phase2).toBeUndefined();
+  });
 });
