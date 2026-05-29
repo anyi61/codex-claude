@@ -4,6 +4,8 @@ import {
   QUERY_SCHEMA,
   REVIEW_SCHEMA,
   buildSensitiveFileDenyPatterns,
+  buildSensitiveFileDenyPatternsForContextRoots,
+  buildContextRootsPromptSection,
   claudeApplyInputSchema,
   claudeImplementInputSchema,
   claudeJobCancelInputSchema,
@@ -23,6 +25,8 @@ import {
   claudeCleanupInputSchema,
   claudeStatusInputSchema,
   buildImplementPrompt,
+  buildQueryPrompt,
+  buildReviewPrompt,
   errorResult,
   jsonResult,
   safeErrorMessage,
@@ -761,5 +765,204 @@ describe("ModeInference type and mode_inference field", () => {
       };
       expect(inference.confidence).toBe(confidence);
     }
+  });
+
+  // ---- FUNC-010: context_roots schema tests ----
+
+  describe("context_roots schema constraints", () => {
+    it("accepts valid context_roots on claude_query", () => {
+      const parsed = claudeQueryInputSchema.safeParse({
+        cwd: "/repo",
+        task: "explain cross-repo",
+        context_roots: [{ alias: "lib", cwd: "/other" }],
+      });
+      expect(parsed.success).toBe(true);
+    });
+
+    it("accepts valid context_roots on claude_review", () => {
+      const parsed = claudeReviewInputSchema.safeParse({
+        cwd: "/repo",
+        task: "review cross-repo",
+        context_roots: [{ alias: "lib", cwd: "/other" }],
+      });
+      expect(parsed.success).toBe(true);
+    });
+
+    it("accepts valid context_roots on claude_task", () => {
+      const parsed = claudeTaskInputSchema.safeParse({
+        cwd: "/repo",
+        task: "read cross-repo",
+        context_roots: [{ alias: "lib", cwd: "/other" }],
+      });
+      expect(parsed.success).toBe(true);
+    });
+
+    it("rejects context_roots on claude_implement (strict schema)", () => {
+      expect(claudeImplementInputSchema.safeParse({
+        cwd: "/repo",
+        task: "x",
+        context_roots: [{ alias: "lib", cwd: "/other" }],
+      }).success).toBe(false);
+    });
+
+    it("rejects more than 5 context_roots", () => {
+      const roots = Array.from({ length: 6 }, (_, i) => ({ alias: `r${i}`, cwd: `/repo${i}` }));
+      expect(claudeQueryInputSchema.safeParse({
+        cwd: "/repo",
+        task: "x",
+        context_roots: roots,
+      }).success).toBe(false);
+    });
+
+    it("rejects alias longer than 32 characters", () => {
+      expect(claudeQueryInputSchema.safeParse({
+        cwd: "/repo",
+        task: "x",
+        context_roots: [{ alias: "a".repeat(33), cwd: "/other" }],
+      }).success).toBe(false);
+      expect(claudeQueryInputSchema.safeParse({
+        cwd: "/repo",
+        task: "x",
+        context_roots: [{ alias: "a".repeat(32), cwd: "/other" }],
+      }).success).toBe(true);
+    });
+
+    it("rejects alias with invalid characters", () => {
+      expect(claudeQueryInputSchema.safeParse({
+        cwd: "/repo",
+        task: "x",
+        context_roots: [{ alias: "bad alias!", cwd: "/other" }],
+      }).success).toBe(false);
+      expect(claudeQueryInputSchema.safeParse({
+        cwd: "/repo",
+        task: "x",
+        context_roots: [{ alias: "bad/alias", cwd: "/other" }],
+      }).success).toBe(false);
+      expect(claudeQueryInputSchema.safeParse({
+        cwd: "/repo",
+        task: "x",
+        context_roots: [{ alias: "good_alias-1", cwd: "/other" }],
+      }).success).toBe(true);
+    });
+
+    it("rejects empty context_roots array", () => {
+      expect(claudeQueryInputSchema.safeParse({
+        cwd: "/repo",
+        task: "x",
+        context_roots: [],
+      }).success).toBe(false);
+    });
+
+    it("rejects context_roots with empty alias", () => {
+      expect(claudeQueryInputSchema.safeParse({
+        cwd: "/repo",
+        task: "x",
+        context_roots: [{ alias: "", cwd: "/other" }],
+      }).success).toBe(false);
+    });
+
+    it("rejects context_roots with empty cwd", () => {
+      expect(claudeQueryInputSchema.safeParse({
+        cwd: "/repo",
+        task: "x",
+        context_roots: [{ alias: "lib", cwd: "" }],
+      }).success).toBe(false);
+    });
+
+    it("rejects context_roots with additional properties", () => {
+      expect(claudeQueryInputSchema.safeParse({
+        cwd: "/repo",
+        task: "x",
+        context_roots: [{ alias: "lib", cwd: "/other", extra: "nope" }],
+      }).success).toBe(false);
+    });
+  });
+
+  describe("buildSensitiveFileDenyPatternsForContextRoots", () => {
+    it("returns empty patterns when policy is off", () => {
+      const patterns = buildSensitiveFileDenyPatternsForContextRoots("off", [{ alias: "lib", cwd: "/other" }]);
+      expect(patterns.readDeny).toEqual([]);
+      expect(patterns.grepGlobDeny).toEqual([]);
+      expect(patterns.bashReadDeny).toEqual([]);
+    });
+
+    it("returns absolute-path deny patterns for each context root with default policy", () => {
+      const patterns = buildSensitiveFileDenyPatternsForContextRoots("default", [
+        { alias: "lib", cwd: "/home/user/lib" },
+      ]);
+      expect(patterns.readDeny).toEqual(expect.arrayContaining([
+        "Read(/home/user/lib/.env)",
+        "Read(/home/user/lib/.env.*)",
+        "Read(/home/user/lib/**/.env)",
+        "Read(/home/user/lib/**/.env.*)",
+        "Read(/home/user/lib/secrets/**)",
+      ]));
+      expect(patterns.grepGlobDeny).toEqual(expect.arrayContaining([
+        "Grep(/home/user/lib/.env)",
+        "Glob(/home/user/lib/.env)",
+      ]));
+      expect(patterns.bashReadDeny).toEqual(expect.arrayContaining([
+        "Bash(cat /home/user/lib/.env)",
+        "Bash(grep * /home/user/lib/.env)",
+      ]));
+    });
+
+    it("generates patterns for multiple roots", () => {
+      const patterns = buildSensitiveFileDenyPatternsForContextRoots("default", [
+        { alias: "a", cwd: "/repo-a" },
+        { alias: "b", cwd: "/repo-b" },
+      ]);
+      expect(patterns.readDeny).toEqual(expect.arrayContaining(["Read(/repo-a/.env)", "Read(/repo-b/.env)"]));
+    });
+  });
+
+  describe("buildContextRootsPromptSection", () => {
+    it("returns empty string for empty roots", () => {
+      expect(buildContextRootsPromptSection([])).toBe("");
+    });
+
+    it("includes root aliases and cwds in the prompt", () => {
+      const section = buildContextRootsPromptSection([
+        { alias: "frontend", cwd: "/home/user/frontend" },
+        { alias: "backend", cwd: "/home/user/backend" },
+      ]);
+      expect(section).toContain("## Context Roots");
+      expect(section).toContain("**frontend**");
+      expect(section).toContain("/home/user/frontend");
+      expect(section).toContain("**backend**");
+      expect(section).toContain("/home/user/backend");
+      expect(section).toContain("Do NOT modify any files in context roots");
+    });
+  });
+
+  describe("buildQueryPrompt includes context roots", () => {
+    it("includes context roots section when provided", () => {
+      const prompt = buildQueryPrompt({
+        cwd: "/repo",
+        task: "explain cross-repo",
+        context_roots: [{ alias: "lib", cwd: "/other" }],
+      });
+      expect(prompt).toContain("## Context Roots");
+      expect(prompt).toContain("**lib**");
+      expect(prompt).toContain("/other");
+    });
+
+    it("does not include context roots section when absent", () => {
+      const prompt = buildQueryPrompt({ cwd: "/repo", task: "explain" });
+      expect(prompt).not.toContain("## Context Roots");
+    });
+  });
+
+  describe("buildReviewPrompt includes context roots", () => {
+    it("includes context roots section when provided", () => {
+      const prompt = buildReviewPrompt({
+        cwd: "/repo",
+        task: "review cross-repo",
+        context_roots: [{ alias: "lib", cwd: "/other" }],
+      });
+      expect(prompt).toContain("## Context Roots");
+      expect(prompt).toContain("**lib**");
+      expect(prompt).toContain("/other");
+    });
   });
 });

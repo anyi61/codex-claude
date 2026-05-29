@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { validateCwd, validateFilesWithinCwd, isDelegatedWorktreePath, checkRecursion, MAX_BRIDGE_DEPTH } from "./guard.js";
+import { validateCwd, validateFilesWithinCwd, isDelegatedWorktreePath, checkRecursion, MAX_BRIDGE_DEPTH, validateContextRoots } from "./guard.js";
 import { getPackageInfo } from "./package-info.js";
 import { configureCodexAllowRoot, type CodexAllowRootConfiguration } from "./codex-config.js";
 import {
@@ -166,6 +166,21 @@ const BASE_TOOL_DEFINITIONS = [
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
         task: { type: "string", description: "High-level task to delegate. Optional when job_id is provided." },
         mode: { type: "string", enum: ["auto", "read", "review", "write"], description: "Routing mode. auto infers from diff/task wording." },
+        context_roots: {
+          type: "array",
+          minItems: 1,
+          maxItems: 5,
+          items: {
+            type: "object",
+            required: ["alias", "cwd"],
+            properties: {
+              alias: { type: "string", minLength: 1, maxLength: 32, pattern: "^[A-Za-z0-9_-]+$", description: "Short name for this context root (letters, numbers, hyphens, underscores)" },
+              cwd: { type: "string", minLength: 1, description: "Absolute or primary-relative path to the context root directory" },
+            },
+            additionalProperties: false,
+          },
+          description: "Additional read-only repository roots for cross-repo queries and reviews. Not allowed for write mode.",
+        },
         background: { type: "boolean", description: "Legacy alias for wait_strategy='background'. Queue and return immediately." },
         wait_strategy: { type: "string", enum: ["block", "background"], description: "block (default) waits inline for the result. background returns immediately with a running job." },
         wait_timeout_sec: { type: "number", description: "Maximum seconds to wait inline for the job to finish (default 540, max 540)." },
@@ -209,6 +224,21 @@ const BASE_TOOL_DEFINITIONS = [
       properties: {
         task: { type: "string", description: "The question or analysis task" },
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
+        context_roots: {
+          type: "array",
+          minItems: 1,
+          maxItems: 5,
+          items: {
+            type: "object",
+            required: ["alias", "cwd"],
+            properties: {
+              alias: { type: "string", minLength: 1, maxLength: 32, pattern: "^[A-Za-z0-9_-]+$", description: "Short name for this context root" },
+              cwd: { type: "string", minLength: 1, description: "Absolute or primary-relative path to the context root directory" },
+            },
+            additionalProperties: false,
+          },
+          description: "Additional read-only repository roots for cross-repo queries.",
+        },
         instruction_files: { type: "array", items: { type: "string" }, description: "Task instruction/context files for the query" },
         timeout_sec: { type: "number", description: "Timeout in seconds (default 120)" },
         max_turns: { type: "number", description: "Maximum Claude turns for this query. Omitted means no explicit turn cap; fast=true uses 2 unless max_turns is provided." },
@@ -234,6 +264,21 @@ const BASE_TOOL_DEFINITIONS = [
       properties: {
         task: { type: "string", description: "Review instructions (what to look for)" },
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
+        context_roots: {
+          type: "array",
+          minItems: 1,
+          maxItems: 5,
+          items: {
+            type: "object",
+            required: ["alias", "cwd"],
+            properties: {
+              alias: { type: "string", minLength: 1, maxLength: 32, pattern: "^[A-Za-z0-9_-]+$", description: "Short name for this context root" },
+              cwd: { type: "string", minLength: 1, description: "Absolute or primary-relative path to the context root directory" },
+            },
+            additionalProperties: false,
+          },
+          description: "Additional read-only repository roots for cross-repo reviews.",
+        },
         instruction_files: { type: "array", items: { type: "string" }, description: "Review instruction/context files" },
         diff: { type: "string", description: "The diff to review (optional; Claude can also git diff itself)" },
         files: { type: "array", items: { type: "string" }, description: "Specific files to focus on" },
@@ -777,9 +822,16 @@ export async function handleToolCall(name: string, args: unknown, runId = random
       case "claude_task": {
         const parsed = claudeTaskInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { cwd: inputCwd, mode, files, instruction_files, allowed_files, job_id } = parsed.data;
+        const { cwd: inputCwd, mode, files, instruction_files, allowed_files, job_id, context_roots } = parsed.data;
         const check = await validateCwd(inputCwd);
         if (!check.ok) return errorResult(check.error!);
+
+        let resolvedContextRoots: import("./schema.js").ContextRoot[] | undefined;
+        if (context_roots?.length) {
+          const rootCheck = await validateContextRoots(check.resolved, context_roots);
+          if (!rootCheck.ok) return errorResult(rootCheck.error!);
+          resolvedContextRoots = rootCheck.roots;
+        }
 
         if (!job_id) {
           const fileCheck = await validateFilesWithinCwd(check.resolved, [
@@ -790,6 +842,9 @@ export async function handleToolCall(name: string, args: unknown, runId = random
           if (!fileCheck.ok) return errorResult(fileCheck.error!);
 
           if (wouldBeWriteTask(parsed.data)) {
+            if (resolvedContextRoots?.length) {
+              return errorResult("context_roots is not allowed for write mode tasks");
+            }
             const { supportsWorktree } = await import("./guard.js");
             if (isDelegatedWorktreePath(check.resolved)) {
               return errorResult("Refusing to start delegated write work from inside an existing delegated worktree. Use the original repository cwd instead.");
@@ -801,7 +856,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
           }
         }
 
-        const taskResult = await runClaudeTask({ ...parsed.data, cwd: check.resolved }, runId);
+        const taskResult = await runClaudeTask({ ...parsed.data, cwd: check.resolved, context_roots: resolvedContextRoots }, runId);
         const taskInteraction = buildTaskInteraction(taskResult);
         return jsonResult(withInteraction(taskResult, taskInteraction));
       }
@@ -817,7 +872,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
       case "claude_query": {
         const parsed = claudeQueryInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, instruction_files, timeout_sec, max_turns, fast, resume, sensitive_file_policy } = parsed.data;
+        const { task, cwd, instruction_files, timeout_sec, max_turns, fast, resume, sensitive_file_policy, context_roots } = parsed.data;
         const resolvedTimeout = timeout_sec ?? (fast ? 45 : 120);
         const resolvedMaxTurns = max_turns ?? (fast ? 2 : undefined);
 
@@ -826,10 +881,18 @@ export async function handleToolCall(name: string, args: unknown, runId = random
         const fileCheck = await validateFilesWithinCwd(check.resolved, instruction_files);
         if (!fileCheck.ok) return errorResult(fileCheck.error!);
 
+        let resolvedContextRoots: import("./schema.js").ContextRoot[] | undefined;
+        if (context_roots?.length) {
+          const rootCheck = await validateContextRoots(check.resolved, context_roots);
+          if (!rootCheck.ok) return errorResult(rootCheck.error!);
+          resolvedContextRoots = rootCheck.roots;
+        }
+
         return jsonResult(await startBackgroundQuery(
           {
             task,
             cwd: check.resolved,
+            context_roots: resolvedContextRoots,
             instruction_files,
             timeout_sec: resolvedTimeout,
             max_turns: resolvedMaxTurns,
@@ -843,7 +906,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
       case "claude_review": {
         const parsed = claudeReviewInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, diff, instruction_files, files, timeout_sec, max_turns, reviewed_run_id, reviewed_worktree_path, sensitive_file_policy } = parsed.data;
+        const { task, cwd, diff, instruction_files, files, timeout_sec, max_turns, reviewed_run_id, reviewed_worktree_path, sensitive_file_policy, context_roots } = parsed.data;
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
@@ -851,8 +914,15 @@ export async function handleToolCall(name: string, args: unknown, runId = random
         const fileCheck = await validateFilesWithinCwd(check.resolved, mergedFiles.length > 0 ? mergedFiles : undefined);
         if (!fileCheck.ok) return errorResult(fileCheck.error!);
 
+        let resolvedContextRoots: import("./schema.js").ContextRoot[] | undefined;
+        if (context_roots?.length) {
+          const rootCheck = await validateContextRoots(check.resolved, context_roots);
+          if (!rootCheck.ok) return errorResult(rootCheck.error!);
+          resolvedContextRoots = rootCheck.roots;
+        }
+
         return jsonResult(await startBackgroundReview(
-          { task, cwd: check.resolved, diff, instruction_files, files, timeout_sec, max_turns, reviewed_run_id, reviewed_worktree_path, sensitive_file_policy },
+          { task, cwd: check.resolved, context_roots: resolvedContextRoots, diff, instruction_files, files, timeout_sec, max_turns, reviewed_run_id, reviewed_worktree_path, sensitive_file_policy },
         ));
       }
 

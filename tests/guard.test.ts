@@ -1,4 +1,4 @@
-import { mkdtemp, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import {
   isDelegatedWorktreePath,
   sanitizeEnv,
   validateCwd,
+  validateContextRoots,
   validateFilesWithinCwd,
 } from "../src/guard.js";
 
@@ -438,5 +439,118 @@ describe("env allowlist sanitization", () => {
     expect(diag.blocked_passthrough_names).toEqual([]);
 
     delete process.env.SECRET;
+  });
+});
+
+describe("validateContextRoots", () => {
+  let ctxRoot: string;
+  let primary: string;
+  let sibling: string;
+  let oldEnv: NodeJS.ProcessEnv;
+
+  beforeEach(async () => {
+    oldEnv = { ...process.env };
+    ctxRoot = await mkdtemp(path.join(os.tmpdir(), "codex-ctx-"));
+    primary = path.join(ctxRoot, "primary-repo");
+    sibling = path.join(ctxRoot, "sibling-repo");
+    await mkdir(primary, { recursive: true });
+    await mkdir(sibling, { recursive: true });
+    process.env.CODEX_CLAUDE_ALLOW_ROOTS = ctxRoot;
+  });
+
+  afterEach(async () => {
+    process.env = oldEnv;
+    await rm(ctxRoot, { recursive: true, force: true });
+  });
+
+  it("accepts a sibling directory as context root", async () => {
+    const result = await validateContextRoots(primary, [{ alias: "sibling", cwd: sibling }]);
+    expect(result.ok).toBe(true);
+    expect(result.roots).toHaveLength(1);
+    expect(result.roots![0]!.alias).toBe("sibling");
+  });
+
+  it("rejects context root outside CODEX_CLAUDE_ALLOW_ROOTS", async () => {
+    const outside = await mkdtemp(path.join(os.tmpdir(), "codex-ctx-outside-"));
+    const result = await validateContextRoots(primary, [{ alias: "outside", cwd: outside }]);
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("outside");
+    expect(result.error).toContain("outside allowed roots");
+    await rm(outside, { recursive: true, force: true });
+  });
+
+  it("rejects primary cwd as context root", async () => {
+    const result = await validateContextRoots(primary, [{ alias: "self", cwd: primary }]);
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("must not be the same as the primary cwd");
+  });
+
+  it("rejects child of primary cwd", async () => {
+    const child = path.join(primary, "subdir");
+    await mkdir(child, { recursive: true });
+    const result = await validateContextRoots(primary, [{ alias: "child", cwd: child }]);
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("must not be a child of the primary cwd");
+  });
+
+  it("rejects parent of primary cwd", async () => {
+    const parentOfPrimary = ctxRoot;
+    const result = await validateContextRoots(primary, [{ alias: "parent", cwd: parentOfPrimary }]);
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("must not be a parent of the primary cwd");
+  });
+
+  it("rejects alias 'primary' (case insensitive)", async () => {
+    const result = await validateContextRoots(primary, [{ alias: "Primary", cwd: sibling }]);
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("reserved");
+  });
+
+  it("rejects duplicate aliases", async () => {
+    const other = path.join(ctxRoot, "other-repo");
+    await mkdir(other, { recursive: true });
+    const result = await validateContextRoots(primary, [
+      { alias: "same", cwd: sibling },
+      { alias: "same", cwd: other },
+    ]);
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("Duplicate context root alias");
+  });
+
+  it("rejects delegated worktree paths", async () => {
+    const wtPath = path.join(primary, ".claude", "worktrees", "codex-delegated-abc123");
+    await mkdir(wtPath, { recursive: true });
+    const result = await validateContextRoots(primary, [{ alias: "wt", cwd: wtPath }]);
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("delegated worktree path");
+  });
+
+  it("rejects overlapping context roots", async () => {
+    const parent = path.join(ctxRoot, "overlap-parent");
+    const child = path.join(parent, "child");
+    await mkdir(child, { recursive: true });
+    const result = await validateContextRoots(primary, [
+      { alias: "p", cwd: parent },
+      { alias: "c", cwd: child },
+    ]);
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("overlap");
+  });
+
+  it("resolves relative cwd against primary", async () => {
+    const relativePath = path.relative(primary, sibling);
+    const result = await validateContextRoots(primary, [{ alias: "sib", cwd: relativePath }]);
+    expect(result.ok).toBe(true);
+    expect(result.roots![0]!.cwd).toBe(await import("node:fs/promises").then((fs) => fs.realpath(sibling)));
+  });
+
+  it("resolves macOS /var vs /private/var via realpath", async () => {
+    // This test ensures realpath normalization works correctly.
+    // On macOS, /var is a symlink to /private/var, so realpath resolves them to the same path.
+    const result = await validateContextRoots(primary, [{ alias: "sib", cwd: sibling }]);
+    expect(result.ok).toBe(true);
+    // The resolved cwd should be the realpath of sibling
+    const expectedReal = await import("node:fs/promises").then((fs) => fs.realpath(sibling));
+    expect(result.roots![0]!.cwd).toBe(expectedReal);
   });
 });

@@ -56,6 +56,7 @@ One Message To Codex：
 - **应用前预览** — 在变更落地到主工作区前预览 worktree diff，支持生成二进制 git diff patch
 - **审查门禁** — 可选的 stop-hook，在终端状态转换前提示审查
 - **敏感文件保护** — `sensitive_file_policy` 控制 `.env`、secrets、SSH 密钥等敏感文件的读取 deny 规则（default/strict/off）
+- **跨仓库上下文 (context_roots)** — 为 `claude_task`/`claude_query`/`claude_review` 提供额外的只读仓库根目录。查询模式下收窄 Bash allowlist（移除 `find`/`rg`/`wc`/`ls`/`head`/`tail`/`cat`），并为每个上下文根注入敏感文件 deny 规则。不适用于写入模式。
 - **Server-side verification** — `verification_commands` 让 server 在 delegated worktree 中独立运行受控验证命令
 - **产物索引 (Artifact Index)** — `.codex-claude-delegate/artifacts/artifacts.json` 记录 patch 和 verification 产物的元数据（路径/SHA-256/字节数/时间戳/敏感度）。仅存储元数据，高敏感度输出通过文件路径引用，不内嵌内容。`claude_result` 和 `claude_workspace_status` 返回安全的聚合摘要（条目数、类型/敏感度计数、最新时间戳）。
 
@@ -251,7 +252,8 @@ enabled_tools = [
 - **安全 profile：** 写入任务默认使用 `security_profile="default"`，不允许 `npx *` 这类远程包执行路径。`strict` 更收窄；只有在明确需要并理解风险时才使用 `permissive`，它会恢复更宽的本地命令 allowlist。
 - **敏感文件保护：** `sensitive_file_policy` 控制 Read/Grep/Glob 和 Bash 读取命令（cat/head/tail/grep）对敏感文件的 deny 规则。`default`（默认）阻止根目录或子目录中的 `.env`/`.env.*` 以及 `secrets/**`；`strict` 额外阻止 `**/*.pem`/`**/*.key`/`**/*.p12`/`**/*.pfx`、`**/id_rsa*`/`**/id_ed25519*`/`**/id_ecdsa*`、`.aws`/`.ssh`/`.gnupg`/`.kube`/`.docker`、`.netrc`/`.npmrc`/`.pypirc`、`credentials*`/`credential*`；`off` 移除所有敏感文件 deny 规则，但保留 `rm *`/`sudo *` 等危险 Bash 命令的 deny。此字段适用于 `claude_task`、`claude_query`、`claude_review`、`claude_implement`。
 - **Server-side verification：** `verification_commands` 适用于 `claude_task` 写入模式和 `claude_implement`。Claude 完成后，server 会在 delegated worktree 内按顺序运行受控验证命令，并在返回体/run log 中写入 `server_verified`。命令会被解析为 argv 且不经过 shell；只允许测试/类型检查/lint 类命令族，例如 `npm test`、`npm run <script>`、`npx vitest ...`、`npx tsc ...`、`pytest ...`、`go test ...`、`cargo test ...`。验证失败会把原本的 success 降为 partial，但不会自动 apply 或清理 worktree。验证的 stdout/stderr tails 会被写入 `.codex-claude-delegate/artifacts/verification/<runId>/` 并在产物索引中注册为高敏感度条目。
-- **instruction_files vs `files`：** 对普通 `claude_task`，计划、清单、规格文档必须放在 `instruction_files`，或直接在 `task` 中提到。`claude_task.files` 已废弃，只作为兼容的上下文文件处理，不是 apply 范围限制。
+- **instruction_files vs `files`：** 对普通 `claude_task`，计划、清单、规格文档必须放在 `instruction_files`，或直接在 `task` 中提到。`claude_task.files` 已废弃，只作为兼容的上下文文件处理，不是 apply 范围限制。`instruction_files` 仅限主仓库（primary cwd）路径。
+- **context_roots：** `claude_task`/`claude_query`/`claude_review` 可通过 `context_roots` 传入最多 5 个额外的只读仓库根目录（`{ alias, cwd }`）。验证规则：alias 唯一且仅含 `[A-Za-z0-9_-]`（最长 32），cwd 必须与 primary cwd 不重叠且不是 delegated worktree 路径。写入模式下传入 `context_roots` 会被拒绝。查询模式下 Bash allowlist 会收窄为 `git diff/log/status/show`（移除 `find`/`rg`/`wc`/`ls`/`head`/`tail`/`cat`），并为每个上下文根按绝对路径注入敏感文件 deny 规则。
 - **`allowed_files`：** 在 `claude_task` 写入模式中，`allowed_files` 定义硬文件范围——只有列表中的文件可以被修改。超出范围的文件变更会被 scope checker 拒绝。读取/审查模式下 `allowed_files` 会被静默忽略。`allowed_files` 和 `max_changed_files` 会透传到底层 `claude_implement`。
 - **`claude_implement.files`** 是严格的范围控制，用于需要精确文件约束的场景。`claude_task.allowed_files` 和 `claude_implement.files` 语义相同。
 - **未提交的工作区变更：** 默认返回 `needs_user`。传入 `dirty_policy=committed` 忽略本地变更，或 `dirty_policy=snapshot` 将脏文件复制到 worktree。

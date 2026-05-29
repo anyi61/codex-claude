@@ -579,4 +579,50 @@ describe("background jobs module", () => {
     });
     expect((await store.findActiveImplementInRepo({ cwd: repo }))?.job_id).toBe(activeId);
   });
+
+  // ---- FUNC-010: context_roots fingerprint tests ----
+
+  it("fingerprint differs when context_roots are present", async () => {
+    const module = await import("../src/background-jobs.js");
+    const base = module.createTaskFingerprint({
+      cwd: "/repo",
+      type: "query",
+      payload: { cwd: "/repo", task: "explain", mode: "read" },
+    });
+    const withRoots = module.createTaskFingerprint({
+      cwd: "/repo",
+      type: "query",
+      payload: { cwd: "/repo", task: "explain", mode: "read", context_roots: [{ alias: "lib", cwd: "/other" }] },
+    });
+    expect(base).not.toBe(withRoots);
+  });
+
+  it("fingerprint is stable across context_roots order", async () => {
+    const module = await import("../src/background-jobs.js");
+    const order1 = module.createTaskFingerprint({
+      cwd: "/repo",
+      type: "query",
+      payload: {
+        cwd: "/repo",
+        task: "explain",
+        context_roots: [
+          { alias: "a", cwd: "/a" },
+          { alias: "b", cwd: "/b" },
+        ],
+      },
+    });
+    const order2 = module.createTaskFingerprint({
+      cwd: "/repo",
+      type: "query",
+      payload: {
+        cwd: "/repo",
+        task: "explain",
+        context_roots: [
+          { alias: "b", cwd: "/b" },
+          { alias: "a", cwd: "/a" },
+        ],
+      },
+    });
+    expect(order1).toBe(order2);
+  });
 });

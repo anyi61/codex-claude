@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const {
   validateCwdMock,
   validateFilesWithinCwdMock,
+  validateContextRootsMock,
   checkRecursionMock,
   supportsWorktreeMock,
   isDelegatedWorktreePathMock,
@@ -27,6 +28,7 @@ const {
 } = vi.hoisted(() => ({
   validateCwdMock: vi.fn(),
   validateFilesWithinCwdMock: vi.fn(),
+  validateContextRootsMock: vi.fn(),
   checkRecursionMock: vi.fn(() => 0),
   supportsWorktreeMock: vi.fn(async () => true),
   isDelegatedWorktreePathMock: vi.fn(() => false),
@@ -57,6 +59,7 @@ vi.mock("../src/guard.js", () => ({
   isDelegatedWorktreePath: isDelegatedWorktreePathMock,
   validateCwd: validateCwdMock,
   validateFilesWithinCwd: validateFilesWithinCwdMock,
+  validateContextRoots: validateContextRootsMock,
 }));
 
 vi.mock("../src/codex-config.js", () => ({
@@ -112,6 +115,7 @@ describe("server background job handlers", () => {
     vi.clearAllMocks();
     validateCwdMock.mockResolvedValue({ ok: true, resolved: "/repo/resolved" });
     validateFilesWithinCwdMock.mockResolvedValue({ ok: true });
+    validateContextRootsMock.mockResolvedValue({ ok: true, roots: [{ alias: "lib", cwd: "/other/resolved" }] });
   });
 
   afterEach(() => {
@@ -1345,6 +1349,163 @@ describe("server background job handlers", () => {
     expect(runClaudeExportMock).not.toHaveBeenCalled();
     expect(result.isError).toBe(true);
     expect(String(payload.error)).toContain("branch");
+  });
+
+  // ---- FUNC-010: context_roots server tests ----
+
+  it("routes claude_query with context_roots through startBackgroundQuery", async () => {
+    startBackgroundQueryMock.mockResolvedValue({
+      job: { job_id: "job-query-ctx", type: "query", status: "queued" },
+    });
+    validateContextRootsMock.mockResolvedValue({
+      ok: true,
+      roots: [{ alias: "lib", cwd: "/other/resolved" }],
+    });
+
+    const result = await handleToolCall("claude_query", {
+      cwd: "/repo/input",
+      task: "explain cross-repo",
+      context_roots: [{ alias: "lib", cwd: "/other" }],
+    });
+    const payload = parsePayload(result);
+
+    expect(validateContextRootsMock).toHaveBeenCalledWith("/repo/resolved", [{ alias: "lib", cwd: "/other" }]);
+    expect(startBackgroundQueryMock).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: "/repo/resolved",
+      task: "explain cross-repo",
+      context_roots: [{ alias: "lib", cwd: "/other/resolved" }],
+    }));
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("routes claude_review with context_roots through startBackgroundReview", async () => {
+    startBackgroundReviewMock.mockResolvedValue({
+      job: { job_id: "job-review-ctx", type: "review", status: "queued" },
+    });
+    validateContextRootsMock.mockResolvedValue({
+      ok: true,
+      roots: [{ alias: "lib", cwd: "/other/resolved" }],
+    });
+
+    const result = await handleToolCall("claude_review", {
+      cwd: "/repo/input",
+      task: "review cross-repo",
+      context_roots: [{ alias: "lib", cwd: "/other" }],
+    });
+
+    expect(validateContextRootsMock).toHaveBeenCalledWith("/repo/resolved", [{ alias: "lib", cwd: "/other" }]);
+    expect(startBackgroundReviewMock).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: "/repo/resolved",
+      context_roots: [{ alias: "lib", cwd: "/other/resolved" }],
+    }));
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("routes claude_task read with context_roots through runClaudeTask", async () => {
+    runClaudeTaskMock.mockResolvedValue({
+      delegated_mode: "read",
+      summary: "Read task with context roots.",
+      job: { job_id: "job-read-ctx", type: "query", status: "queued" },
+      completed_inline: false,
+      next_actions: [],
+    });
+    validateContextRootsMock.mockResolvedValue({
+      ok: true,
+      roots: [{ alias: "lib", cwd: "/other/resolved" }],
+    });
+
+    const result = await handleToolCall("claude_task", {
+      cwd: "/repo/input",
+      task: "read cross-repo",
+      mode: "read",
+      context_roots: [{ alias: "lib", cwd: "/other" }],
+    });
+
+    expect(validateContextRootsMock).toHaveBeenCalledWith("/repo/resolved", [{ alias: "lib", cwd: "/other" }]);
+    expect(runClaudeTaskMock).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: "/repo/resolved",
+      context_roots: [{ alias: "lib", cwd: "/other/resolved" }],
+    }), expect.any(String));
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("rejects claude_task write with context_roots", async () => {
+    const result = await handleToolCall("claude_task", {
+      cwd: "/repo/input",
+      task: "implement feature",
+      mode: "write",
+      context_roots: [{ alias: "lib", cwd: "/other" }],
+    });
+    const payload = parsePayload(result);
+
+    expect(runClaudeTaskMock).not.toHaveBeenCalled();
+    expect(result.isError).toBe(true);
+    expect(String(payload.error)).toContain("context_roots is not allowed for write mode");
+  });
+
+  it("rejects claude_task inferred write with context_roots", async () => {
+    const result = await handleToolCall("claude_task", {
+      cwd: "/repo/input",
+      task: "implement the new feature",
+      context_roots: [{ alias: "lib", cwd: "/other" }],
+    });
+    const payload = parsePayload(result);
+
+    expect(runClaudeTaskMock).not.toHaveBeenCalled();
+    expect(result.isError).toBe(true);
+    expect(String(payload.error)).toContain("context_roots is not allowed for write mode");
+  });
+
+  it("rejects claude_query when validateContextRoots fails", async () => {
+    validateContextRootsMock.mockResolvedValue({
+      ok: false,
+      error: 'Context root "lib" must not be a child of the primary cwd',
+    });
+
+    const result = await handleToolCall("claude_query", {
+      cwd: "/repo/input",
+      task: "explain",
+      context_roots: [{ alias: "lib", cwd: "/other" }],
+    });
+    const payload = parsePayload(result);
+
+    expect(startBackgroundQueryMock).not.toHaveBeenCalled();
+    expect(result.isError).toBe(true);
+    expect(String(payload.error)).toContain("must not be a child");
+  });
+
+  it("exposes context_roots on claude_task, claude_query, and claude_review tool definitions", () => {
+    const taskTool = TOOL_DEFINITIONS.find((t) => t.name === "claude_task");
+    const queryTool = TOOL_DEFINITIONS.find((t) => t.name === "claude_query");
+    const reviewTool = TOOL_DEFINITIONS.find((t) => t.name === "claude_review");
+    const implementTool = TOOL_DEFINITIONS.find((t) => t.name === "claude_implement");
+
+    expect(taskTool?.inputSchema.properties).toHaveProperty("context_roots");
+    expect(queryTool?.inputSchema.properties).toHaveProperty("context_roots");
+    expect(reviewTool?.inputSchema.properties).toHaveProperty("context_roots");
+    // claude_implement must NOT have context_roots
+    expect(implementTool?.inputSchema.properties).not.toHaveProperty("context_roots");
+  });
+
+  it("context_roots tool JSON constraints match spec (maxItems 5, alias maxLength 32, regex)", () => {
+    const taskTool = TOOL_DEFINITIONS.find((t) => t.name === "claude_task");
+    const ctxProp = taskTool?.inputSchema.properties.context_roots as Record<string, unknown>;
+
+    expect(ctxProp.type).toBe("array");
+    expect(ctxProp.minItems).toBe(1);
+    expect(ctxProp.maxItems).toBe(5);
+
+    const items = ctxProp.items as Record<string, unknown>;
+    expect(items.additionalProperties).toBe(false);
+    expect(items.required).toEqual(["alias", "cwd"]);
+
+    const aliasProp = (items.properties as Record<string, Record<string, unknown>>).alias;
+    expect(aliasProp.minLength).toBe(1);
+    expect(aliasProp.maxLength).toBe(32);
+    expect(aliasProp.pattern).toBe("^[A-Za-z0-9_-]+$");
+
+    const cwdProp = (items.properties as Record<string, Record<string, unknown>>).cwd;
+    expect(cwdProp.minLength).toBe(1);
   });
 });
 

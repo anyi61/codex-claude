@@ -70,6 +70,7 @@ import {
   IMPLEMENT_SCHEMA,
   ImplementRunLogSchema,
   buildSensitiveFileDenyPatterns,
+  buildSensitiveFileDenyPatternsForContextRoots,
   claudeApplyInputSchema,
   claudeCleanupInputSchema,
   claudeImplementInputSchema,
@@ -571,6 +572,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
       queued = await startBackgroundQuery({
         cwd: input.cwd,
         task: input.task!,
+        context_roots: input.context_roots,
         instruction_files: instructionFiles,
         timeout_sec: INTERNAL_CLAUDE_TIMEOUT_SEC,
         sensitive_file_policy: input.sensitive_file_policy,
@@ -579,6 +581,7 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
       queued = await startBackgroundReview({
         cwd: input.cwd,
         task: input.task!,
+        context_roots: input.context_roots,
         diff: input.diff,
         instruction_files: instructionFiles,
         timeout_sec: INTERNAL_CLAUDE_TIMEOUT_SEC,
@@ -587,6 +590,22 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         sensitive_file_policy: input.sensitive_file_policy,
       });
     } else {
+      if (input.context_roots?.length) {
+        return {
+          delegated_mode: delegatedMode,
+          mode_inference: modeInference,
+          status: "failed",
+          summary: "context_roots is not allowed for write mode tasks",
+          wait: buildWaitMetadata({
+            timeoutSec: input.wait_timeout_sec ?? 540,
+            completedInline: true,
+            waiting: false,
+            doNotStartDuplicateJob: false,
+          }),
+          warnings: ["context_roots is not allowed for write mode tasks"],
+          next_actions: [],
+        } satisfies ClaudeTaskResult;
+      }
       const implementResult = await startBackgroundImplement({
         cwd: input.cwd,
         task: input.task!,
@@ -1335,27 +1354,53 @@ function createQueryOptions(input: ClaudeQueryInput): ClaudeRunOptions {
   const effectiveMaxTurns = input.max_turns ?? (input.fast ? 2 : undefined);
   const effectiveTimeoutSec = input.timeout_sec ?? (input.fast ? 45 : 120);
   const sfp = buildSensitiveFileDenyPatterns(input.sensitive_file_policy ?? "default");
+  const hasContextRoots = (input.context_roots?.length ?? 0) > 0;
+
+  const baseAllowedTools = [
+    "Read",
+    "Glob",
+    "Grep",
+    "Bash(git diff *)",
+    "Bash(git log *)",
+    "Bash(git status)",
+    "Bash(git show *)",
+    "Bash(find *)",
+    "Bash(rg *)",
+    "Bash(wc *)",
+    "Bash(ls *)",
+    "Bash(head *)",
+    "Bash(tail *)",
+    "Bash(cat *)",
+  ];
+
+  const contextRootsAllowedTools = [
+    "Read",
+    "Glob",
+    "Grep",
+    "Bash(git diff *)",
+    "Bash(git log *)",
+    "Bash(git status)",
+    "Bash(git show *)",
+  ];
+
+  const contextRootsDeny = hasContextRoots
+    ? buildSensitiveFileDenyPatternsForContextRoots(input.sensitive_file_policy ?? "default", input.context_roots!)
+    : { readDeny: [], grepGlobDeny: [], bashReadDeny: [] };
+
   return {
     prompt: buildQueryPrompt(input),
     cwd: input.cwd,
     tools: "Read,Glob,Grep,Bash",
-    allowedTools: [
-      "Read",
-      "Glob",
-      "Grep",
-      "Bash(git diff *)",
-      "Bash(git log *)",
-      "Bash(git status)",
-      "Bash(git show *)",
-      "Bash(find *)",
-      "Bash(rg *)",
-      "Bash(wc *)",
-      "Bash(ls *)",
-      "Bash(head *)",
-      "Bash(tail *)",
-      "Bash(cat *)",
+    allowedTools: hasContextRoots ? contextRootsAllowedTools : baseAllowedTools,
+    disallowedTools: [
+      ...readOnlyDisallowedTools(),
+      ...sfp.readDeny,
+      ...sfp.grepGlobDeny,
+      ...sfp.bashReadDeny,
+      ...contextRootsDeny.readDeny,
+      ...contextRootsDeny.grepGlobDeny,
+      ...contextRootsDeny.bashReadDeny,
     ],
-    disallowedTools: [...readOnlyDisallowedTools(), ...sfp.readDeny, ...sfp.grepGlobDeny, ...sfp.bashReadDeny],
     maxTurns: effectiveMaxTurns,
     timeoutSec: effectiveTimeoutSec,
     jsonSchema: QUERY_SCHEMA,
@@ -1364,6 +1409,10 @@ function createQueryOptions(input: ClaudeQueryInput): ClaudeRunOptions {
 
 function createReviewOptions(input: ClaudeReviewInput): ClaudeRunOptions {
   const sfp = buildSensitiveFileDenyPatterns(input.sensitive_file_policy ?? "default");
+  const hasContextRoots = (input.context_roots?.length ?? 0) > 0;
+  const contextRootsDeny = hasContextRoots
+    ? buildSensitiveFileDenyPatternsForContextRoots(input.sensitive_file_policy ?? "default", input.context_roots!)
+    : { readDeny: [], grepGlobDeny: [], bashReadDeny: [] };
   return {
     prompt: buildReviewPrompt(input),
     cwd: input.cwd,
@@ -1378,7 +1427,15 @@ function createReviewOptions(input: ClaudeReviewInput): ClaudeRunOptions {
       "Bash(git show *)",
       "Bash(git blame *)",
     ],
-    disallowedTools: [...readOnlyDisallowedTools(), ...sfp.readDeny, ...sfp.grepGlobDeny, ...sfp.bashReadDeny],
+    disallowedTools: [
+      ...readOnlyDisallowedTools(),
+      ...sfp.readDeny,
+      ...sfp.grepGlobDeny,
+      ...sfp.bashReadDeny,
+      ...contextRootsDeny.readDeny,
+      ...contextRootsDeny.grepGlobDeny,
+      ...contextRootsDeny.bashReadDeny,
+    ],
     maxTurns: input.max_turns,
     timeoutSec: input.timeout_sec ?? 180,
     jsonSchema: REVIEW_SCHEMA,

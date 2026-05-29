@@ -7,6 +7,13 @@ import type { ArtifactIndexSummary } from "./artifact-index.js";
 
 export type EnvStatus = "set" | "set-redacted" | "present-in-parent-stripped" | "unset";
 
+// ---- Context root types ----
+
+export interface ContextRoot {
+  alias: string;
+  cwd: string;
+}
+
 // ---- Tool input types ----
 
 export interface ClaudeStatusInput {
@@ -16,6 +23,7 @@ export interface ClaudeStatusInput {
 export interface ClaudeQueryInput {
   task: string;
   cwd: string;
+  context_roots?: ContextRoot[];
   instruction_files?: string[];
   timeout_sec?: number;
   max_turns?: number;
@@ -27,6 +35,7 @@ export interface ClaudeQueryInput {
 export interface ClaudeReviewInput {
   task: string;
   cwd: string;
+  context_roots?: ContextRoot[];
   diff?: string;
   instruction_files?: string[];
   files?: string[];
@@ -63,6 +72,7 @@ export interface ClaudeTaskInput {
   cwd: string;
   task?: string;
   mode?: ClaudeTaskMode;
+  context_roots?: ContextRoot[];
   background?: boolean;
   wait_strategy?: "block" | "background";
   wait_timeout_sec?: number;
@@ -733,6 +743,12 @@ const verificationCommandsSchema = z.array(
     .regex(/^[^\u0000-\u001f\u007f]+$/, "verification command may not contain control characters")
 ).min(1).max(10).optional();
 
+const contextRootSchema = z.object({
+  alias: z.string().trim().min(1, "alias is required").max(32, "alias must be at most 32 characters").regex(/^[A-Za-z0-9_-]+$/, "alias may only contain letters, numbers, hyphens, and underscores"),
+  cwd: z.string().trim().min(1, "cwd is required"),
+}).strict();
+const contextRootsSchema = z.array(contextRootSchema).min(1, "context_roots must not be empty").max(5, "context_roots must contain at most 5 entries").optional();
+
 export const claudeStatusInputSchema = z.object({
   cwd: cwdSchema,
 }).strict();
@@ -745,6 +761,7 @@ export const claudeSetupInputSchema = z.object({
 export const claudeQueryInputSchema = z.object({
   task: taskSchema,
   cwd: cwdSchema,
+  context_roots: contextRootsSchema,
   instruction_files: filesSchema,
   timeout_sec: timeoutSchema.optional(),
   max_turns: maxTurnsSchema.optional(),
@@ -756,6 +773,7 @@ export const claudeQueryInputSchema = z.object({
 export const claudeReviewInputSchema = z.object({
   task: taskSchema,
   cwd: cwdSchema,
+  context_roots: contextRootsSchema,
   diff: z.string().optional(),
   instruction_files: filesSchema,
   files: filesSchema,
@@ -796,6 +814,7 @@ export const claudeTaskInputSchema = z.object({
   cwd: cwdSchema,
   task: z.string().trim().min(1).optional(),
   mode: z.enum(["auto", "read", "review", "write"]).optional().default("auto"),
+  context_roots: contextRootsSchema,
   background: z.boolean().optional(),
   wait_strategy: z.enum(["block", "background"]).optional(),
   wait_timeout_sec: z.number().int().positive().max(540).optional().default(540),
@@ -996,6 +1015,36 @@ export function buildSensitiveFileDenyPatterns(policy: SensitiveFilePolicy): Sen
   return buildDenyForPaths(paths);
 }
 
+export function buildSensitiveFileDenyPatternsForContextRoots(
+  policy: SensitiveFilePolicy,
+  roots: ContextRoot[],
+): SensitiveFileDenyPatterns {
+  if (policy === "off") {
+    return { readDeny: [], grepGlobDeny: [], bashReadDeny: [] };
+  }
+  const basePaths = policy === "strict"
+    ? [...DEFAULT_SENSITIVE_PATHS, ...STRICT_EXTRA_PATHS]
+    : DEFAULT_SENSITIVE_PATHS;
+  const allPaths = roots.flatMap((root) =>
+    basePaths.map((p) => {
+      const relative = p.startsWith("./") ? p.slice(2) : p;
+      return `${root.cwd}/${relative}`;
+    }),
+  );
+  return buildDenyForPaths(allPaths);
+}
+
+export function buildContextRootsPromptSection(contextRoots: ContextRoot[]): string {
+  if (!contextRoots || contextRoots.length === 0) return "";
+  let section = `## Context Roots\n\n`;
+  section += `You have read-only access to the following additional repositories:\n\n`;
+  for (const root of contextRoots) {
+    section += `- **${root.alias}**: \`${root.cwd}\`\n`;
+  }
+  section += `\nYou may read files and run read-only git commands within these repositories. Do NOT modify any files in context roots.\n\n`;
+  return section;
+}
+
 // ---- JSON Schemas for --json-schema flag ----
 
 // For claude_query: answer-focused, no file/tool fields.
@@ -1094,6 +1143,10 @@ export function buildImplementPrompt(input: ClaudeImplementInput): string {
 export function buildReviewPrompt(input: ClaudeReviewInput): string {
   let prompt = `## Review Request\n\n${input.task}\n\n`;
 
+  if (input.context_roots?.length) {
+    prompt += buildContextRootsPromptSection(input.context_roots);
+  }
+
   if (input.instruction_files?.length) {
     prompt += `## Instruction Files\n\n`;
     prompt += `These files are task instructions or context, not a modification scope limit.\n\n`;
@@ -1123,6 +1176,10 @@ export function buildReviewPrompt(input: ClaudeReviewInput): string {
 
 export function buildQueryPrompt(input: ClaudeQueryInput): string {
   let prompt = `## Question\n\n${input.task}\n\n`;
+
+  if (input.context_roots?.length) {
+    prompt += buildContextRootsPromptSection(input.context_roots);
+  }
 
   if (input.instruction_files?.length) {
     prompt += `## Instruction Files\n\n`;

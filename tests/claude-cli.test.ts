@@ -13,6 +13,7 @@ import {
   buildSafeEnv,
   inferClaudeTaskMode,
   parseStatusPorcelainZ,
+  runClaudeTask,
   truncateTail,
 } from "../src/claude-cli.js";
 
@@ -7454,6 +7455,86 @@ describe("runClaudeImplement — permission_denials warnings", () => {
       expect(await readFile(path.join(repo, "target.txt"), "utf8")).toBe("modified target\n");
       // Unrelated file should still be dirty in main
       expect(await readFile(path.join(repo, "unrelated.txt"), "utf8")).toBe("dirty unrelated\n");
+    });
+  });
+
+  // ---- FUNC-010: context_roots claude-cli tests ----
+
+  describe("context_roots conditional allowlist and deny patterns", () => {
+    it("query without context_roots keeps broad filesystem Bash allowlist", () => {
+      const args = buildQueryArgs({ cwd: "/repo", task: "explain" });
+      // Should include broad filesystem commands
+      expect(args).toContain("Bash(find *)");
+      expect(args).toContain("Bash(rg *)");
+      expect(args).toContain("Bash(wc *)");
+      expect(args).toContain("Bash(ls *)");
+      expect(args).toContain("Bash(head *)");
+      expect(args).toContain("Bash(tail *)");
+      expect(args).toContain("Bash(cat *)");
+    });
+
+    it("query with context_roots removes broad filesystem Bash allowlist", () => {
+      const args = buildQueryArgs({
+        cwd: "/repo",
+        task: "explain cross-repo",
+        context_roots: [{ alias: "lib", cwd: "/other" }],
+      });
+      // Broad filesystem commands should be absent
+      expect(args).not.toContain("Bash(find *)");
+      expect(args).not.toContain("Bash(rg *)");
+      expect(args).not.toContain("Bash(wc *)");
+      expect(args).not.toContain("Bash(ls *)");
+      expect(args).not.toContain("Bash(head *)");
+      expect(args).not.toContain("Bash(tail *)");
+      expect(args).not.toContain("Bash(cat *)");
+      // Read-only git commands should still be present
+      expect(args).toContain("Bash(git diff *)");
+      expect(args).toContain("Bash(git log *)");
+      expect(args).toContain("Bash(git status)");
+      expect(args).toContain("Bash(git show *)");
+    });
+
+    it("query with context_roots includes context-root sensitive deny patterns", () => {
+      const args = buildQueryArgs({
+        cwd: "/repo",
+        task: "explain cross-repo",
+        context_roots: [{ alias: "lib", cwd: "/other/path" }],
+      });
+      // Context-root sensitive denies should be present
+      expect(args).toContain("Read(/other/path/.env)");
+      expect(args).toContain("Read(/other/path/.env.*)");
+      expect(args).toContain("Read(/other/path/secrets/**)");
+      expect(args).toContain("Bash(cat /other/path/.env)");
+      expect(args).toContain("Bash(grep * /other/path/.env)");
+      // Primary sensitive denies should also still be present
+      expect(args).toContain("Read(./.env)");
+    });
+
+    it("review with context_roots includes context-root sensitive deny patterns", () => {
+      const args = buildReviewArgs({
+        cwd: "/repo",
+        task: "review cross-repo",
+        context_roots: [{ alias: "lib", cwd: "/other/path" }],
+      });
+      expect(args).toContain("Read(/other/path/.env)");
+      expect(args).toContain("Read(/other/path/secrets/**)");
+      expect(args).toContain("Bash(cat /other/path/.env)");
+      // Primary sensitive denies still present
+      expect(args).toContain("Read(./.env)");
+    });
+
+    it("query with context_roots and off policy removes only sensitive denies", () => {
+      const args = buildQueryArgs({
+        cwd: "/repo",
+        task: "explain",
+        context_roots: [{ alias: "lib", cwd: "/other" }],
+        sensitive_file_policy: "off",
+      });
+      expect(args).not.toContain("Read(/other/.env)");
+      expect(args).not.toContain("Read(./.env)");
+      // Dangerous bash denies still present
+      expect(args).toContain("Bash(rm *)");
+      expect(args).toContain("Bash(sudo *)");
     });
   });
 });

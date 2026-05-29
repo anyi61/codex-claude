@@ -155,6 +155,17 @@ git diff, git log, git status, git show, git blame (仅 review),
 find, rg, wc, ls, head, tail, cat
 ```
 
+#### context_roots 安全约束
+
+`context_roots` 为读取/审查模式提供额外的只读仓库根目录，安全约束如下：
+
+- **仅限读取/审查模式**：写入模式（write/inferred-write）传入 `context_roots` 会被 server 和 `runClaudeTask` 双重拒绝。
+- **路径隔离**：每个 context root 的 cwd 必须与 primary cwd 不重叠（非 exact、非 child、非 parent），且不能是 delegated worktree 路径。使用 realpath 规范化后检查。
+- **alias 约束**：`[A-Za-z0-9_-]`，1-32 字符，不允许为 `"primary"`，不允许重复。
+- **查询模式 Bash allowlist 收窄**：带 `context_roots` 的查询移除 `find`/`rg`/`wc`/`ls`/`head`/`tail`/`cat`，仅保留 `git diff/log/status/show`。
+- **上下文根敏感文件 deny**：为每个 context root 按绝对路径注入 `sensitive_file_policy` 对应的 deny 规则（Read/Grep/Glob/Bash 读取命令）。
+- **instruction_files 仅限主仓库**：`instruction_files` 路径仅在 primary cwd 内解析。
+
 #### 写入模式（implement）安全 Profile
 
 三个 profile 控制允许的工具集：

@@ -117,6 +117,19 @@ function normalizeStringArray(value: unknown): string[] | undefined {
     .sort((a, b) => a.localeCompare(b));
 }
 
+function normalizeContextRoots(value: unknown): Array<{ alias: string; cwd: string }> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const roots = value
+    .filter((entry): entry is { alias: string; cwd: string } =>
+      entry !== null && typeof entry === "object" &&
+      typeof (entry as { alias?: unknown }).alias === "string" &&
+      typeof (entry as { cwd?: unknown }).cwd === "string"
+    )
+    .map((entry) => ({ alias: entry.alias.trim(), cwd: entry.cwd.trim() }))
+    .sort((a, b) => a.alias.localeCompare(b.alias) || a.cwd.localeCompare(b.cwd));
+  return roots.length > 0 ? roots : undefined;
+}
+
 function buildFingerprintPayload(input: {
   cwd: string;
   type: BackgroundJobType;
@@ -137,6 +150,7 @@ function buildFingerprintPayload(input: {
     max_cost_usd: input.payload.max_cost_usd,
     sensitive_file_policy: input.payload.sensitive_file_policy ?? "default",
     verification_commands: normalizeStringArray(input.payload.verification_commands),
+    context_roots: normalizeContextRoots(input.payload.context_roots),
   };
 }
 

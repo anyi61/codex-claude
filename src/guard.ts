@@ -2,6 +2,7 @@ import { realpath, stat } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
+import type { ContextRoot } from "./schema.js";
 
 // Dangerous system directories that tools must never operate within.
 // Subdirectories of these roots are also blocked (e.g. /var/log, /usr/local/bin).
@@ -145,6 +146,89 @@ export async function validateFilesWithinCwd(cwd: string, files?: string[]): Pro
     }
   }
   return { ok: true, resolved: cwdReal };
+}
+
+export interface ContextRootCheck {
+  ok: boolean;
+  roots?: ContextRoot[];
+  error?: string;
+}
+
+export async function validateContextRoots(
+  primaryCwd: string,
+  roots: ContextRoot[],
+): Promise<ContextRootCheck> {
+  const primaryCheck = await validateCwd(primaryCwd);
+  if (!primaryCheck.ok) {
+    return { ok: false, error: primaryCheck.error };
+  }
+  const primaryReal = primaryCheck.resolved;
+
+  const resolvedRoots: ContextRoot[] = [];
+  const seenAliases = new Set<string>();
+  const seenCwds = new Set<string>();
+
+  for (const root of roots) {
+    const alias = root.alias.trim();
+    if (alias.toLowerCase() === "primary") {
+      return { ok: false, error: `Alias "primary" is reserved` };
+    }
+    if (seenAliases.has(alias)) {
+      return { ok: false, error: `Duplicate context root alias: ${alias}` };
+    }
+    seenAliases.add(alias);
+
+    const resolvedCwd = path.resolve(primaryCwd, root.cwd.trim());
+    const rootCheck = await validateCwd(resolvedCwd);
+    if (!rootCheck.ok) {
+      return { ok: false, error: `Context root "${alias}" failed validation: ${rootCheck.error}` };
+    }
+    const rootReal = rootCheck.resolved;
+
+    const rootStat = await stat(rootReal);
+    if (!rootStat.isDirectory()) {
+      return { ok: false, error: `Context root path is not a directory: ${root.cwd}` };
+    }
+
+    if (isDelegatedWorktreePath(rootReal)) {
+      return { ok: false, error: `Context root must not be a delegated worktree path: ${root.cwd}` };
+    }
+
+    if (rootReal === primaryReal) {
+      return { ok: false, error: `Context root "${alias}" must not be the same as the primary cwd` };
+    }
+
+    if (rootReal.startsWith(primaryReal + path.sep)) {
+      return { ok: false, error: `Context root "${alias}" must not be a child of the primary cwd` };
+    }
+
+    if (primaryReal.startsWith(rootReal + path.sep)) {
+      return { ok: false, error: `Context root "${alias}" must not be a parent of the primary cwd` };
+    }
+
+    if (seenCwds.has(rootReal)) {
+      return { ok: false, error: `Duplicate context root path: ${rootReal}` };
+    }
+    seenCwds.add(rootReal);
+
+    resolvedRoots.push({ alias, cwd: rootReal });
+  }
+
+  // Check for overlapping context roots
+  for (let i = 0; i < resolvedRoots.length; i++) {
+    for (let j = i + 1; j < resolvedRoots.length; j++) {
+      const a = resolvedRoots[i]!.cwd;
+      const b = resolvedRoots[j]!.cwd;
+      if (a.startsWith(b + path.sep) || b.startsWith(a + path.sep)) {
+        return {
+          ok: false,
+          error: `Context roots "${resolvedRoots[i]!.alias}" and "${resolvedRoots[j]!.alias}" overlap`,
+        };
+      }
+    }
+  }
+
+  return { ok: true, roots: resolvedRoots };
 }
 
 export function resolveRepoLocalPath(cwd: string, relativePath: string): CwdCheck {
