@@ -633,6 +633,26 @@ describe("applyChangesTransactional path boundary validation", () => {
     expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
   });
 
+  it("apply rejects file path escaping delegated worktree before creating backups", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-tx-escape-worktree-"));
+    cleanupPaths.push(root);
+    const cwd = root;
+    const worktree = path.join(root, "worktree");
+    await mkdir(worktree, { recursive: true });
+    await writeFile(path.join(cwd, "existing.txt"), "old content\n");
+    const file = `../${path.basename(root)}/existing.txt`;
+
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "M", file },
+    ]);
+
+    expect(result.error).toContain("worktreeRoot");
+    expect(result.error).toContain("escapes cwd");
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_recovery_needed).toBeUndefined();
+    expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
+  });
+
   it("apply accepts valid repo-relative path", async () => {
     const { cwd, worktree } = await makeFixture("valid-path");
     const result = await applyChangesTransactional(cwd, worktree, [

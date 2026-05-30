@@ -189,4 +189,13 @@ describe("check-release-install-smoke.mjs", () => {
     expect(releaseIdx).toBeGreaterThanOrEqual(0);
     expect(installIdx).toBeGreaterThan(releaseIdx);
   });
+
+  it("prepublishOnly runs security:grep after tests", () => {
+    const pkg = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8"));
+    const prepublish: string = pkg.scripts.prepublishOnly;
+    const testIdx = prepublish.indexOf("npm test");
+    const securityIdx = prepublish.indexOf("npm run security:grep");
+    expect(testIdx).toBeGreaterThanOrEqual(0);
+    expect(securityIdx).toBeGreaterThan(testIdx);
+  });
 });

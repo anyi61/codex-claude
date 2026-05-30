@@ -207,21 +207,52 @@ describe("verification command parsing and execution", () => {
     expect(calls.length).toBe(0);
   });
 
-  it("non-run commands like npm test and npx vitest remain governed by existing policy (allowedScripts does not affect them)", async () => {
-    const calls = mockSpawn([{ code: 0 }, { code: 0 }]);
+  it("allowedScripts restricts package-manager test shorthands as script names", async () => {
+    const calls = mockSpawn([{ code: 0 }]);
     const repo = await createFixture();
     const { runVerificationCommands } = await import("../src/verification.js");
     const result = await runVerificationCommands(
-      ["npm test", "npx vitest run"],
+      ["npm test", "yarn test", "pnpm test", "npx vitest run"],
       repo,
       5000,
       { allowedScripts: [] },
     );
 
-    // npm test and npx vitest are not run-script forms — allowedScripts should not block them
+    expect(result?.status).toBe("failed");
+    expect(result!.commands.map((c) => c.status)).toEqual(["skipped", "skipped", "skipped", "passed"]);
+    expect(calls.length).toBe(1);
+    expect(calls[0].bin).toBe("npx");
+  });
+
+  it("allowedScripts allows package-manager test shorthands when test is listed", async () => {
+    const calls = mockSpawn([{ code: 0 }, { code: 0 }, { code: 0 }]);
+    const repo = await createFixture();
+    const { runVerificationCommands } = await import("../src/verification.js");
+    const result = await runVerificationCommands(
+      ["npm test", "yarn test", "pnpm test"],
+      repo,
+      5000,
+      { allowedScripts: ["test"] },
+    );
+
     expect(result?.status).toBe("passed");
     expect(result!.commands.every((c) => c.status === "passed")).toBe(true);
-    expect(calls.length).toBe(2);
+    expect(calls.map((call) => call.bin)).toEqual(["npm", "yarn", "pnpm"]);
+  });
+
+  it("allows package-manager test shorthands when allowedScripts is not configured", async () => {
+    const calls = mockSpawn([{ code: 0 }, { code: 0 }, { code: 0 }]);
+    const repo = await createFixture();
+    const { runVerificationCommands } = await import("../src/verification.js");
+    const result = await runVerificationCommands(
+      ["npm test", "yarn test", "pnpm test"],
+      repo,
+      5000,
+    );
+
+    expect(result?.status).toBe("passed");
+    expect(result!.commands.every((c) => c.status === "passed")).toBe(true);
+    expect(calls.map((call) => call.bin)).toEqual(["npm", "yarn", "pnpm"]);
   });
 
   it("yarn/pnpm run scripts are also restricted by allowedScripts", async () => {

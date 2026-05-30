@@ -7660,10 +7660,12 @@ function fs() {
 async function applyChangesTransactional(cwd, worktreeRoot, changes) {
   const f = fs();
   for (const change of changes) {
-    const fileCheck = validateTransactionPath(cwd, change.file, "file");
-    if (fileCheck) return fileCheck;
+    const targetFileCheck = validateTransactionPath(cwd, change.file, "file", "cwd");
+    if (targetFileCheck) return targetFileCheck;
+    const sourceFileCheck = validateTransactionPath(worktreeRoot, change.file, "file", "worktreeRoot");
+    if (sourceFileCheck) return sourceFileCheck;
     if ((change.status === "R" || change.status === "C") && change.old_file) {
-      const oldFileCheck = validateTransactionPath(cwd, change.old_file, "old_file");
+      const oldFileCheck = validateTransactionPath(cwd, change.old_file, "old_file", "cwd");
       if (oldFileCheck) return oldFileCheck;
     }
   }
@@ -7782,18 +7784,18 @@ async function applyChangesTransactional(cwd, worktreeRoot, changes) {
   });
   return { applied_files: appliedFiles };
 }
-function validateTransactionPath(cwd, file2, field) {
+function validateTransactionPath(cwd, file2, field, scope) {
   if (path12.isAbsolute(file2)) {
     return {
       applied_files: [],
-      error: `Invalid ${field} path (absolute): ${file2}`
+      error: `Invalid ${field} path for ${scope} (absolute): ${file2}`
     };
   }
   const check2 = resolveRepoLocalPath(cwd, file2);
   if (!check2.ok) {
     return {
       applied_files: [],
-      error: `Invalid ${field} path ${file2}: ${check2.error}`
+      error: `Invalid ${field} path for ${scope} ${file2}: ${check2.error}`
     };
   }
   return void 0;

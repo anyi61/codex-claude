@@ -99,7 +99,7 @@ function verificationArgvIsAllowed(argv: string[], allowedScripts?: string[]): b
   if (argv.some((arg) => FORBIDDEN_ARG_TOKENS.has(arg))) return false;
 
   if (bin === "npm") {
-    if (first === "test") return true;
+    if (first === "test") return scriptNameIsAllowed("test", allowedScripts);
     if (first === "run") return scriptNameIsAllowed(second, allowedScripts);
     return false;
   }
@@ -107,7 +107,7 @@ function verificationArgvIsAllowed(argv: string[], allowedScripts?: string[]): b
     return !!first && ALLOWED_NPX_TOOLS.has(first);
   }
   if (bin === "yarn" || bin === "pnpm") {
-    if (first === "test") return true;
+    if (first === "test") return scriptNameIsAllowed("test", allowedScripts);
     if (first === "run") return scriptNameIsAllowed(second, allowedScripts);
     return false;
   }
