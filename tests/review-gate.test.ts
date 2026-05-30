@@ -291,4 +291,143 @@ describe("review gate pending metadata", () => {
     expect(result.cleared).toBe(false);
     expect(result.reason).toBe("gate_not_enabled");
   });
+
+  // ---- STATE-MACHINE-001: fault-injection coverage ----
+
+  it("markReviewGatePending is no-op when gate is disabled", async () => {
+    const { repo } = await createFixtureRepo();
+    const statePath = path.join(repo, ".codex-claude-delegate", "review-gate.json");
+
+    // Gate is not enabled (no state file at all)
+    const { markReviewGatePending } = await import("../src/review-gate.js");
+    await markReviewGatePending(repo, {
+      activity: "write",
+      run_id: "run-should-not-persist",
+    });
+
+    // State file should not be created
+    expect(existsSync(statePath)).toBe(false);
+  });
+
+  it("markReviewGatePending is no-op when gate state file says enabled=false", async () => {
+    const { repo } = await createFixtureRepo();
+    const stateDir = path.join(repo, ".codex-claude-delegate");
+    await mkdir(stateDir, { recursive: true });
+    writeFileSync(path.join(stateDir, "review-gate.json"), JSON.stringify({
+      workspace_root: repo,
+      enabled: false,
+      pending_review: false,
+      mode: "soft-stop",
+    }));
+
+    const { markReviewGatePending } = await import("../src/review-gate.js");
+    await markReviewGatePending(repo, {
+      activity: "write",
+      run_id: "run-should-not-persist",
+    });
+
+    const configRaw = await readFile(path.join(stateDir, "review-gate.json"), "utf8");
+    const config = JSON.parse(configRaw);
+    expect(config.pending_review).toBe(false);
+    expect(config.pending_run_id).toBeUndefined();
+  });
+
+  it("fingerprint match clears pending; mismatch does not clear", async () => {
+    const { repo } = await createFixtureRepo();
+    const reloaded = await import("../src/claude-cli.js");
+    await reloaded.manageClaudeReviewGate({ cwd: repo, action: "enable" });
+
+    const { markReviewGatePending, clearReviewGatePendingIfMatches } = await import("../src/review-gate.js");
+    await markReviewGatePending(repo, {
+      activity: "write",
+      run_id: "run-fp-test",
+      fingerprint: "fp-abc123",
+    });
+
+    // Mismatch fingerprint should not clear
+    const mismatch = await clearReviewGatePendingIfMatches(repo, {
+      review_run_id: "review-fp-1",
+      reviewed_run_id: "run-fp-test",
+      reviewed_fingerprint: "fp-wrong",
+    });
+    expect(mismatch.cleared).toBe(false);
+    expect(mismatch.reason).toBe("fingerprint_mismatch");
+
+    // Matching fingerprint should clear
+    const match = await clearReviewGatePendingIfMatches(repo, {
+      review_run_id: "review-fp-2",
+      reviewed_run_id: "run-fp-test",
+      reviewed_fingerprint: "fp-abc123",
+    });
+    expect(match.cleared).toBe(true);
+    expect(match.reason).toBe("cleared");
+
+    const configRaw = await readFile(path.join(repo, ".codex-claude-delegate", "review-gate.json"), "utf8");
+    const config = JSON.parse(configRaw);
+    expect(config.pending_review).toBe(false);
+    expect(config.pending_fingerprint).toBeUndefined();
+  });
+
+  it("second pending mark overwrites first pending metadata", async () => {
+    const { repo } = await createFixtureRepo();
+    const reloaded = await import("../src/claude-cli.js");
+    await reloaded.manageClaudeReviewGate({ cwd: repo, action: "enable" });
+
+    const { markReviewGatePending } = await import("../src/review-gate.js");
+
+    await markReviewGatePending(repo, {
+      activity: "write",
+      run_id: "run-first",
+      worktree_path: ".claude/worktrees/codex-delegated-first",
+      fingerprint: "fp-first",
+    });
+
+    await markReviewGatePending(repo, {
+      activity: "apply",
+      run_id: "run-second",
+      worktree_path: ".claude/worktrees/codex-delegated-second",
+      fingerprint: "fp-second",
+    });
+
+    const configRaw = await readFile(path.join(repo, ".codex-claude-delegate", "review-gate.json"), "utf8");
+    const config = JSON.parse(configRaw);
+    expect(config.pending_review).toBe(true);
+    expect(config.pending_activity).toBe("apply");
+    expect(config.pending_run_id).toBe("run-second");
+    expect(config.pending_worktree_path).toBe(".claude/worktrees/codex-delegated-second");
+    expect(config.pending_fingerprint).toBe("fp-second");
+  });
+
+  it("corrupt state file causes clearReviewGatePendingIfMatches to return gate_not_enabled (fail-closed)", async () => {
+    const { repo } = await createFixtureRepo();
+    const stateDir = path.join(repo, ".codex-claude-delegate");
+    await mkdir(stateDir, { recursive: true });
+    writeFileSync(path.join(stateDir, "review-gate.json"), "NOT VALID JSON {{{");
+
+    const { clearReviewGatePendingIfMatches } = await import("../src/review-gate.js");
+    const result = await clearReviewGatePendingIfMatches(repo, {
+      review_run_id: "review-corrupt",
+      reviewed_run_id: "run-corrupt",
+    });
+    expect(result.cleared).toBe(false);
+    expect(result.reason).toBe("gate_not_enabled");
+  });
+
+  it("deleted state file causes clearReviewGatePendingIfMatches to return gate_not_enabled (fail-closed)", async () => {
+    const { repo } = await createFixtureRepo();
+    const reloaded = await import("../src/claude-cli.js");
+    await reloaded.manageClaudeReviewGate({ cwd: repo, action: "enable" });
+
+    const { clearReviewGatePendingIfMatches } = await import("../src/review-gate.js");
+
+    // Delete the state file
+    await rm(path.join(repo, ".codex-claude-delegate", "review-gate.json"), { force: true });
+
+    const result = await clearReviewGatePendingIfMatches(repo, {
+      review_run_id: "review-deleted",
+      reviewed_run_id: "run-deleted",
+    });
+    expect(result.cleared).toBe(false);
+    expect(result.reason).toBe("gate_not_enabled");
+  });
 });

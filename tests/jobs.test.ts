@@ -285,6 +285,75 @@ describe("JobStore", () => {
     expect(result.removed_count).toBe(0);
     expect(await store.get("job-running")).not.toBeNull();
   });
+
+  // ---- STATE-MACHINE-001: fault-injection coverage ----
+
+  it("cleanup preserves queued and running active jobs while removing terminal jobs", async () => {
+    const { repo, store } = await createStoreFixture();
+    // Active jobs should survive
+    await store.create({
+      job_id: "job-active-queued",
+      type: "query",
+      status: "queued",
+      cwd: repo,
+      created_at: "2026-05-01T00:00:00.000Z",
+      updated_at: "2026-05-01T00:00:00.000Z",
+      payload: { cwd: repo, task: "queued query" },
+    });
+    await store.create({
+      job_id: "job-active-running",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      created_at: "2026-05-01T00:00:00.000Z",
+      updated_at: "2026-05-01T00:00:00.000Z",
+      payload: { cwd: repo, task: "running task" },
+    });
+    // Terminal jobs should be removed
+    await store.create({
+      job_id: "job-terminal-success",
+      type: "review",
+      status: "succeeded",
+      cwd: repo,
+      created_at: "2026-05-01T00:00:00.000Z",
+      updated_at: "2026-05-01T00:00:00.000Z",
+      payload: { cwd: repo, task: "review done" },
+    });
+    await store.create({
+      job_id: "job-terminal-failed",
+      type: "query",
+      status: "failed",
+      cwd: repo,
+      created_at: "2026-05-01T00:00:00.000Z",
+      updated_at: "2026-05-01T00:00:00.000Z",
+      payload: { cwd: repo, task: "query failed" },
+    });
+
+    const result = await store.cleanup({
+      cwd: repo,
+      older_than_hours: 0,
+      dry_run: false,
+      limit: 20,
+    });
+
+    expect(result.matched_count).toBe(2);
+    expect(result.removed_count).toBe(2);
+    // Active jobs still exist
+    expect(await store.get("job-active-queued")).not.toBeNull();
+    expect(await store.get("job-active-running")).not.toBeNull();
+    // Terminal jobs removed
+    expect(await store.get("job-terminal-success")).toBeNull();
+    expect(await store.get("job-terminal-failed")).toBeNull();
+  });
+
+  it("update returns null for non-existent job", async () => {
+    const { store } = await createStoreFixture();
+    const result = await store.update("non-existent-job-id", {
+      status: "failed",
+      updated_at: new Date().toISOString(),
+    });
+    expect(result).toBeNull();
+  });
 });
 
 describe("createTaskFingerprint", () => {

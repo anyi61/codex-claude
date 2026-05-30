@@ -625,4 +625,309 @@ describe("background jobs module", () => {
     });
     expect(order1).toBe(order2);
   });
+
+  // ---- STATE-MACHINE-001: fault-injection coverage ----
+
+  it("dedupe does not reuse a crashed job with the same fingerprint", async () => {
+    const { repo, store } = await createJobFixture();
+    const spawnMock = vi.fn(() => createDetachedSpawnResult(8001));
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: spawnMock };
+    });
+    await store.create({
+      job_id: "job-crashed-old",
+      type: "query",
+      status: "crashed",
+      cwd: repo,
+      created_at: "2026-05-01T00:00:00.000Z",
+      updated_at: "2026-05-01T00:10:00.000Z",
+      fingerprint: "fp-dedupe-crash",
+      payload: { cwd: repo, task: "crashed query" },
+    });
+    const module = await import("../src/background-jobs.js");
+    const result = await module.enqueueBackgroundJob({ cwd: repo, type: "query", payload: { cwd: repo, task: "crashed query" }, dedupe: true });
+    expect(result.job.job_id).not.toBe("job-crashed-old");
+    expect(result.job.status).toBe("queued");
+    expect(result.deduped).toBe(false);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("dedupe does not reuse a cancelled job with the same fingerprint", async () => {
+    const { repo, store } = await createJobFixture();
+    const spawnMock = vi.fn(() => createDetachedSpawnResult(8002));
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: spawnMock };
+    });
+    await store.create({
+      job_id: "job-cancelled-old",
+      type: "query",
+      status: "cancelled",
+      cwd: repo,
+      created_at: "2026-05-01T00:00:00.000Z",
+      updated_at: "2026-05-01T00:10:00.000Z",
+      fingerprint: "fp-dedupe-cancel",
+      payload: { cwd: repo, task: "cancelled query" },
+    });
+    const module = await import("../src/background-jobs.js");
+    const result = await module.enqueueBackgroundJob({ cwd: repo, type: "query", payload: { cwd: repo, task: "cancelled query" }, dedupe: true });
+    expect(result.job.job_id).not.toBe("job-cancelled-old");
+    expect(result.job.status).toBe("queued");
+    expect(result.deduped).toBe(false);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("dedupe does not reuse a failed job with the same fingerprint", async () => {
+    const { repo, store } = await createJobFixture();
+    const spawnMock = vi.fn(() => createDetachedSpawnResult(8003));
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: spawnMock };
+    });
+    await store.create({
+      job_id: "job-failed-old",
+      type: "query",
+      status: "failed",
+      cwd: repo,
+      created_at: "2026-05-01T00:00:00.000Z",
+      updated_at: "2026-05-01T00:10:00.000Z",
+      fingerprint: "fp-dedupe-fail",
+      payload: { cwd: repo, task: "failed query" },
+    });
+    const module = await import("../src/background-jobs.js");
+    const result = await module.enqueueBackgroundJob({ cwd: repo, type: "query", payload: { cwd: repo, task: "failed query" }, dedupe: true });
+    expect(result.job.job_id).not.toBe("job-failed-old");
+    expect(result.job.status).toBe("queued");
+    expect(result.deduped).toBe(false);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("enqueue marks job failed when spawn throws synchronously", async () => {
+    const { repo } = await createJobFixture();
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return {
+        ...actual,
+        spawn: vi.fn(() => {
+          throw new Error("spawn EACCES");
+        }),
+      };
+    });
+    const module = await import("../src/background-jobs.js");
+    const result = await module.enqueueBackgroundJob({ cwd: repo, type: "review", payload: { cwd: repo, task: "review this" } });
+    expect(result.job.status).toBe("failed");
+    expect(result.job.error).toContain("spawn EACCES");
+  });
+
+  it("wait detects transition to crashed during mid-wait polling", async () => {
+    const { repo, store } = await createJobFixture();
+    const now = new Date().toISOString();
+    await store.create({
+      job_id: "job-crash-mid-wait",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      created_at: now,
+      updated_at: now,
+      heartbeat_at: now,
+      payload: { cwd: repo, task: "ship it" },
+    });
+    const module = await import("../src/background-jobs.js");
+    module.__test.inlineWaitPollIntervalMs = 5;
+    module.__test.inlineWaitTimeoutMs = 500;
+
+    // Simulate crash between polls by updating status after a short delay
+    setTimeout(async () => {
+      await store.update("job-crash-mid-wait", { status: "crashed", updated_at: new Date().toISOString(), error: "process died" });
+    }, 15);
+
+    const result = await module.waitForBackgroundJob({ cwd: repo, job_id: "job-crash-mid-wait" });
+    expect(result.waiting).toBe(false);
+    expect(result.status).toBe("crashed");
+  });
+
+  it("wait detects transition to terminal state during wait", async () => {
+    const { repo, store } = await createJobFixture();
+    const now = new Date().toISOString();
+    await store.create({
+      job_id: "job-success-mid-wait",
+      type: "query",
+      status: "running",
+      cwd: repo,
+      created_at: now,
+      updated_at: now,
+      heartbeat_at: now,
+      payload: { cwd: repo, task: "explain" },
+    });
+    const module = await import("../src/background-jobs.js");
+    module.__test.inlineWaitPollIntervalMs = 5;
+    module.__test.inlineWaitTimeoutMs = 500;
+
+    setTimeout(async () => {
+      await store.update("job-success-mid-wait", { status: "succeeded", updated_at: new Date().toISOString(), result: { status: "success" } });
+    }, 15);
+
+    const result = await module.waitForBackgroundJob({ cwd: repo, job_id: "job-success-mid-wait" });
+    expect(result.waiting).toBe(false);
+    expect(result.status).toBe("succeeded");
+  });
+
+  it("recovery skips queued job without pid when age is within grace window", async () => {
+    const { repo, store } = await createJobFixture();
+    const withinGrace = new Date(Date.now() - 60_000).toISOString(); // 60s, within 300s grace
+    await store.create({
+      job_id: "job-grace-queued",
+      type: "query",
+      status: "queued",
+      cwd: repo,
+      created_at: withinGrace,
+      updated_at: withinGrace,
+      payload: { cwd: repo, task: "explain" },
+    });
+    const module = await import("../src/background-jobs.js");
+    const count = await module.recoverCrashedJobs();
+    expect(count).toBe(0);
+    const updated = await store.get("job-grace-queued");
+    expect(updated?.status).toBe("queued");
+  });
+
+  it("recovery crashes queued job without pid when age exceeds grace window", async () => {
+    const { repo, store } = await createJobFixture();
+    const beyondGrace = new Date(Date.now() - 600_000).toISOString(); // 10 min, beyond 300s grace
+    await store.create({
+      job_id: "job-stale-no-pid",
+      type: "query",
+      status: "queued",
+      cwd: repo,
+      created_at: beyondGrace,
+      updated_at: beyondGrace,
+      payload: { cwd: repo, task: "explain" },
+    });
+    const module = await import("../src/background-jobs.js");
+    const count = await module.recoverCrashedJobs();
+    expect(count).toBe(1);
+    const updated = await store.get("job-stale-no-pid");
+    expect(updated?.status).toBe("crashed");
+  });
+
+  it("recovery marks queued job with dead pid as crashed after min age", async () => {
+    const { repo, store } = await createJobFixture();
+    const staleTime = new Date(Date.now() - 60_000).toISOString(); // 60s > 30s min age
+    await store.create({
+      job_id: "job-dead-pid-queued",
+      type: "query",
+      status: "queued",
+      cwd: repo,
+      pid: 999998,
+      created_at: staleTime,
+      updated_at: staleTime,
+      heartbeat_at: staleTime,
+      payload: { cwd: repo, task: "explain" },
+    });
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+      const err = new Error("ESRCH") as NodeJS.ErrnoException;
+      err.code = "ESRCH";
+      throw err;
+    });
+    const module = await import("../src/background-jobs.js");
+    const count = await module.recoverCrashedJobs();
+    expect(count).toBe(1);
+    const updated = await store.get("job-dead-pid-queued");
+    expect(updated?.status).toBe("crashed");
+    killSpy.mockRestore();
+  });
+
+  it("recovery marks running job with dead pid as crashed after min age", async () => {
+    const { repo, store } = await createJobFixture();
+    const staleTime = new Date(Date.now() - 60_000).toISOString();
+    await store.create({
+      job_id: "job-dead-pid-running",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      pid: 999997,
+      created_at: staleTime,
+      updated_at: staleTime,
+      heartbeat_at: staleTime,
+      payload: { cwd: repo, task: "ship it" },
+    });
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+      const err = new Error("ESRCH") as NodeJS.ErrnoException;
+      err.code = "ESRCH";
+      throw err;
+    });
+    const module = await import("../src/background-jobs.js");
+    const count = await module.recoverCrashedJobs();
+    expect(count).toBe(1);
+    const updated = await store.get("job-dead-pid-running");
+    expect(updated?.status).toBe("crashed");
+    killSpy.mockRestore();
+  });
+
+  it("recovered crashed jobs are not reused by later dedupe", async () => {
+    const { repo, stateDir, store } = await createJobFixture();
+    const staleTime = new Date(Date.now() - 600_000).toISOString();
+    await store.create({
+      job_id: "job-recovered",
+      type: "query",
+      status: "queued",
+      cwd: repo,
+      created_at: staleTime,
+      updated_at: staleTime,
+      fingerprint: "fp-recovered",
+      payload: { cwd: repo, task: "explain" },
+    });
+    const module = await import("../src/background-jobs.js");
+    // First, recovery marks the old job as crashed
+    const recoveryCount = await module.recoverCrashedJobs();
+    expect(recoveryCount).toBe(1);
+    const recovered = await store.get("job-recovered");
+    expect(recovered?.status).toBe("crashed");
+
+    // Enqueue with same fingerprint should NOT reuse the crashed job
+    const spawnMock = vi.fn(() => createDetachedSpawnResult(8004));
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: spawnMock };
+    });
+    vi.resetModules();
+    const enqueueModule = await import("../src/background-jobs.js");
+    const result = await enqueueModule.enqueueBackgroundJob({ cwd: repo, type: "query", payload: { cwd: repo, task: "explain" }, dedupe: true });
+    expect(result.job.job_id).not.toBe("job-recovered");
+    expect(result.deduped).toBe(false);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    const verifyStore = new JobStore(stateDir);
+    await verifyStore.init();
+    const stillCrashed = await verifyStore.get("job-recovered");
+    expect(stillCrashed?.status).toBe("crashed");
+    const newJob = await verifyStore.get(result.job.job_id);
+    expect(newJob).not.toBeNull();
+  });
+
+  it("recovery skips running job younger than min age even with dead pid", async () => {
+    const { repo, store } = await createJobFixture();
+    const tooYoung = new Date(Date.now() - 10_000).toISOString(); // 10s < 30s min age
+    await store.create({
+      job_id: "job-young-dead",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      pid: 999996,
+      created_at: tooYoung,
+      updated_at: tooYoung,
+      payload: { cwd: repo, task: "ship it" },
+    });
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+      const err = new Error("ESRCH") as NodeJS.ErrnoException;
+      err.code = "ESRCH";
+      throw err;
+    });
+    const module = await import("../src/background-jobs.js");
+    const count = await module.recoverCrashedJobs();
+    expect(count).toBe(0);
+    const updated = await store.get("job-young-dead");
+    expect(updated?.status).toBe("running");
+    killSpy.mockRestore();
+  });
 });
