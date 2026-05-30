@@ -27,6 +27,7 @@ const validReadme = [
   "`claude_apply`",
   "`claude_cleanup`",
   "`claude_job_wait` Advanced / Recovery",
+  "`claude_export`",
   "",
 ].join("\n");
 
@@ -43,6 +44,7 @@ const validSourceFiles: Record<string, string> = {
     '  { name: "claude_apply", description: "Apply tool." },',
     '  { name: "claude_cleanup", description: "Cleanup tool." },',
     '  { name: "claude_job_wait", description: "Wait tool." },',
+    '  { name: "claude_export", description: "Export tool." },',
     "];",
     "",
     "const DEFAULT_TOOL_METADATA: Record<string, {",
@@ -426,6 +428,51 @@ describe("audit-docs.mjs", () => {
   });
 
   it("passes when all source-derived checks are valid", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme,
+      "docs/product/current.md": [
+        "# PRD",
+        "",
+        "`claude_apply` requires user confirmation before modifying files.",
+        "The preview_token is a 64 lowercase hex character string.",
+      ].join("\n"),
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("doc audit ok");
+  });
+
+  it("fails when README is missing advanced tool documentation", async () => {
+    const sourceWithExport = {
+      ...validSourceFiles,
+      "src/server.ts": [
+        ...validSourceFiles["src/server.ts"].split("\n").slice(0, -1),
+        "",
+      ].join("\n"),
+    };
+    const readmeWithoutExport = validReadme.replace("`claude_export`\n", "");
+
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...sourceWithExport,
+      ...validPackageFiles,
+      "README.md": readmeWithoutExport,
+      "docs/product/current.md": "# Current PRD\n",
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("README.md: missing advanced tool documentation");
+    expect(result.stderr).toContain("claude_export");
+  });
+
+  it("passes when README documents all advanced tools from source", async () => {
     const repo = await writeFixtureRepo({
       ...placeholderDocs,
       ...validSourceFiles,

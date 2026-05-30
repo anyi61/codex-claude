@@ -227,6 +227,7 @@ enabled_tools = [
   "claude_job_result",
   "claude_job_cancel",
   "claude_job_cleanup",
+  "claude_export",
 ]
 ```
 
@@ -245,6 +246,7 @@ enabled_tools = [
 | `claude_job_cancel` | 取消正在运行的任务 |
 | `claude_job_cleanup` | 清理过期的终端任务记录 |
 | `claude_job_wait` | **高级/恢复兼容** — 使用与 `claude_task(job_id=...)` 相同的内联等待机制 |
+| `claude_export` | 将 delegated worktree 的变更导出到本地分支，不修改主工作区 |
 
 ## 重要说明
 

@@ -324,14 +324,14 @@ if (versionEntries.length > 1) {
   }
 }
 
-// Informational: missing advanced tools in README
+// Check advanced tools in README
 if (manifest.baseToolNames.length > 0) {
   const readmeToolMentions = readme.match(/\bclaude_[a-z_]+\b/g) || [];
   const missingAdvanced = manifest.baseToolNames.filter(
     (tool) => !readmeToolMentions.includes(tool),
   );
   if (missingAdvanced.length > 0) {
-    console.log(`README.md: informational — missing advanced tools: ${missingAdvanced.join(", ")}`);
+    failures.push(`README.md: missing advanced tool documentation: ${missingAdvanced.join(", ")}`);
   }
 }
 
