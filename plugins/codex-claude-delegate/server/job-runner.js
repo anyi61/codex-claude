@@ -16133,6 +16133,11 @@ var sensitiveFilePolicySchema = external_exports.enum(["default", "strict", "off
 var verificationCommandsSchema = external_exports.array(
   external_exports.string().trim().min(1).max(200).regex(/^[^\u0000-\u001f\u007f]+$/, "verification command may not contain control characters")
 ).min(1).max(10).optional();
+var contextRootSchema = external_exports.object({
+  alias: external_exports.string().trim().min(1, "alias is required").max(32, "alias must be at most 32 characters").regex(/^[A-Za-z0-9_-]+$/, "alias may only contain letters, numbers, hyphens, and underscores"),
+  cwd: external_exports.string().trim().min(1, "cwd is required")
+}).strict();
+var contextRootsSchema = external_exports.array(contextRootSchema).min(1, "context_roots must not be empty").max(5, "context_roots must contain at most 5 entries").optional();
 var claudeStatusInputSchema = external_exports.object({
   cwd: cwdSchema
 }).strict();
@@ -16143,6 +16148,7 @@ var claudeSetupInputSchema = external_exports.object({
 var claudeQueryInputSchema = external_exports.object({
   task: taskSchema,
   cwd: cwdSchema,
+  context_roots: contextRootsSchema,
   instruction_files: filesSchema,
   timeout_sec: timeoutSchema.optional(),
   max_turns: maxTurnsSchema.optional(),
@@ -16153,6 +16159,7 @@ var claudeQueryInputSchema = external_exports.object({
 var claudeReviewInputSchema = external_exports.object({
   task: taskSchema,
   cwd: cwdSchema,
+  context_roots: contextRootsSchema,
   diff: external_exports.string().optional(),
   instruction_files: filesSchema,
   files: filesSchema,
@@ -16191,6 +16198,7 @@ var claudeTaskInputSchema = external_exports.object({
   cwd: cwdSchema,
   task: external_exports.string().trim().min(1).optional(),
   mode: external_exports.enum(["auto", "read", "review", "write"]).optional().default("auto"),
+  context_roots: contextRootsSchema,
   background: external_exports.boolean().optional(),
   wait_strategy: external_exports.enum(["block", "background"]).optional(),
   wait_timeout_sec: external_exports.number().int().positive().max(540).optional().default(540),
@@ -16352,6 +16360,37 @@ function buildSensitiveFileDenyPatterns(policy) {
   const paths = policy === "strict" ? [...DEFAULT_SENSITIVE_PATHS, ...STRICT_EXTRA_PATHS] : DEFAULT_SENSITIVE_PATHS;
   return buildDenyForPaths(paths);
 }
+function buildSensitiveFileDenyPatternsForContextRoots(policy, roots) {
+  if (policy === "off") {
+    return { readDeny: [], grepGlobDeny: [], bashReadDeny: [] };
+  }
+  const basePaths = policy === "strict" ? [...DEFAULT_SENSITIVE_PATHS, ...STRICT_EXTRA_PATHS] : DEFAULT_SENSITIVE_PATHS;
+  const allPaths = roots.flatMap(
+    (root) => basePaths.map((p) => {
+      const relative = p.startsWith("./") ? p.slice(2) : p;
+      return `${root.cwd}/${relative}`;
+    })
+  );
+  return buildDenyForPaths(allPaths);
+}
+function buildContextRootsPromptSection(contextRoots) {
+  if (!contextRoots || contextRoots.length === 0) return "";
+  let section = `## Context Roots
+
+`;
+  section += `You have read-only access to the following additional repositories:
+
+`;
+  for (const root of contextRoots) {
+    section += `- **${root.alias}**: \`${root.cwd}\`
+`;
+  }
+  section += `
+You may read files and run read-only git commands within these repositories. Do NOT modify any files in context roots.
+
+`;
+  return section;
+}
 var QUERY_SCHEMA = {
   type: "object",
   required: ["answer"],
@@ -16456,6 +16495,9 @@ function buildReviewPrompt(input) {
 ${input.task}
 
 `;
+  if (input.context_roots?.length) {
+    prompt += buildContextRootsPromptSection(input.context_roots);
+  }
   if (input.instruction_files?.length) {
     prompt += `## Instruction Files
 
@@ -16509,6 +16551,9 @@ function buildQueryPrompt(input) {
 ${input.task}
 
 `;
+  if (input.context_roots?.length) {
+    prompt += buildContextRootsPromptSection(input.context_roots);
+  }
   if (input.instruction_files?.length) {
     prompt += `## Instruction Files
 
@@ -17731,27 +17776,47 @@ function createQueryOptions(input) {
   const effectiveMaxTurns = input.max_turns ?? (input.fast ? 2 : void 0);
   const effectiveTimeoutSec = input.timeout_sec ?? (input.fast ? 45 : 120);
   const sfp = buildSensitiveFileDenyPatterns(input.sensitive_file_policy ?? "default");
+  const hasContextRoots = (input.context_roots?.length ?? 0) > 0;
+  const baseAllowedTools = [
+    "Read",
+    "Glob",
+    "Grep",
+    "Bash(git diff *)",
+    "Bash(git log *)",
+    "Bash(git status)",
+    "Bash(git show *)",
+    "Bash(find *)",
+    "Bash(rg *)",
+    "Bash(wc *)",
+    "Bash(ls *)",
+    "Bash(head *)",
+    "Bash(tail *)",
+    "Bash(cat *)"
+  ];
+  const contextRootsAllowedTools = [
+    "Read",
+    "Glob",
+    "Grep",
+    "Bash(git diff *)",
+    "Bash(git log *)",
+    "Bash(git status)",
+    "Bash(git show *)"
+  ];
+  const contextRootsDeny = hasContextRoots ? buildSensitiveFileDenyPatternsForContextRoots(input.sensitive_file_policy ?? "default", input.context_roots) : { readDeny: [], grepGlobDeny: [], bashReadDeny: [] };
   return {
     prompt: buildQueryPrompt(input),
     cwd: input.cwd,
     tools: "Read,Glob,Grep,Bash",
-    allowedTools: [
-      "Read",
-      "Glob",
-      "Grep",
-      "Bash(git diff *)",
-      "Bash(git log *)",
-      "Bash(git status)",
-      "Bash(git show *)",
-      "Bash(find *)",
-      "Bash(rg *)",
-      "Bash(wc *)",
-      "Bash(ls *)",
-      "Bash(head *)",
-      "Bash(tail *)",
-      "Bash(cat *)"
+    allowedTools: hasContextRoots ? contextRootsAllowedTools : baseAllowedTools,
+    disallowedTools: [
+      ...readOnlyDisallowedTools(),
+      ...sfp.readDeny,
+      ...sfp.grepGlobDeny,
+      ...sfp.bashReadDeny,
+      ...contextRootsDeny.readDeny,
+      ...contextRootsDeny.grepGlobDeny,
+      ...contextRootsDeny.bashReadDeny
     ],
-    disallowedTools: [...readOnlyDisallowedTools(), ...sfp.readDeny, ...sfp.grepGlobDeny, ...sfp.bashReadDeny],
     maxTurns: effectiveMaxTurns,
     timeoutSec: effectiveTimeoutSec,
     jsonSchema: QUERY_SCHEMA
@@ -17759,6 +17824,8 @@ function createQueryOptions(input) {
 }
 function createReviewOptions(input) {
   const sfp = buildSensitiveFileDenyPatterns(input.sensitive_file_policy ?? "default");
+  const hasContextRoots = (input.context_roots?.length ?? 0) > 0;
+  const contextRootsDeny = hasContextRoots ? buildSensitiveFileDenyPatternsForContextRoots(input.sensitive_file_policy ?? "default", input.context_roots) : { readDeny: [], grepGlobDeny: [], bashReadDeny: [] };
   return {
     prompt: buildReviewPrompt(input),
     cwd: input.cwd,
@@ -17773,7 +17840,15 @@ function createReviewOptions(input) {
       "Bash(git show *)",
       "Bash(git blame *)"
     ],
-    disallowedTools: [...readOnlyDisallowedTools(), ...sfp.readDeny, ...sfp.grepGlobDeny, ...sfp.bashReadDeny],
+    disallowedTools: [
+      ...readOnlyDisallowedTools(),
+      ...sfp.readDeny,
+      ...sfp.grepGlobDeny,
+      ...sfp.bashReadDeny,
+      ...contextRootsDeny.readDeny,
+      ...contextRootsDeny.grepGlobDeny,
+      ...contextRootsDeny.bashReadDeny
+    ],
     maxTurns: input.max_turns,
     timeoutSec: input.timeout_sec ?? 180,
     jsonSchema: REVIEW_SCHEMA,

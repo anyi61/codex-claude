@@ -6819,6 +6819,7 @@ __export(guard_exports, {
   resolveRepoLocalPath: () => resolveRepoLocalPath,
   sanitizeEnv: () => sanitizeEnv,
   supportsWorktree: () => supportsWorktree,
+  validateContextRoots: () => validateContextRoots,
   validateCwd: () => validateCwd,
   validateFilesWithinCwd: () => validateFilesWithinCwd
 });
@@ -6916,6 +6917,66 @@ async function validateFilesWithinCwd(cwd, files) {
     }
   }
   return { ok: true, resolved: cwdReal };
+}
+async function validateContextRoots(primaryCwd, roots) {
+  const primaryCheck = await validateCwd(primaryCwd);
+  if (!primaryCheck.ok) {
+    return { ok: false, error: primaryCheck.error };
+  }
+  const primaryReal = primaryCheck.resolved;
+  const resolvedRoots = [];
+  const seenAliases = /* @__PURE__ */ new Set();
+  const seenCwds = /* @__PURE__ */ new Set();
+  for (const root of roots) {
+    const alias = root.alias.trim();
+    if (alias.toLowerCase() === "primary") {
+      return { ok: false, error: `Alias "primary" is reserved` };
+    }
+    if (seenAliases.has(alias)) {
+      return { ok: false, error: `Duplicate context root alias: ${alias}` };
+    }
+    seenAliases.add(alias);
+    const resolvedCwd = path.resolve(primaryCwd, root.cwd.trim());
+    const rootCheck = await validateCwd(resolvedCwd);
+    if (!rootCheck.ok) {
+      return { ok: false, error: `Context root "${alias}" failed validation: ${rootCheck.error}` };
+    }
+    const rootReal = rootCheck.resolved;
+    const rootStat = await stat(rootReal);
+    if (!rootStat.isDirectory()) {
+      return { ok: false, error: `Context root path is not a directory: ${root.cwd}` };
+    }
+    if (isDelegatedWorktreePath(rootReal)) {
+      return { ok: false, error: `Context root must not be a delegated worktree path: ${root.cwd}` };
+    }
+    if (rootReal === primaryReal) {
+      return { ok: false, error: `Context root "${alias}" must not be the same as the primary cwd` };
+    }
+    if (rootReal.startsWith(primaryReal + path.sep)) {
+      return { ok: false, error: `Context root "${alias}" must not be a child of the primary cwd` };
+    }
+    if (primaryReal.startsWith(rootReal + path.sep)) {
+      return { ok: false, error: `Context root "${alias}" must not be a parent of the primary cwd` };
+    }
+    if (seenCwds.has(rootReal)) {
+      return { ok: false, error: `Duplicate context root path: ${rootReal}` };
+    }
+    seenCwds.add(rootReal);
+    resolvedRoots.push({ alias, cwd: rootReal });
+  }
+  for (let i = 0; i < resolvedRoots.length; i++) {
+    for (let j = i + 1; j < resolvedRoots.length; j++) {
+      const a = resolvedRoots[i].cwd;
+      const b = resolvedRoots[j].cwd;
+      if (a.startsWith(b + path.sep) || b.startsWith(a + path.sep)) {
+        return {
+          ok: false,
+          error: `Context roots "${resolvedRoots[i].alias}" and "${resolvedRoots[j].alias}" overlap`
+        };
+      }
+    }
+  }
+  return { ok: true, roots: resolvedRoots };
 }
 function resolveRepoLocalPath(cwd, relativePath) {
   const resolved = path.resolve(cwd, relativePath);
@@ -26466,6 +26527,11 @@ var sensitiveFilePolicySchema = external_exports.enum(["default", "strict", "off
 var verificationCommandsSchema = external_exports.array(
   external_exports.string().trim().min(1).max(200).regex(/^[^\u0000-\u001f\u007f]+$/, "verification command may not contain control characters")
 ).min(1).max(10).optional();
+var contextRootSchema = external_exports.object({
+  alias: external_exports.string().trim().min(1, "alias is required").max(32, "alias must be at most 32 characters").regex(/^[A-Za-z0-9_-]+$/, "alias may only contain letters, numbers, hyphens, and underscores"),
+  cwd: external_exports.string().trim().min(1, "cwd is required")
+}).strict();
+var contextRootsSchema = external_exports.array(contextRootSchema).min(1, "context_roots must not be empty").max(5, "context_roots must contain at most 5 entries").optional();
 var claudeStatusInputSchema = external_exports.object({
   cwd: cwdSchema
 }).strict();
@@ -26476,6 +26542,7 @@ var claudeSetupInputSchema = external_exports.object({
 var claudeQueryInputSchema = external_exports.object({
   task: taskSchema,
   cwd: cwdSchema,
+  context_roots: contextRootsSchema,
   instruction_files: filesSchema,
   timeout_sec: timeoutSchema.optional(),
   max_turns: maxTurnsSchema.optional(),
@@ -26486,6 +26553,7 @@ var claudeQueryInputSchema = external_exports.object({
 var claudeReviewInputSchema = external_exports.object({
   task: taskSchema,
   cwd: cwdSchema,
+  context_roots: contextRootsSchema,
   diff: external_exports.string().optional(),
   instruction_files: filesSchema,
   files: filesSchema,
@@ -26524,6 +26592,7 @@ var claudeTaskInputSchema = external_exports.object({
   cwd: cwdSchema,
   task: external_exports.string().trim().min(1).optional(),
   mode: external_exports.enum(["auto", "read", "review", "write"]).optional().default("auto"),
+  context_roots: contextRootsSchema,
   background: external_exports.boolean().optional(),
   wait_strategy: external_exports.enum(["block", "background"]).optional(),
   wait_timeout_sec: external_exports.number().int().positive().max(540).optional().default(540),
@@ -27032,6 +27101,13 @@ function normalizeStringArray(value) {
   if (!Array.isArray(value)) return void 0;
   return value.filter((entry) => typeof entry === "string").map((entry) => entry.trim()).filter((entry) => entry.length > 0).sort((a, b) => a.localeCompare(b));
 }
+function normalizeContextRoots(value) {
+  if (!Array.isArray(value)) return void 0;
+  const roots = value.filter(
+    (entry) => entry !== null && typeof entry === "object" && typeof entry.alias === "string" && typeof entry.cwd === "string"
+  ).map((entry) => ({ alias: entry.alias.trim(), cwd: entry.cwd.trim() })).sort((a, b) => a.alias.localeCompare(b.alias) || a.cwd.localeCompare(b.cwd));
+  return roots.length > 0 ? roots : void 0;
+}
 function buildFingerprintPayload(input) {
   return {
     cwd: path7.resolve(input.cwd),
@@ -27047,7 +27123,8 @@ function buildFingerprintPayload(input) {
     max_changed_files: input.payload.max_changed_files,
     max_cost_usd: input.payload.max_cost_usd,
     sensitive_file_policy: input.payload.sensitive_file_policy ?? "default",
-    verification_commands: normalizeStringArray(input.payload.verification_commands)
+    verification_commands: normalizeStringArray(input.payload.verification_commands),
+    context_roots: normalizeContextRoots(input.payload.context_roots)
   };
 }
 function createTaskFingerprint(input) {
@@ -28514,6 +28591,7 @@ async function runClaudeTask(input, _runId) {
       queued = await startBackgroundQuery2({
         cwd: input.cwd,
         task: input.task,
+        context_roots: input.context_roots,
         instruction_files: instructionFiles,
         timeout_sec: INTERNAL_CLAUDE_TIMEOUT_SEC,
         sensitive_file_policy: input.sensitive_file_policy
@@ -28522,6 +28600,7 @@ async function runClaudeTask(input, _runId) {
       queued = await startBackgroundReview2({
         cwd: input.cwd,
         task: input.task,
+        context_roots: input.context_roots,
         diff: input.diff,
         instruction_files: instructionFiles,
         timeout_sec: INTERNAL_CLAUDE_TIMEOUT_SEC,
@@ -28530,6 +28609,22 @@ async function runClaudeTask(input, _runId) {
         sensitive_file_policy: input.sensitive_file_policy
       });
     } else {
+      if (input.context_roots?.length) {
+        return {
+          delegated_mode: delegatedMode,
+          mode_inference: modeInference,
+          status: "failed",
+          summary: "context_roots is not allowed for write mode tasks",
+          wait: buildWaitMetadata2({
+            timeoutSec: input.wait_timeout_sec ?? 540,
+            completedInline: true,
+            waiting: false,
+            doNotStartDuplicateJob: false
+          }),
+          warnings: ["context_roots is not allowed for write mode tasks"],
+          next_actions: []
+        };
+      }
       const implementResult = await startBackgroundImplement2({
         cwd: input.cwd,
         task: input.task,
@@ -29897,6 +29992,21 @@ var BASE_TOOL_DEFINITIONS = [
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
         task: { type: "string", description: "High-level task to delegate. Optional when job_id is provided." },
         mode: { type: "string", enum: ["auto", "read", "review", "write"], description: "Routing mode. auto infers from diff/task wording." },
+        context_roots: {
+          type: "array",
+          minItems: 1,
+          maxItems: 5,
+          items: {
+            type: "object",
+            required: ["alias", "cwd"],
+            properties: {
+              alias: { type: "string", minLength: 1, maxLength: 32, pattern: "^[A-Za-z0-9_-]+$", description: "Short name for this context root (letters, numbers, hyphens, underscores)" },
+              cwd: { type: "string", minLength: 1, description: "Absolute or primary-relative path to the context root directory" }
+            },
+            additionalProperties: false
+          },
+          description: "Additional read-only repository roots for cross-repo queries and reviews. Not allowed for write mode."
+        },
         background: { type: "boolean", description: "Legacy alias for wait_strategy='background'. Queue and return immediately." },
         wait_strategy: { type: "string", enum: ["block", "background"], description: "block (default) waits inline for the result. background returns immediately with a running job." },
         wait_timeout_sec: { type: "number", description: "Maximum seconds to wait inline for the job to finish (default 540, max 540)." },
@@ -29938,6 +30048,21 @@ var BASE_TOOL_DEFINITIONS = [
       properties: {
         task: { type: "string", description: "The question or analysis task" },
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
+        context_roots: {
+          type: "array",
+          minItems: 1,
+          maxItems: 5,
+          items: {
+            type: "object",
+            required: ["alias", "cwd"],
+            properties: {
+              alias: { type: "string", minLength: 1, maxLength: 32, pattern: "^[A-Za-z0-9_-]+$", description: "Short name for this context root" },
+              cwd: { type: "string", minLength: 1, description: "Absolute or primary-relative path to the context root directory" }
+            },
+            additionalProperties: false
+          },
+          description: "Additional read-only repository roots for cross-repo queries."
+        },
         instruction_files: { type: "array", items: { type: "string" }, description: "Task instruction/context files for the query" },
         timeout_sec: { type: "number", description: "Timeout in seconds (default 120)" },
         max_turns: { type: "number", description: "Maximum Claude turns for this query. Omitted means no explicit turn cap; fast=true uses 2 unless max_turns is provided." },
@@ -29962,6 +30087,21 @@ var BASE_TOOL_DEFINITIONS = [
       properties: {
         task: { type: "string", description: "Review instructions (what to look for)" },
         cwd: { type: "string", description: "Working directory (must be within allowed roots)" },
+        context_roots: {
+          type: "array",
+          minItems: 1,
+          maxItems: 5,
+          items: {
+            type: "object",
+            required: ["alias", "cwd"],
+            properties: {
+              alias: { type: "string", minLength: 1, maxLength: 32, pattern: "^[A-Za-z0-9_-]+$", description: "Short name for this context root" },
+              cwd: { type: "string", minLength: 1, description: "Absolute or primary-relative path to the context root directory" }
+            },
+            additionalProperties: false
+          },
+          description: "Additional read-only repository roots for cross-repo reviews."
+        },
         instruction_files: { type: "array", items: { type: "string" }, description: "Review instruction/context files" },
         diff: { type: "string", description: "The diff to review (optional; Claude can also git diff itself)" },
         files: { type: "array", items: { type: "string" }, description: "Specific files to focus on" },
@@ -30452,9 +30592,15 @@ async function handleToolCall(name, args, runId = randomUUID5()) {
       case "claude_task": {
         const parsed = claudeTaskInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { cwd: inputCwd, mode, files, instruction_files, allowed_files, job_id } = parsed.data;
+        const { cwd: inputCwd, mode, files, instruction_files, allowed_files, job_id, context_roots } = parsed.data;
         const check2 = await validateCwd(inputCwd);
         if (!check2.ok) return errorResult(check2.error);
+        let resolvedContextRoots;
+        if (context_roots?.length) {
+          const rootCheck = await validateContextRoots(check2.resolved, context_roots);
+          if (!rootCheck.ok) return errorResult(rootCheck.error);
+          resolvedContextRoots = rootCheck.roots;
+        }
         if (!job_id) {
           const fileCheck = await validateFilesWithinCwd(check2.resolved, [
             ...instruction_files ?? [],
@@ -30463,6 +30609,9 @@ async function handleToolCall(name, args, runId = randomUUID5()) {
           ]);
           if (!fileCheck.ok) return errorResult(fileCheck.error);
           if (wouldBeWriteTask(parsed.data)) {
+            if (resolvedContextRoots?.length) {
+              return errorResult("context_roots is not allowed for write mode tasks");
+            }
             const { supportsWorktree: supportsWorktree2 } = await Promise.resolve().then(() => (init_guard(), guard_exports));
             if (isDelegatedWorktreePath(check2.resolved)) {
               return errorResult("Refusing to start delegated write work from inside an existing delegated worktree. Use the original repository cwd instead.");
@@ -30473,7 +30622,7 @@ async function handleToolCall(name, args, runId = randomUUID5()) {
             }
           }
         }
-        const taskResult = await runClaudeTask({ ...parsed.data, cwd: check2.resolved }, runId);
+        const taskResult = await runClaudeTask({ ...parsed.data, cwd: check2.resolved, context_roots: resolvedContextRoots }, runId);
         const taskInteraction = buildTaskInteraction(taskResult);
         return jsonResult(withInteraction(taskResult, taskInteraction));
       }
@@ -30487,17 +30636,24 @@ async function handleToolCall(name, args, runId = randomUUID5()) {
       case "claude_query": {
         const parsed = claudeQueryInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, instruction_files, timeout_sec, max_turns, fast, resume, sensitive_file_policy } = parsed.data;
+        const { task, cwd, instruction_files, timeout_sec, max_turns, fast, resume, sensitive_file_policy, context_roots } = parsed.data;
         const resolvedTimeout = timeout_sec ?? (fast ? 45 : 120);
         const resolvedMaxTurns = max_turns ?? (fast ? 2 : void 0);
         const check2 = await validateCwd(cwd);
         if (!check2.ok) return errorResult(check2.error);
         const fileCheck = await validateFilesWithinCwd(check2.resolved, instruction_files);
         if (!fileCheck.ok) return errorResult(fileCheck.error);
+        let resolvedContextRoots;
+        if (context_roots?.length) {
+          const rootCheck = await validateContextRoots(check2.resolved, context_roots);
+          if (!rootCheck.ok) return errorResult(rootCheck.error);
+          resolvedContextRoots = rootCheck.roots;
+        }
         return jsonResult(await startBackgroundQuery2(
           {
             task,
             cwd: check2.resolved,
+            context_roots: resolvedContextRoots,
             instruction_files,
             timeout_sec: resolvedTimeout,
             max_turns: resolvedMaxTurns,
@@ -30510,14 +30666,20 @@ async function handleToolCall(name, args, runId = randomUUID5()) {
       case "claude_review": {
         const parsed = claudeReviewInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, diff, instruction_files, files, timeout_sec, max_turns, reviewed_run_id, reviewed_worktree_path, sensitive_file_policy } = parsed.data;
+        const { task, cwd, diff, instruction_files, files, timeout_sec, max_turns, reviewed_run_id, reviewed_worktree_path, sensitive_file_policy, context_roots } = parsed.data;
         const check2 = await validateCwd(cwd);
         if (!check2.ok) return errorResult(check2.error);
         const mergedFiles = [...files ?? [], ...instruction_files ?? []];
         const fileCheck = await validateFilesWithinCwd(check2.resolved, mergedFiles.length > 0 ? mergedFiles : void 0);
         if (!fileCheck.ok) return errorResult(fileCheck.error);
+        let resolvedContextRoots;
+        if (context_roots?.length) {
+          const rootCheck = await validateContextRoots(check2.resolved, context_roots);
+          if (!rootCheck.ok) return errorResult(rootCheck.error);
+          resolvedContextRoots = rootCheck.roots;
+        }
         return jsonResult(await startBackgroundReview2(
-          { task, cwd: check2.resolved, diff, instruction_files, files, timeout_sec, max_turns, reviewed_run_id, reviewed_worktree_path, sensitive_file_policy }
+          { task, cwd: check2.resolved, context_roots: resolvedContextRoots, diff, instruction_files, files, timeout_sec, max_turns, reviewed_run_id, reviewed_worktree_path, sensitive_file_policy }
         ));
       }
       case "claude_implement": {

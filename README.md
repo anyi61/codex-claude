@@ -434,13 +434,29 @@ npm uninstall -g @anyi61/codex-claude-delegate-mcp
 # 确保 git 已提交所有更改
 git status
 
-# 一行发布: 自动 bump patch 版本 → build → test → publish
+# 一行发布: 自动 bump patch 版本 → 同步 plugin metadata 版本 → build/test/release checks → publish
 npm run release
 ```
 
-发布后创建 GitHub Release 并推送 tag（如需）:
+发布脚本会在 `npm version` 后运行 `npm run sync:plugin-version`，确保以下版本一致:
+
+- `package.json`
+- `package-lock.json`
+- `plugins/codex-claude-delegate/.codex-plugin/plugin.json`
+- `plugins/codex-claude-delegate/.claude-plugin/plugin.json`
+
+发布后确认 npm registry 与本地版本一致:
 
 ```bash
+npm view @anyi61/codex-claude-delegate-mcp version dist-tags.latest
+node -p "require('./package.json').version"
+```
+
+然后提交 release bump 并创建 tag:
+
+```bash
+git add package.json package-lock.json plugins/codex-claude-delegate/.codex-plugin/plugin.json plugins/codex-claude-delegate/.claude-plugin/plugin.json
+git commit -m "chore: release v$(node -p "require('./package.json').version")"
 git tag v$(node -p "require('./package.json').version")
-git push origin v$(node -p "require('./package.json').version")
+git push origin main --tags
 ```
