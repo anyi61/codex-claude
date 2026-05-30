@@ -12,6 +12,8 @@ import { withFileLock } from "./lock.js";
 export interface BackgroundJobRecord extends BackgroundJobSummary {
   payload: Record<string, unknown>;
   result?: Record<string, unknown>;
+  goal_item_id?: string;
+  supersedes_run_id?: string;
 }
 
 interface JobListInput {

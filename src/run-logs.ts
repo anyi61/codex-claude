@@ -5,6 +5,7 @@ import type {
   ClaudeRunsResult,
   ClaudeRunInspectInput,
   ClaudeRunInspectResult,
+  RunGroupSummary,
   RunLogEntrySummary,
   RunLifecycle,
   RunLogStatus,
@@ -350,6 +351,7 @@ export function summarizeRunLog(runId: string, raw: GenericRunLog, updatedAt?: s
         : undefined;
   const verified = summarizeServerVerified(raw.server_verified);
   const audit = summarizeToolCallAudit(raw.report);
+  const rawRecord = raw as Record<string, unknown>;
   return {
     run_id: runId,
     type: typeof raw.type === "string" ? raw.type : "unknown",
@@ -378,6 +380,8 @@ export function summarizeRunLog(runId: string, raw: GenericRunLog, updatedAt?: s
     updated_at: typeof raw.updated_at === "string" ? raw.updated_at : updatedAt,
     ...(verified ? { server_verified: verified } : {}),
     ...(audit ? { tool_call_audit: audit } : {}),
+    ...(typeof rawRecord.goal_item_id === "string" && rawRecord.goal_item_id.length > 0 ? { goal_item_id: rawRecord.goal_item_id } : {}),
+    ...(typeof rawRecord.supersedes_run_id === "string" && rawRecord.supersedes_run_id.length > 0 ? { supersedes_run_id: rawRecord.supersedes_run_id } : {}),
   };
 }
 
@@ -429,6 +433,7 @@ export async function listRunLogs(input: ClaudeRunsInput): Promise<ClaudeRunsRes
         if (input.type && summary.type !== input.type) continue;
         if (input.status && summary.status !== input.status) continue;
         if (input.worktree_name && summary.worktree_name !== input.worktree_name) continue;
+        if (input.goal_item_id && summary.goal_item_id !== input.goal_item_id) continue;
         summaries.push(summary);
         if (summaries.length >= limit) break;
       } catch {
@@ -485,4 +490,36 @@ export function buildResultSummaryFromRun(entry: RunLogEntrySummary): string {
   if (entry.summary) return entry.summary;
   if (entry.error) return `${entry.type} failed: ${entry.error}`;
   return `${entry.type} ${entry.lifecycle}`;
+}
+
+export function buildRunGroupSummary(
+  goalItemId: string,
+  entries: RunLogEntrySummary[],
+  limit = 20,
+): RunGroupSummary | undefined {
+  const matching = entries.filter((e) => e.goal_item_id === goalItemId);
+  if (matching.length === 0) return undefined;
+
+  const sorted = [...matching].sort((a, b) => {
+    const aTime = a.updated_at ?? a.started_at ?? "";
+    const bTime = b.updated_at ?? b.started_at ?? "";
+    return bTime.localeCompare(aTime);
+  });
+
+  const latest = sorted[0]!;
+  const supersededSet = new Set<string>();
+  for (const entry of matching) {
+    if (entry.supersedes_run_id) supersededSet.add(entry.supersedes_run_id);
+  }
+
+  return {
+    goal_item_id: goalItemId,
+    run_count: matching.length,
+    latest_run_id: latest.run_id,
+    latest_status: latest.status,
+    latest_lifecycle: latest.lifecycle,
+    latest_updated_at: latest.updated_at,
+    superseded_run_ids: [...supersededSet].sort(),
+    entries: sorted.slice(0, limit),
+  };
 }

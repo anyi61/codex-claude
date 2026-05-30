@@ -3026,6 +3026,7 @@ describe("claude cli argument construction", () => {
       apply_blocked_runs: 0,
       active_implement_jobs: 0,
       active_claude_processes: 0,
+      run_groups: 0,
     });
     expect(result.attention_items).toEqual([]);
   });
@@ -3196,6 +3197,86 @@ describe("claude cli argument construction", () => {
     expect(result.delegated_mode).toBe("write");
     const stored = await jobStore.get(result.job!.job_id);
     expect(stored?.payload.max_changed_files).toBe(10);
+  });
+
+  // ---- UX/RUN-GROUP-001: write mode grouping metadata tests ----
+
+  it("claude_task write mode passes goal_item_id to startBackgroundImplement", async () => {
+    const { repo, jobStore } = await createWorkflowFixture();
+    const spawned = createDetachedSpawnResult(6020);
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => spawned) };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      task: "Implement UX/RUN-GROUP-001",
+      mode: "write",
+      goal_item_id: "UX/RUN-GROUP-001",
+      dirty_policy: "committed",
+      wait_strategy: "background",
+    }, "run-task-goal-id");
+
+    expect(result.delegated_mode).toBe("write");
+    expect(result.job?.type).toBe("implement");
+    const stored = await jobStore.get(result.job!.job_id);
+    expect(stored?.payload.goal_item_id).toBe("UX/RUN-GROUP-001");
+    expect(stored?.goal_item_id).toBe("UX/RUN-GROUP-001");
+  });
+
+  it("claude_task write mode passes supersedes_run_id to startBackgroundImplement", async () => {
+    const { repo, jobStore } = await createWorkflowFixture();
+    const spawned = createDetachedSpawnResult(6021);
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => spawned) };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      task: "Fix review feedback",
+      mode: "write",
+      goal_item_id: "UX/RUN-GROUP-001",
+      supersedes_run_id: "run-original",
+      dirty_policy: "committed",
+      wait_strategy: "background",
+    }, "run-task-supersedes");
+
+    expect(result.delegated_mode).toBe("write");
+    const stored = await jobStore.get(result.job!.job_id);
+    expect(stored?.payload.supersedes_run_id).toBe("run-original");
+    expect(stored?.supersedes_run_id).toBe("run-original");
+  });
+
+  it("claude_task write mode omits grouping fields when not provided", async () => {
+    const { repo, jobStore } = await createWorkflowFixture();
+    const spawned = createDetachedSpawnResult(6022);
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => spawned) };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      task: "Fix bug",
+      mode: "write",
+      dirty_policy: "committed",
+      wait_strategy: "background",
+    }, "run-task-no-group");
+
+    expect(result.delegated_mode).toBe("write");
+    const stored = await jobStore.get(result.job!.job_id);
+    expect(stored?.payload.goal_item_id).toBeUndefined();
+    expect(stored?.payload.supersedes_run_id).toBeUndefined();
+    expect(stored?.goal_item_id).toBeUndefined();
+    expect(stored?.supersedes_run_id).toBeUndefined();
   });
 
   it("keeps claude_task files as instruction files, not implement scope, when allowed_files is absent", async () => {

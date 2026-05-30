@@ -317,4 +317,124 @@ describe("workflow results", () => {
       item.kind === "environment_config" && item.message.includes("warning"),
     )).toBe(true);
   });
+
+  // ---- UX/RUN-GROUP-001: result and workspace grouping tests ----
+
+  it("getClaudeResult includes run_group for grouped run", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-workflow-group-result-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const logDir = path.join(repo, ".codex-claude-delegate", "runs");
+    await mkdir(repo, { recursive: true });
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+
+    await writeRunLogEntry(logDir, "run-a", {
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "success", summary: "First attempt" },
+      goal_item_id: "UX/RUN-GROUP-001",
+    });
+    await writeRunLogEntry(logDir, "run-b", {
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "success", summary: "Second attempt" },
+      goal_item_id: "UX/RUN-GROUP-001",
+      supersedes_run_id: "run-a",
+    });
+
+    const { getClaudeResult } = await import("../src/workflow-results.js");
+    const result = await getClaudeResult({ cwd: repo, run_id: "run-b" });
+
+    expect(result.run?.goal_item_id).toBe("UX/RUN-GROUP-001");
+    expect(result.run_group).toBeDefined();
+    expect(result.run_group!.goal_item_id).toBe("UX/RUN-GROUP-001");
+    expect(result.run_group!.run_count).toBe(2);
+    expect(result.run_group!.superseded_run_ids).toContain("run-a");
+  });
+
+  it("getClaudeResult omits run_group for ungrouped run", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-workflow-no-group-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const logDir = path.join(repo, ".codex-claude-delegate", "runs");
+    await mkdir(repo, { recursive: true });
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+
+    await writeRunLogEntry(logDir, "run-old", {
+      type: "query",
+      input: { cwd: repo },
+      report: { status: "success", summary: "Old run" },
+    });
+
+    const { getClaudeResult } = await import("../src/workflow-results.js");
+    const result = await getClaudeResult({ cwd: repo, run_id: "run-old" });
+
+    expect(result.run_group).toBeUndefined();
+  });
+
+  it("workspace status includes recent run groups", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-workflow-groups-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const logDir = path.join(repo, ".codex-claude-delegate", "runs");
+    await mkdir(repo, { recursive: true });
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+
+    await writeRunLogEntry(logDir, "run-g1", {
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "success", summary: "G1" },
+      goal_item_id: "UX/RUN-GROUP-001",
+    });
+    await writeRunLogEntry(logDir, "run-g2", {
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "success", summary: "G2" },
+      goal_item_id: "UX/RUN-GROUP-001",
+      supersedes_run_id: "run-g1",
+    });
+    await writeRunLogEntry(logDir, "run-audit", {
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "success", summary: "Audit" },
+      goal_item_id: "AUDIT-DOCS-003",
+    });
+
+    const { getWorkspaceStatus } = await import("../src/workflow-results.js");
+    const result = await getWorkspaceStatus({ cwd: repo });
+
+    expect(result.run_groups.length).toBe(2);
+    expect(result.counts.run_groups).toBe(2);
+    const group1 = result.run_groups.find((g) => g.goal_item_id === "UX/RUN-GROUP-001");
+    expect(group1).toBeDefined();
+    expect(group1!.run_count).toBe(2);
+    expect(group1!.latest_lifecycle).toBeDefined();
+    expect(result.recent_runs.length).toBe(3);
+  });
+
+  it("workspace status remains compatible without grouped runs", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-workflow-no-groups-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, ".codex-claude-delegate");
+    const logDir = path.join(repo, ".codex-claude-delegate", "runs");
+    await mkdir(repo, { recursive: true });
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+
+    await writeRunLogEntry(logDir, "run-plain", {
+      type: "query",
+      input: { cwd: repo },
+      report: { status: "success" },
+    });
+
+    const { getWorkspaceStatus } = await import("../src/workflow-results.js");
+    const result = await getWorkspaceStatus({ cwd: repo });
+
+    expect(result.run_groups).toEqual([]);
+    expect(result.counts.run_groups).toBe(0);
+    expect(result.recent_runs.length).toBe(1);
+  });
 });

@@ -619,6 +619,8 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
         sensitive_file_policy: input.sensitive_file_policy,
         max_changed_files: input.max_changed_files,
         verification_commands: input.verification_commands,
+        goal_item_id: input.goal_item_id,
+        supersedes_run_id: input.supersedes_run_id,
       });
       if (!("job" in implementResult)) {
         return {
@@ -1819,7 +1821,7 @@ export async function executeBackgroundJob(jobId: string): Promise<void> {
       const implPayload = payload as ClaudeImplementInput;
       const worktreeName = deriveImplementWorktreeName(implPayload, runId);
       await jobStore.update(jobId, { worktree_name: worktreeName, run_id: runId });
-      result = toResultRecord(await runClaudeImplement(implPayload, runId));
+      result = toResultRecord(await runClaudeImplement(implPayload, runId, running.goal_item_id, running.supersedes_run_id));
     } else if (running.type === "apply") {
       result = toResultRecord(await runClaudeApply(payload as ClaudeApplyInput, runId));
     } else {
@@ -1894,7 +1896,9 @@ function buildPermissionDenialWarning(report: Record<string, unknown>): string |
 
 export async function runClaudeImplement(
   input: ClaudeImplementInput,
-  runId: string
+  runId: string,
+  goalItemId?: string,
+  supersedesRunId?: string,
 ): Promise<ClaudeResult> {
   const store = await getStore(input.cwd);
   const repoKey = await computeRepoKey(input.cwd);
@@ -2057,7 +2061,10 @@ export async function runClaudeImplement(
         });
       }
     } else {
-      await logRun(runId, { type: "implement", input: implementInput, error: errorMsg, duration_ms: Date.now() - startTime }, implementInput.cwd);
+      await logRun(runId, { type: "implement", input: implementInput, error: errorMsg, duration_ms: Date.now() - startTime,
+        ...(typeof goalItemId === "string" && goalItemId.length > 0 ? { goal_item_id: goalItemId } : {}),
+        ...(typeof supersedesRunId === "string" && supersedesRunId.length > 0 ? { supersedes_run_id: supersedesRunId } : {}),
+      }, implementInput.cwd);
       throw err;
     }
   }
@@ -2144,6 +2151,8 @@ export async function runClaudeImplement(
     duration_ms: Date.now() - startTime,
     ...(fallbackFreshRetry ? { fallback_fresh_retry: true } : {}),
     ...(serverVerified ? { server_verified: serverVerified } : {}),
+    ...(typeof goalItemId === "string" && goalItemId.length > 0 ? { goal_item_id: goalItemId } : {}),
+    ...(typeof supersedesRunId === "string" && supersedesRunId.length > 0 ? { supersedes_run_id: supersedesRunId } : {}),
   }, implementInput.cwd);
 
   await store.prune();

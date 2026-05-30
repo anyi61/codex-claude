@@ -23,8 +23,10 @@ import {
   getRunLogById,
   buildRunResultPayload,
   buildResultSummaryFromRun,
+  buildRunGroupSummary,
 } from "../src/run-logs.js";
 import type { GenericRunLog, ImplementRunLog } from "../src/run-logs.js";
+import type { RunLogEntrySummary } from "../src/schema.js";
 
 const cleanupPaths: string[] = [];
 const originalCwd = process.cwd();
@@ -1137,5 +1139,126 @@ describe("buildResultSummaryFromRun", () => {
         lifecycle: "success",
       }),
     ).toBe("review success");
+  });
+});
+
+// ---- UX/RUN-GROUP-001: run grouping tests ----
+
+describe("summarizeRunLog with grouping metadata", () => {
+  it("includes run grouping metadata", () => {
+    const raw: GenericRunLog = {
+      type: "implement",
+      input: { cwd: "/tmp/repo" },
+      report: { status: "success", summary: "Done" },
+      goal_item_id: "UX/RUN-GROUP-001",
+      supersedes_run_id: "run-original",
+      started_at: "2026-05-30T00:00:00.000Z",
+      updated_at: "2026-05-30T01:00:00.000Z",
+    };
+    const summary = summarizeRunLog("run-grouped", raw);
+    expect(summary.goal_item_id).toBe("UX/RUN-GROUP-001");
+    expect(summary.supersedes_run_id).toBe("run-original");
+  });
+
+  it("keeps old logs ungrouped", () => {
+    const raw: GenericRunLog = {
+      type: "query",
+      input: { cwd: "/tmp/repo" },
+      report: { status: "success" },
+    };
+    const summary = summarizeRunLog("run-legacy", raw);
+    expect(summary.goal_item_id).toBeUndefined();
+    expect(summary.supersedes_run_id).toBeUndefined();
+  });
+});
+
+describe("listRunLogs with goal_item_id filter", () => {
+  it("filters by goal_item_id", async () => {
+    const root = await makeTempDir();
+    const repo = path.join(root, "repo");
+    const logDir = path.join(repo, ".codex-claude-delegate", "runs");
+    await mkdir(logDir, { recursive: true });
+
+    await writeRunLogEntry(logDir, "run-g1", {
+      type: "implement",
+      input: { cwd: repo },
+      goal_item_id: "UX/RUN-GROUP-001",
+    });
+    await writeRunLogEntry(logDir, "run-g2", {
+      type: "implement",
+      input: { cwd: repo },
+      goal_item_id: "UX/RUN-GROUP-001",
+    });
+    await writeRunLogEntry(logDir, "run-other", {
+      type: "implement",
+      input: { cwd: repo },
+      goal_item_id: "AUDIT-DOCS-003",
+    });
+
+    const result = await listRunLogs({ cwd: repo, goal_item_id: "UX/RUN-GROUP-001" });
+    expect(result.entries.length).toBe(2);
+    expect(result.entries.every((e) => e.goal_item_id === "UX/RUN-GROUP-001")).toBe(true);
+  });
+});
+
+describe("buildRunGroupSummary", () => {
+  it("summarizes bounded matching runs", () => {
+    const entries: RunLogEntrySummary[] = [
+      { run_id: "run-a", type: "implement", status: "success", lifecycle: "success", goal_item_id: "UX/RUN-GROUP-001", updated_at: "2026-05-30T00:00:00.000Z" },
+      { run_id: "run-b", type: "implement", status: "partial", lifecycle: "partial", goal_item_id: "UX/RUN-GROUP-001", supersedes_run_id: "run-a", updated_at: "2026-05-30T01:00:00.000Z" },
+      { run_id: "run-c", type: "implement", status: "success", lifecycle: "success", goal_item_id: "OTHER-GOAL", updated_at: "2026-05-30T02:00:00.000Z" },
+    ];
+
+    const group = buildRunGroupSummary("UX/RUN-GROUP-001", entries);
+    expect(group).toBeDefined();
+    expect(group!.goal_item_id).toBe("UX/RUN-GROUP-001");
+    expect(group!.run_count).toBe(2);
+    expect(group!.latest_run_id).toBe("run-b");
+    expect(group!.latest_lifecycle).toBe("partial");
+    expect(group!.superseded_run_ids).toEqual(["run-a"]);
+    expect(group!.entries.length).toBe(2);
+  });
+
+  it("dedupes superseded_run_ids", () => {
+    const entries: RunLogEntrySummary[] = [
+      { run_id: "run-x", type: "implement", status: "success", lifecycle: "success", goal_item_id: "GOAL", supersedes_run_id: "run-old", updated_at: "2026-05-30T00:00:00.000Z" },
+      { run_id: "run-y", type: "implement", status: "success", lifecycle: "success", goal_item_id: "GOAL", supersedes_run_id: "run-old", updated_at: "2026-05-30T01:00:00.000Z" },
+    ];
+
+    const group = buildRunGroupSummary("GOAL", entries);
+    expect(group).toBeDefined();
+    expect(group!.superseded_run_ids).toEqual(["run-old"]);
+  });
+
+  it("returns undefined for missing goal", () => {
+    const entries: RunLogEntrySummary[] = [
+      { run_id: "run-1", type: "implement", status: "success", lifecycle: "success", goal_item_id: "OTHER" },
+    ];
+    const group = buildRunGroupSummary("MISSING", entries);
+    expect(group).toBeUndefined();
+  });
+});
+
+describe("getRunLogById with grouping metadata", () => {
+  it("returns grouping metadata in inspect entry", async () => {
+    const root = await makeTempDir();
+    const repo = path.join(root, "repo");
+    const logDir = path.join(repo, ".codex-claude-delegate", "runs");
+    await mkdir(logDir, { recursive: true });
+
+    await writeRunLogEntry(logDir, "run-inspect-group", {
+      type: "implement",
+      input: { cwd: repo },
+      report: { status: "success", summary: "Done" },
+      goal_item_id: "UX/RUN-GROUP-001",
+      supersedes_run_id: "run-original",
+    });
+
+    const result = await getRunLogById({ cwd: repo, run_id: "run-inspect-group" });
+    expect(result).not.toBeNull();
+    expect(result!.entry.goal_item_id).toBe("UX/RUN-GROUP-001");
+    expect(result!.entry.supersedes_run_id).toBe("run-original");
+    expect(result!.raw.goal_item_id).toBe("UX/RUN-GROUP-001");
+    expect(result!.raw.supersedes_run_id).toBe("run-original");
   });
 });

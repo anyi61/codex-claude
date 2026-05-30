@@ -64,6 +64,8 @@ export interface ClaudeImplementInput {
   security_profile?: SecurityProfile;
   sensitive_file_policy?: SensitiveFilePolicy;
   verification_commands?: string[];
+  goal_item_id?: string;
+  supersedes_run_id?: string;
 }
 
 export type ClaudeTaskMode = "auto" | "read" | "review" | "write";
@@ -91,6 +93,8 @@ export interface ClaudeTaskInput {
   reviewed_run_id?: string;
   reviewed_worktree_path?: string;
   verification_commands?: string[];
+  goal_item_id?: string;
+  supersedes_run_id?: string;
 }
 
 export type SecurityProfile = "strict" | "default" | "permissive";
@@ -137,6 +141,8 @@ export interface BackgroundJobSummary {
   worktree_name?: string;
   summary?: string;
   error?: string;
+  goal_item_id?: string;
+  supersedes_run_id?: string;
 }
 
 export const MAX_CONCURRENT_IMPLEMENTS = 1;
@@ -249,6 +255,17 @@ export interface WorkflowNextAction {
   args?: Record<string, unknown>;
 }
 
+export interface RunGroupSummary {
+  goal_item_id: string;
+  run_count: number;
+  latest_run_id?: string;
+  latest_status?: RunLogStatus;
+  latest_lifecycle?: RunLifecycle;
+  latest_updated_at?: string;
+  superseded_run_ids: string[];
+  entries: RunLogEntrySummary[];
+}
+
 export interface ClaudeResultResult {
   source_type: "job" | "run";
   summary: string;
@@ -263,6 +280,7 @@ export interface ClaudeResultResult {
   do_not_start_duplicate_job?: boolean;
   next_actions: WorkflowNextAction[];
   artifact_summary?: ArtifactIndexSummary;
+  run_group?: RunGroupSummary;
 }
 
 export interface ClaudeWorkspaceStatusInput {
@@ -312,6 +330,7 @@ export interface ClaudeWorkspaceStatusResult {
   latest_sessions: WorkflowSessionSummary[];
   delegated_worktrees: DelegatedWorktreeSummary[];
   recent_artifacts?: VerificationArtifactSummary[];
+  run_groups: RunGroupSummary[];
   counts: {
     running_jobs: number;
     queued_jobs: number;
@@ -324,6 +343,7 @@ export interface ClaudeWorkspaceStatusResult {
     apply_blocked_runs: number;
     active_implement_jobs: number;
     active_claude_processes: number;
+    run_groups: number;
   };
   do_not_start_duplicate_job?: boolean;
   next_actions?: WorkflowNextAction[];
@@ -647,6 +667,7 @@ export interface ClaudeRunsInput {
   type?: RunLogType;
   status?: RunLogStatus;
   worktree_name?: string;
+  goal_item_id?: string;
 }
 
 export interface ClaudeRunInspectInput {
@@ -686,6 +707,8 @@ export interface RunLogEntrySummary {
   updated_at?: string;
   server_verified?: ServerVerifiedSummary;
   tool_call_audit?: ToolCallAuditSummary;
+  goal_item_id?: string;
+  supersedes_run_id?: string;
 }
 
 export interface VerificationArtifactSummary {
@@ -742,6 +765,8 @@ const verificationCommandsSchema = z.array(
     .max(200)
     .regex(/^[^\u0000-\u001f\u007f]+$/, "verification command may not contain control characters")
 ).min(1).max(10).optional();
+const goalItemIdSchema = z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9._:\/-]+$/, "goal_item_id may only contain letters, numbers, dot, underscore, slash, colon, and hyphen").optional();
+const supersedesRunIdSchema = z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/, "supersedes_run_id may only contain letters, numbers, underscores, and hyphens").optional();
 
 const contextRootSchema = z.object({
   alias: z.string().trim().min(1, "alias is required").max(32, "alias must be at most 32 characters").regex(/^[A-Za-z0-9_-]+$/, "alias may only contain letters, numbers, hyphens, and underscores"),
@@ -802,6 +827,8 @@ export const claudeImplementInputSchema = z.object({
   security_profile: securityProfileSchema,
   sensitive_file_policy: sensitiveFilePolicySchema,
   verification_commands: verificationCommandsSchema,
+  goal_item_id: goalItemIdSchema,
+  supersedes_run_id: supersedesRunIdSchema,
 }).strict().refine((value) => !value.fork_session || !!value.session_key, {
   message: "fork_session requires session_key",
   path: ["fork_session"],
@@ -832,6 +859,8 @@ export const claudeTaskInputSchema = z.object({
   reviewed_run_id: z.string().trim().min(1).optional(),
   reviewed_worktree_path: z.string().trim().min(1).optional(),
   verification_commands: verificationCommandsSchema,
+  goal_item_id: goalItemIdSchema,
+  supersedes_run_id: supersedesRunIdSchema,
 }).strict().refine((value) => value.mode !== "read" || !value.resume_latest, {
   message: "resume_latest is only supported for write mode",
   path: ["resume_latest"],
@@ -879,6 +908,7 @@ export const claudeRunsInputSchema = z.object({
   type: z.enum(["query", "review", "implement", "apply", "cleanup"]).optional(),
   status: z.enum(["success", "failed", "partial", "needs_user", "unknown"]).optional(),
   worktree_name: z.string().trim().min(1).optional(),
+  goal_item_id: goalItemIdSchema,
 }).strict();
 
 export const claudeRunInspectInputSchema = z.object({

@@ -110,6 +110,7 @@ const BASE_TOOL_DEFINITIONS = [
         type: { type: "string", enum: ["query", "review", "implement", "apply", "cleanup"], description: "Filter by tool type" },
         status: { type: "string", enum: ["success", "failed", "partial", "needs_user", "unknown"], description: "Filter by derived run status" },
         worktree_name: { type: "string", description: "Filter by delegated worktree name" },
+        goal_item_id: { type: "string", description: "Filter by goal item id to find runs for the same high-level task." },
       },
     },
   },
@@ -198,6 +199,8 @@ const BASE_TOOL_DEFINITIONS = [
         reviewed_worktree_path: { type: "string", description: "Bind this review to a specific worktree path for review-gate clearing." },
         sensitive_file_policy: { type: "string", enum: ["default", "strict", "off"], description: "Controls sensitive-file deny rules. default blocks .env/.env.*/secrets/** reads; strict adds .pem/.key/.ssh/.aws/credentials and similar; off removes only sensitive-file denies (dangerous Bash denies remain)." },
         verification_commands: { type: "array", minItems: 1, maxItems: 10, items: { type: "string", minLength: 1, maxLength: 200 }, description: "Server-side verification commands to run in the delegated worktree after a write-mode task completes. Commands are parsed into argv and executed without a shell under a conservative allowlist." },
+        goal_item_id: { type: "string", description: "Optional high-level goal id used to group related write runs in results and workspace status." },
+        supersedes_run_id: { type: "string", description: "Optional previous run id that this write run supersedes." },
       },
     },
   },
@@ -315,6 +318,8 @@ const BASE_TOOL_DEFINITIONS = [
         security_profile: { type: "string", enum: ["strict", "default", "permissive"], description: "Command allowlist profile for implementation tasks. default excludes remote package execution paths such as npx; permissive allows broader local project commands." },
         sensitive_file_policy: { type: "string", enum: ["default", "strict", "off"], description: "Controls sensitive-file deny rules. default blocks .env/.env.*/secrets/** reads; strict adds .pem/.key/.ssh/.aws/credentials and similar; off removes only sensitive-file denies (dangerous Bash denies remain)." },
         verification_commands: { type: "array", minItems: 1, maxItems: 10, items: { type: "string", minLength: 1, maxLength: 200 }, description: "Server-side verification commands to run in the delegated worktree after Claude completes. Commands are parsed into argv and executed without a shell under a conservative allowlist. Results appear in the output as server_verified." },
+        goal_item_id: { type: "string", description: "Optional high-level goal id used to group related implement runs in results and workspace status." },
+        supersedes_run_id: { type: "string", description: "Optional previous run id that this implement run supersedes." },
       },
     },
   },
@@ -779,10 +784,10 @@ export async function handleToolCall(name: string, args: unknown, runId = random
       case "claude_runs": {
         const parsed = claudeRunsInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { cwd, limit, type, status, worktree_name } = parsed.data;
+        const { cwd, limit, type, status, worktree_name, goal_item_id } = parsed.data;
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
-        return jsonResult(await listRunLogs({ cwd: check.resolved, limit, type, status, worktree_name }));
+        return jsonResult(await listRunLogs({ cwd: check.resolved, limit, type, status, worktree_name, goal_item_id }));
       }
 
       case "claude_run_inspect": {
@@ -929,7 +934,7 @@ export async function handleToolCall(name: string, args: unknown, runId = random
       case "claude_implement": {
         const parsed = claudeImplementInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, files, constraints, timeout_sec, max_turns, session_key, fork_session, resume_latest, max_cost_usd, max_changed_files, worktreeName, dirty_policy, security_profile, sensitive_file_policy, verification_commands } = parsed.data;
+        const { task, cwd, files, constraints, timeout_sec, max_turns, session_key, fork_session, resume_latest, max_cost_usd, max_changed_files, worktreeName, dirty_policy, security_profile, sensitive_file_policy, verification_commands, goal_item_id, supersedes_run_id } = parsed.data;
 
         const check = await validateCwd(cwd);
         if (!check.ok) return errorResult(check.error!);
@@ -962,6 +967,8 @@ export async function handleToolCall(name: string, args: unknown, runId = random
           security_profile,
           sensitive_file_policy,
           verification_commands,
+          goal_item_id,
+          supersedes_run_id,
         }));
       }
 

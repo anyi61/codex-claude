@@ -92,6 +92,8 @@ export function toJobSummary(record: BackgroundJobRecord): BackgroundJobSummary 
     worktree_name: record.worktree_name,
     summary: record.summary,
     error: record.error,
+    ...(typeof record.goal_item_id === "string" && record.goal_item_id.length > 0 ? { goal_item_id: record.goal_item_id } : {}),
+    ...(typeof record.supersedes_run_id === "string" && record.supersedes_run_id.length > 0 ? { supersedes_run_id: record.supersedes_run_id } : {}),
   };
 }
 
@@ -448,7 +450,9 @@ export async function enqueueBackgroundJob(input: {
 
   const now = new Date().toISOString();
   const jobId = `job-${randomUUID()}`;
-  const record: BackgroundJobRecord = { job_id: jobId, type: input.type, status: "queued", cwd: input.cwd, created_at: now, updated_at: now, fingerprint, payload: input.payload };
+  const goalId = typeof input.payload.goal_item_id === "string" && input.payload.goal_item_id.trim().length > 0 ? input.payload.goal_item_id.trim() : undefined;
+  const supersedesId = typeof input.payload.supersedes_run_id === "string" && input.payload.supersedes_run_id.trim().length > 0 ? input.payload.supersedes_run_id.trim() : undefined;
+  const record: BackgroundJobRecord = { job_id: jobId, type: input.type, status: "queued", cwd: input.cwd, created_at: now, updated_at: now, fingerprint, payload: input.payload, ...(goalId ? { goal_item_id: goalId } : {}), ...(supersedesId ? { supersedes_run_id: supersedesId } : {}) };
   await jobStore.create(record);
 
   let child: ChildProcess;

@@ -930,4 +930,71 @@ describe("background jobs module", () => {
     expect(updated?.status).toBe("running");
     killSpy.mockRestore();
   });
+
+  // ---- UX/RUN-GROUP-001: run grouping metadata tests ----
+
+  it("enqueues run grouping metadata without changing fingerprint", async () => {
+    const { repo, store } = await createJobFixture();
+    const spawnMock = vi.fn(() => createDetachedSpawnResult(9001));
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: spawnMock };
+    });
+    const module = await import("../src/background-jobs.js");
+
+    const first = await module.enqueueBackgroundJob({
+      cwd: repo,
+      type: "implement",
+      payload: { cwd: repo, task: "Fix feedback", goal_item_id: "UX/RUN-GROUP-001" },
+      dedupe: true,
+    });
+    const second = await module.enqueueBackgroundJob({
+      cwd: repo,
+      type: "implement",
+      payload: { cwd: repo, task: "Fix feedback", goal_item_id: "OTHER-GOAL" },
+      dedupe: true,
+    });
+
+    expect(first.job.goal_item_id).toBe("UX/RUN-GROUP-001");
+    expect(second.deduped).toBe(true);
+    expect(second.job.job_id).toBe(first.job.job_id);
+
+    const stored = await store.get(first.job.job_id);
+    expect(stored?.goal_item_id).toBe("UX/RUN-GROUP-001");
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("toJobSummary includes run grouping metadata when present", async () => {
+    const module = await import("../src/background-jobs.js");
+    const record = {
+      job_id: "job-grouped",
+      type: "implement" as const,
+      status: "succeeded" as const,
+      cwd: "/repo",
+      created_at: "2026-05-30T00:00:00.000Z",
+      updated_at: "2026-05-30T00:01:00.000Z",
+      payload: {},
+      goal_item_id: "UX/RUN-GROUP-001",
+      supersedes_run_id: "run-original",
+    };
+    const summary = module.toJobSummary(record as any);
+    expect(summary.goal_item_id).toBe("UX/RUN-GROUP-001");
+    expect(summary.supersedes_run_id).toBe("run-original");
+  });
+
+  it("toJobSummary omits run grouping metadata when absent", async () => {
+    const module = await import("../src/background-jobs.js");
+    const record = {
+      job_id: "job-legacy",
+      type: "implement" as const,
+      status: "succeeded" as const,
+      cwd: "/repo",
+      created_at: "2026-05-30T00:00:00.000Z",
+      updated_at: "2026-05-30T00:01:00.000Z",
+      payload: {},
+    };
+    const summary = module.toJobSummary(record as any);
+    expect(summary.goal_item_id).toBeUndefined();
+    expect(summary.supersedes_run_id).toBeUndefined();
+  });
 });

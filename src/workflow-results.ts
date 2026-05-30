@@ -11,6 +11,7 @@ import type {
   ClaudeWorkspaceStatusInput,
   ClaudeWorkspaceStatusResult,
   DelegatedWorktreeSummary,
+  RunGroupSummary,
   RunLogEntrySummary,
   VerificationArtifactSummary,
   WorkflowNextAction,
@@ -20,6 +21,7 @@ import type {
 
 import {
   buildResultSummaryFromRun,
+  buildRunGroupSummary,
   buildRunResultPayload,
   getRunLogById,
   listRunLogs,
@@ -181,6 +183,8 @@ export function buildNextActions(input: {
 
 // ---- Utility ----
 
+const MAX_GROUP_SIBLING_RUNS = 50;
+
 function compareRecency(a?: string, b?: string): number {
   const aTime = a ? Date.parse(a) : 0;
   const bTime = b ? Date.parse(b) : 0;
@@ -302,6 +306,12 @@ export async function getClaudeResult(input: ClaudeResultInput): Promise<ClaudeR
   const jobIsActive = resolvedJob?.status === "queued" || resolvedJob?.status === "running";
   const artifactSummary = await getArtifactSummary(input.cwd);
 
+  let runGroup: RunGroupSummary | undefined;
+  if (runEntry?.goal_item_id) {
+    const siblingRuns = await listRunLogs({ cwd: input.cwd, limit: MAX_GROUP_SIBLING_RUNS, goal_item_id: runEntry.goal_item_id });
+    runGroup = buildRunGroupSummary(runEntry.goal_item_id, siblingRuns.entries, MAX_GROUP_SIBLING_RUNS) ?? undefined;
+  }
+
   return {
     source_type: resolvedJob ? "job" : "run",
     summary,
@@ -320,6 +330,7 @@ export async function getClaudeResult(input: ClaudeResultInput): Promise<ClaudeR
       change_count: changeCount,
     }),
     artifact_summary: artifactSummary ?? undefined,
+    run_group: runGroup,
   };
 }
 
@@ -472,6 +483,16 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
 
   const artifactSummary = await getArtifactSummary(input.cwd);
 
+  const runGroups: RunGroupSummary[] = [];
+  const goalIds = new Set<string>();
+  for (const entry of recentRuns.entries) {
+    if (entry.goal_item_id) goalIds.add(entry.goal_item_id);
+  }
+  for (const goalId of goalIds) {
+    const group = buildRunGroupSummary(goalId, recentRuns.entries);
+    if (group) runGroups.push(group);
+  }
+
   return {
     workspace_root: input.cwd,
     running_jobs: runningJobs.entries,
@@ -483,6 +504,7 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
     latest_sessions: latestSessions,
     delegated_worktrees: summarizedWorktrees,
     recent_artifacts: recentArtifacts.length > 0 ? recentArtifacts : undefined,
+    run_groups: runGroups,
     counts: {
       running_jobs: runningJobs.entries.length,
       queued_jobs: queuedJobs.entries.length,
@@ -495,6 +517,7 @@ export async function getWorkspaceStatus(input: ClaudeWorkspaceStatusInput): Pro
       apply_blocked_runs: recentRuns.entries.filter((run) => run.lifecycle === "apply_blocked").length,
       active_implement_jobs: activeImplementJobs.length,
       active_claude_processes: activeProcesses.length,
+      run_groups: runGroups.length,
     },
     do_not_start_duplicate_job: activeJobs.length > 0 ? true : undefined,
     next_actions: workspaceNextActions.length > 0 ? workspaceNextActions : crashedNextActions.length > 0 ? crashedNextActions : undefined,

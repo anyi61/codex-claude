@@ -965,4 +965,77 @@ describe("ModeInference type and mode_inference field", () => {
       expect(prompt).toContain("/other");
     });
   });
+
+  describe("run grouping schema fields", () => {
+    it("accepts grouping fields on claudeImplementInputSchema", () => {
+      expect(claudeImplementInputSchema.safeParse({
+        cwd: "/repo",
+        task: "Fix review feedback",
+        goal_item_id: "UX/RUN-GROUP-001",
+        supersedes_run_id: "original-run",
+      }).success).toBe(true);
+    });
+
+    it("accepts grouping fields on claudeTaskInputSchema", () => {
+      expect(claudeTaskInputSchema.safeParse({
+        cwd: "/repo",
+        task: "Implement UX/RUN-GROUP-001",
+        mode: "write",
+        goal_item_id: "UX/RUN-GROUP-001",
+        supersedes_run_id: "run-abc",
+      }).success).toBe(true);
+    });
+
+    it("accepts goal_item_id filter on claudeRunsInputSchema", () => {
+      expect(claudeRunsInputSchema.safeParse({
+        cwd: "/repo",
+        goal_item_id: "STATE-MACHINE-001",
+      }).success).toBe(true);
+    });
+
+    it("keeps grouping fields optional", () => {
+      expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "Fix bug" }).success).toBe(true);
+      expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "Fix bug" }).success).toBe(true);
+      expect(claudeRunsInputSchema.safeParse({ cwd: "/repo" }).success).toBe(true);
+    });
+
+    it("rejects empty grouping fields", () => {
+      expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", goal_item_id: "" }).success).toBe(false);
+      expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", supersedes_run_id: "" }).success).toBe(false);
+      expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "x", goal_item_id: "" }).success).toBe(false);
+      expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "x", supersedes_run_id: "" }).success).toBe(false);
+      expect(claudeRunsInputSchema.safeParse({ cwd: "/repo", goal_item_id: "" }).success).toBe(false);
+    });
+
+    it("rejects overlong grouping fields", () => {
+      const tooLong = "x".repeat(129);
+      expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", goal_item_id: tooLong }).success).toBe(false);
+      expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", supersedes_run_id: tooLong }).success).toBe(false);
+      expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "x", goal_item_id: tooLong }).success).toBe(false);
+      expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "x", supersedes_run_id: tooLong }).success).toBe(false);
+      expect(claudeRunsInputSchema.safeParse({ cwd: "/repo", goal_item_id: tooLong }).success).toBe(false);
+    });
+
+    it("rejects invalid grouping field characters", () => {
+      expect(claudeImplementInputSchema.safeParse({ cwd: "/repo", task: "x", goal_item_id: "bad value" }).success).toBe(false);
+      expect(claudeTaskInputSchema.safeParse({ cwd: "/repo", task: "x", supersedes_run_id: "bad/value" }).success).toBe(false);
+      expect(claudeRunsInputSchema.safeParse({ cwd: "/repo", goal_item_id: "bad value" }).success).toBe(false);
+    });
+
+    it("RunGroupSummary interface has expected shape", () => {
+      const group: import("../src/schema.js").RunGroupSummary = {
+        goal_item_id: "UX/RUN-GROUP-001",
+        run_count: 2,
+        latest_run_id: "run-b",
+        latest_status: "success",
+        latest_lifecycle: "success",
+        latest_updated_at: "2026-05-30T00:00:00.000Z",
+        superseded_run_ids: ["run-a"],
+        entries: [],
+      };
+      expect(group.goal_item_id).toBe("UX/RUN-GROUP-001");
+      expect(group.run_count).toBe(2);
+      expect(group.superseded_run_ids).toEqual(["run-a"]);
+    });
+  });
 });
