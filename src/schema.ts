@@ -1066,12 +1066,14 @@ export function buildSensitiveFileDenyPatternsForContextRoots(
 
 export function buildContextRootsPromptSection(contextRoots: ContextRoot[]): string {
   if (!contextRoots || contextRoots.length === 0) return "";
-  let section = `## Context Roots\n\n`;
-  section += `You have read-only access to the following additional repositories:\n\n`;
+  let section = "## Context Roots\n\n";
+  section += "You have read-only access to the following additional repositories:\n\n";
   for (const root of contextRoots) {
     section += `- **${root.alias}**: \`${root.cwd}\`\n`;
   }
-  section += `\nYou may read files and run read-only git commands within these repositories. Do NOT modify any files in context roots.\n\n`;
+  section += "\nYou may read files and run read-only git commands within these repositories. Do NOT modify any files in context roots.\n\n";
+  const aliasBrackets = contextRoots.map((r) => `[${r.alias}]`).join(", ");
+  section += `Cite context-root evidence. When a finding, claim, or answer is based on a file or command output from a context root, identify the source as ${aliasBrackets} followed by the relevant file path or git command. Claims based only on the primary repository do not need a context-root citation.\n\n`;
   return section;
 }
 

@@ -933,6 +933,18 @@ describe("ModeInference type and mode_inference field", () => {
       expect(section).toContain("/home/user/backend");
       expect(section).toContain("Do NOT modify any files in context roots");
     });
+
+    it("requires alias-qualified provenance for context-root evidence", () => {
+      const section = buildContextRootsPromptSection([
+        { alias: "lib", cwd: "/repos/lib" },
+      ]);
+      expect(section).toContain("## Context Roots");
+      expect(section).toContain("**lib**");
+      expect(section).toContain("/repos/lib");
+      expect(section).toContain("[lib]");
+      expect(section).toContain("Cite context-root evidence");
+      expect(section).toContain("Do NOT modify any files in context roots");
+    });
   });
 
   describe("buildQueryPrompt includes context roots", () => {
@@ -951,6 +963,21 @@ describe("ModeInference type and mode_inference field", () => {
       const prompt = buildQueryPrompt({ cwd: "/repo", task: "explain" });
       expect(prompt).not.toContain("## Context Roots");
     });
+
+    it("includes provenance instructions when context_roots are provided", () => {
+      const prompt = buildQueryPrompt({
+        cwd: "/repo",
+        task: "explain cross-repo integration",
+        context_roots: [{ alias: "lib", cwd: "/repos/lib" }],
+      });
+      expect(prompt).toContain("Cite context-root evidence");
+      expect(prompt).toContain("[lib]");
+    });
+
+    it("does not include provenance instructions when context_roots are absent", () => {
+      const prompt = buildQueryPrompt({ cwd: "/repo", task: "explain" });
+      expect(prompt).not.toContain("Cite context-root evidence");
+    });
   });
 
   describe("buildReviewPrompt includes context roots", () => {
@@ -963,6 +990,27 @@ describe("ModeInference type and mode_inference field", () => {
       expect(prompt).toContain("## Context Roots");
       expect(prompt).toContain("**lib**");
       expect(prompt).toContain("/other");
+    });
+
+    it("requires findings to cite alias and path for context-root evidence", () => {
+      const prompt = buildReviewPrompt({
+        cwd: "/repo",
+        task: "review cross-repo integration",
+        context_roots: [{ alias: "lib", cwd: "/repos/lib" }],
+      });
+      expect(prompt).toContain("Cite context-root evidence");
+      expect(prompt).toContain("[lib]");
+      expect(prompt).toContain("findings");
+      expect(prompt).toContain("Do NOT modify any files in context roots");
+    });
+
+    it("does not include context-root provenance instructions when context_roots are absent", () => {
+      const prompt = buildReviewPrompt({
+        cwd: "/repo",
+        task: "review",
+      });
+      expect(prompt).not.toContain("## Context Roots");
+      expect(prompt).not.toContain("Cite context-root evidence");
     });
   });
 
