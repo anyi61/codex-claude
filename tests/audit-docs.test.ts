@@ -30,9 +30,56 @@ const validReadme = [
   "",
 ].join("\n");
 
-const placeholderDocs = [
-  "docs/uninstall-execution-checklist.md",
-];
+const placeholderDocs: Record<string, string> = {
+  "docs/uninstall-execution-checklist.md": "# Current docs\n",
+};
+
+const validSourceFiles: Record<string, string> = {
+  "src/server.ts": [
+    "const BASE_TOOL_DEFINITIONS = [",
+    '  { name: "claude_setup", description: "Setup tool." },',
+    '  { name: "claude_task", description: "Task tool." },',
+    '  { name: "claude_result", description: "Result tool." },',
+    '  { name: "claude_apply", description: "Apply tool." },',
+    '  { name: "claude_cleanup", description: "Cleanup tool." },',
+    '  { name: "claude_job_wait", description: "Wait tool." },',
+    "];",
+    "",
+    "const DEFAULT_TOOL_METADATA: Record<string, {",
+    "  title: string;",
+    "  annotations: Record<string, boolean>;",
+    "}> = {",
+    "  claude_apply: {",
+    '    title: "Preview Or Apply Delegated Changes",',
+    "    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },",
+    "  },",
+    "};",
+    "",
+  ].join("\n"),
+
+  "src/codex-config.ts": [
+    "export const DEFAULT_ENABLED_TOOLS = [",
+    '  "claude_setup",',
+    '  "claude_task",',
+    '  "claude_result",',
+    '  "claude_apply",',
+    '  "claude_cleanup",',
+    "] as const;",
+    "",
+  ].join("\n"),
+
+  "src/schema.ts": [
+    "preview_token: z.string().length(64).regex(/^[a-f0-9]{64}$/,",
+    '  "preview_token must be a 64-char hex string").optional(),',
+    "",
+  ].join("\n"),
+};
+
+const validPackageFiles: Record<string, string> = {
+  "package.json": '{ "name": "test-pkg", "version": "1.0.0" }\n',
+  "plugins/codex-claude-delegate/.codex-plugin/plugin.json": '{ "name": "test-plugin", "version": "1.0.0" }\n',
+  "plugins/codex-claude-delegate/.claude-plugin/plugin.json": '{ "name": "test-claude-plugin", "version": "1.0.0" }\n',
+};
 
 const tmpDirs: string[] = [];
 
@@ -58,27 +105,15 @@ function runAudit(cwd: string): AuditResult {
   }
 }
 
-async function writeFixtureRepo(options: { productDoc: string; readme?: string }): Promise<string> {
+async function writeFixtureRepo(files: Record<string, string>): Promise<string> {
   const repo = await mkdtemp(path.join(os.tmpdir(), "audit-docs-test-"));
   tmpDirs.push(repo);
 
-  await writeFile(path.join(repo, "README.md"), options.readme ?? validReadme, "utf8");
-
-  for (const doc of placeholderDocs) {
-    await mkdir(path.dirname(path.join(repo, doc)), { recursive: true });
-    await writeFile(path.join(repo, doc), "# Current docs\n", "utf8");
+  for (const [relative, content] of Object.entries(files)) {
+    const fullPath = path.join(repo, relative);
+    await mkdir(path.dirname(fullPath), { recursive: true });
+    await writeFile(fullPath, content, "utf8");
   }
-
-  await mkdir(path.join(repo, "docs", "product"), { recursive: true });
-  await writeFile(path.join(repo, "docs", "product", "stale-prd.md"), options.productDoc, "utf8");
-
-  await mkdir(path.join(repo, "plugins", "codex-claude-delegate", "skills"), { recursive: true });
-  await mkdir(path.join(repo, "plugins", "codex-claude-delegate", ".codex-plugin"), { recursive: true });
-  await writeFile(
-    path.join(repo, "plugins", "codex-claude-delegate", ".codex-plugin", "plugin.json"),
-    "{}\n",
-    "utf8",
-  );
 
   return repo;
 }
@@ -90,7 +125,11 @@ afterEach(async () => {
 describe("audit-docs.mjs", () => {
   it("fails product docs with stale default-tool and legacy polling claims", async () => {
     const repo = await writeFixtureRepo({
-      productDoc: [
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme,
+      "docs/product/stale-prd.md": [
         "# Installation UX PRD",
         "",
         "| 决策 | 结论 | 理由 |",
@@ -101,25 +140,25 @@ describe("audit-docs.mjs", () => {
         "",
         "```toml",
         "enabled_tools = [",
-        "  \"claude_setup\",",
-        "  \"claude_task\",",
-        "  \"claude_job_wait\",",
-        "  \"claude_result\",",
-        "  \"claude_apply\",",
-        "  \"claude_cleanup\"",
+        '  "claude_setup",',
+        '  "claude_task",',
+        '  "claude_job_wait",',
+        '  "claude_result",',
+        '  "claude_apply",',
+        '  "claude_cleanup"',
         "]",
         "```",
         "",
         "```json",
         "{",
-        "  \"poll_too_soon\": true,",
-        "  \"remaining_delay_ms\": 32000,",
-        "  \"next_allowed_poll_at\": \"2026-05-09T12:00:45.000Z\",",
-        "  \"interaction\": {",
-        "    \"next_step\": \"Do not call claude_job_wait again before next_allowed_poll_at.\"",
+        '  "poll_too_soon": true,',
+        '  "remaining_delay_ms": 32000,',
+        '  "next_allowed_poll_at": "2026-05-09T12:00:45.000Z",',
+        '  "interaction": {',
+        '    "next_step": "Do not call claude_job_wait again before next_allowed_poll_at."',
         "  },",
-        "  \"next_actions\": [",
-        "    { \"tool\": \"claude_job_wait\", \"args\": { \"job_id\": \"job_xxx\" } }",
+        '  "next_actions": [',
+        '    { "tool": "claude_job_wait", "args": { "job_id": "job_xxx" } }',
         "  ]",
         "}",
         "```",
@@ -140,13 +179,17 @@ describe("audit-docs.mjs", () => {
 
   it("fails product docs with stale doctor enabled_count examples", async () => {
     const repo = await writeFixtureRepo({
-      productDoc: [
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme,
+      "docs/product/stale-prd.md": [
         "# Installation UX PRD",
         "",
         "```json",
         "{",
-        "  \"checks\": {",
-        "    \"default_tools\": { \"ok\": true, \"enabled_count\": 6 }",
+        '  "checks": {',
+        '    "default_tools": { "ok": true, "enabled_count": 6 }',
         "  }",
         "}",
         "```",
@@ -162,8 +205,11 @@ describe("audit-docs.mjs", () => {
 
   it("preserves required README phrase checks", async () => {
     const repo = await writeFixtureRepo({
-      readme: validReadme.replace("Ready means", "Ready almost means"),
-      productDoc: "# Current PRD\n",
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme.replace("Ready means", "Ready almost means"),
+      "docs/product/current.md": "# Current PRD\n",
     });
 
     const result = runAudit(repo);
@@ -174,20 +220,242 @@ describe("audit-docs.mjs", () => {
 
   it("fails README advanced enabled_tools examples that omit default tools", async () => {
     const repo = await writeFixtureRepo({
-      readme: [
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": [
         validReadme,
         "## 高级 / 调试工具",
         "```toml",
         "[mcp_servers.claude_delegate]",
-        "enabled_tools = [\"claude_job_wait\", \"claude_query\", \"claude_review\"]",
+        'enabled_tools = ["claude_job_wait", "claude_query", "claude_review"]',
         "```",
       ].join("\n"),
-      productDoc: "# Current PRD\n",
+      "docs/product/current.md": "# Current PRD\n",
     });
 
     const result = runAudit(repo);
 
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("README.md: advanced enabled_tools example omits default tools");
+  });
+
+  it("fails when doc enabled_count does not match source DEFAULT_ENABLED_TOOLS length", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme,
+      "docs/product/bad-count.md": [
+        "# PRD",
+        "",
+        "```json",
+        "{",
+        '  "default_tools": { "enabled_count": 4 }',
+        "}",
+        "```",
+      ].join("\n"),
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("doc claims enabled count 4 but source has 5");
+  });
+
+  it("fails when default-context enabled_tools block includes claude_job_wait", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme,
+      "docs/product/default-context.md": [
+        "# PRD",
+        "",
+        "默认工具配置如下：",
+        "",
+        "```toml",
+        "enabled_tools = [",
+        '  "claude_setup",',
+        '  "claude_task",',
+        '  "claude_job_wait",',
+        '  "claude_result",',
+        '  "claude_apply",',
+        '  "claude_cleanup"',
+        "]",
+        "```",
+      ].join("\n"),
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("default-context enabled_tools includes claude_job_wait");
+  });
+
+  it("fails when default-context enabled_tools block is missing a required tool", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme,
+      "docs/product/missing-tool.md": [
+        "# PRD",
+        "",
+        "默认 enabled_tools 配置：",
+        "",
+        "```toml",
+        "enabled_tools = [",
+        '  "claude_setup",',
+        '  "claude_task",',
+        '  "claude_result",',
+        '  "claude_apply"',
+        "]",
+        "```",
+      ].join("\n"),
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("default-context enabled_tools missing claude_cleanup");
+  });
+
+  it("fails when README mentions a tool not in BASE_TOOL_DEFINITIONS", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme + "\n`claude_nonexistent`\n",
+      "docs/product/current.md": "# Current PRD\n",
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("README.md: mentions unknown tool claude_nonexistent not in BASE_TOOL_DEFINITIONS");
+  });
+
+  it("does not flag claude_delegate server name as an unknown tool", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme + "\n```toml\n[mcp_servers.claude_delegate]\n```\n",
+      "docs/product/current.md": "# Current PRD\n",
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("fails when claude_apply is described as read-only but metadata marks it destructive", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme,
+      "docs/product/apply-contradiction.md": [
+        "# PRD",
+        "",
+        "`claude_apply` is a read-only tool for safe previewing.",
+      ].join("\n"),
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("claude_apply described as read-only/safe but metadata marks it destructive");
+  });
+
+  it("does not flag claude_apply confirmation docs as contradictory", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme,
+      "docs/product/apply-confirmation.md": [
+        "# PRD",
+        "",
+        "`claude_apply` requires user confirmation before modifying files.",
+      ].join("\n"),
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("fails when preview_token docs claim 64 bytes instead of 64 hex chars", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme,
+      "docs/product/token-format.md": [
+        "# PRD",
+        "",
+        "The preview_token is a 64 bytes random value.",
+      ].join("\n"),
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("preview_token claims 64 bytes or 32 chars");
+  });
+
+  it("fails when package and plugin versions mismatch", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      "README.md": validReadme,
+      "docs/product/current.md": "# Current PRD\n",
+      "package.json": '{ "name": "test-pkg", "version": "1.0.0" }\n',
+      "plugins/codex-claude-delegate/.codex-plugin/plugin.json": '{ "name": "test-plugin", "version": "1.1.0" }\n',
+      "plugins/codex-claude-delegate/.claude-plugin/plugin.json": '{ "name": "test-claude-plugin", "version": "1.0.0" }\n',
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("version mismatch:");
+    expect(result.stderr).toContain("1.0.0");
+    expect(result.stderr).toContain("1.1.0");
+  });
+
+  it("passes when all source-derived checks are valid", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme,
+      "docs/product/current.md": [
+        "# PRD",
+        "",
+        "`claude_apply` requires user confirmation before modifying files.",
+        "The preview_token is a 64 lowercase hex character string.",
+      ].join("\n"),
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("doc audit ok");
+  });
+
+  it("passes when source files are absent (skips manifest checks)", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validPackageFiles,
+      "README.md": validReadme,
+      "docs/product/current.md": "# PRD\n",
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("doc audit ok");
   });
 });
