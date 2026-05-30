@@ -454,6 +454,12 @@ npm view @anyi61/codex-claude-delegate-mcp version dist-tags.latest
 node -p "require('./package.json').version"
 ```
 
+也可使用元数据检查脚本自动验证 registry/tag 一致性:
+
+```bash
+npm run check:release:metadata
+```
+
 然后提交 release bump 并创建 tag:
 
 ```bash
