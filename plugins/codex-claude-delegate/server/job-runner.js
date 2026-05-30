@@ -68,11 +68,12 @@ function isSensitiveName(name) {
 }
 function execCapture(command, args, opts) {
   return new Promise((resolve2, reject) => {
+    const env = opts.env && opts.envMode === "replace" ? opts.env : opts.env ? { ...process.env, ...opts.env } : void 0;
     const child = spawn(command, args, {
       cwd: opts.cwd,
       timeout: opts.timeoutMs ?? 3e4,
       stdio: ["ignore", "pipe", "pipe"],
-      env: opts.env ? { ...process.env, ...opts.env } : void 0
+      env
     });
     let stdout = "";
     let stderr = "";
@@ -617,6 +618,14 @@ function fs() {
 }
 async function applyChangesTransactional(cwd, worktreeRoot, changes) {
   const f = fs();
+  for (const change of changes) {
+    const fileCheck = validateTransactionPath(cwd, change.file, "file");
+    if (fileCheck) return fileCheck;
+    if ((change.status === "R" || change.status === "C") && change.old_file) {
+      const oldFileCheck = validateTransactionPath(cwd, change.old_file, "old_file");
+      if (oldFileCheck) return oldFileCheck;
+    }
+  }
   const backupDir = path12.join(cwd, ".codex-claude-delegate", "apply-backups", randomUUID2());
   const backups = [];
   const appliedFiles = [];
@@ -732,6 +741,22 @@ async function applyChangesTransactional(cwd, worktreeRoot, changes) {
   });
   return { applied_files: appliedFiles };
 }
+function validateTransactionPath(cwd, file2, field) {
+  if (path12.isAbsolute(file2)) {
+    return {
+      applied_files: [],
+      error: `Invalid ${field} path (absolute): ${file2}`
+    };
+  }
+  const check2 = resolveRepoLocalPath(cwd, file2);
+  if (!check2.ok) {
+    return {
+      applied_files: [],
+      error: `Invalid ${field} path ${file2}: ${check2.error}`
+    };
+  }
+  return void 0;
+}
 async function rollbackApplied(cwd, backups, f) {
   const dirtyFiles = [];
   let firstError;
@@ -770,6 +795,7 @@ var defaultFSOps, __testFSOps;
 var init_transaction = __esm({
   "src/transaction.ts"() {
     "use strict";
+    init_guard();
     defaultFSOps = {
       exists(dest) {
         return fsExistsSync(dest);
@@ -1399,10 +1425,24 @@ function formatDirtyImplementMessage(dirtyFiles, requestedFiles) {
 }
 async function applyDirtySnapshotToWorktree(cwd, worktreePath) {
   const entries = await listDirtyMainWorkspaceEntries(cwd);
+  return applyDirtyEntries(cwd, worktreePath, entries);
+}
+async function applyDirtyEntries(cwd, worktreePath, entries) {
   const copied = [];
   for (const entry of entries) {
-    const source = path5.join(cwd, entry.file);
-    const destination = path5.join(worktreePath, entry.file);
+    if (path5.isAbsolute(entry.file)) {
+      throw new Error(`Dirty snapshot entry must be repo-relative: ${entry.file}`);
+    }
+    const sourceCheck = resolveRepoLocalPath(cwd, entry.file);
+    if (!sourceCheck.ok) {
+      throw new Error(`Dirty snapshot source path escapes cwd: ${entry.file}`);
+    }
+    const destinationCheck = resolveRepoLocalPath(worktreePath, entry.file);
+    if (!destinationCheck.ok) {
+      throw new Error(`Dirty snapshot destination path escapes worktree: ${entry.file}`);
+    }
+    const source = sourceCheck.resolved;
+    const destination = destinationCheck.resolved;
     if (entry.status === "D") {
       await rm2(destination, { recursive: true, force: true });
       copied.push(entry.file);
@@ -17289,6 +17329,7 @@ async function getStore(cwd) {
 }
 
 // src/verification.ts
+init_guard();
 import { spawn as spawn3 } from "node:child_process";
 var DEFAULT_TIMEOUT_MS = 12e4;
 var MAX_TIMEOUT_MS = 3e5;
@@ -17396,7 +17437,7 @@ function skippedResult(command, reason) {
     skipped_reason: reason
   };
 }
-async function runSingleVerificationCommand(command, cwd, timeoutMs, allowedScripts) {
+async function runSingleVerificationCommand(command, cwd, timeoutMs, allowedScripts, env) {
   let argv;
   try {
     argv = parseVerificationCommand(command);
@@ -17415,6 +17456,7 @@ async function runSingleVerificationCommand(command, cwd, timeoutMs, allowedScri
     let timedOut = false;
     const child = spawn3(bin, args, {
       cwd,
+      env,
       stdio: ["ignore", "pipe", "pipe"]
     });
     const timeout = setTimeout(() => {
@@ -17461,9 +17503,10 @@ async function runVerificationCommands(commands, cwd, timeoutMs = DEFAULT_TIMEOU
   if (!commands || commands.length === 0) return void 0;
   const effectiveTimeout = opts?.timeoutMs !== void 0 ? clampVerificationTimeout(opts.timeoutMs) : timeoutMs;
   const allowedScripts = opts?.allowedScripts;
+  const sanitizedEnv = sanitizeEnv();
   const results = [];
   for (const command of commands) {
-    results.push(await runSingleVerificationCommand(command, cwd, effectiveTimeout, allowedScripts));
+    results.push(await runSingleVerificationCommand(command, cwd, effectiveTimeout, allowedScripts, sanitizedEnv));
   }
   return {
     status: results.every((result) => result.status === "passed") ? "passed" : "failed",

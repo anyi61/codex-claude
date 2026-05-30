@@ -7093,11 +7093,12 @@ function getEnvSanitizationDiagnostics() {
 }
 function execCapture(command, args, opts) {
   return new Promise((resolve3, reject) => {
+    const env = opts.env && opts.envMode === "replace" ? opts.env : opts.env ? { ...process.env, ...opts.env } : void 0;
     const child = spawn(command, args, {
       cwd: opts.cwd,
       timeout: opts.timeoutMs ?? 3e4,
       stdio: ["ignore", "pipe", "pipe"],
-      env: opts.env ? { ...process.env, ...opts.env } : void 0
+      env
     });
     let stdout = "";
     let stderr = "";
@@ -7658,6 +7659,14 @@ function fs() {
 }
 async function applyChangesTransactional(cwd, worktreeRoot, changes) {
   const f = fs();
+  for (const change of changes) {
+    const fileCheck = validateTransactionPath(cwd, change.file, "file");
+    if (fileCheck) return fileCheck;
+    if ((change.status === "R" || change.status === "C") && change.old_file) {
+      const oldFileCheck = validateTransactionPath(cwd, change.old_file, "old_file");
+      if (oldFileCheck) return oldFileCheck;
+    }
+  }
   const backupDir = path12.join(cwd, ".codex-claude-delegate", "apply-backups", randomUUID3());
   const backups = [];
   const appliedFiles = [];
@@ -7773,6 +7782,22 @@ async function applyChangesTransactional(cwd, worktreeRoot, changes) {
   });
   return { applied_files: appliedFiles };
 }
+function validateTransactionPath(cwd, file2, field) {
+  if (path12.isAbsolute(file2)) {
+    return {
+      applied_files: [],
+      error: `Invalid ${field} path (absolute): ${file2}`
+    };
+  }
+  const check2 = resolveRepoLocalPath(cwd, file2);
+  if (!check2.ok) {
+    return {
+      applied_files: [],
+      error: `Invalid ${field} path ${file2}: ${check2.error}`
+    };
+  }
+  return void 0;
+}
 async function rollbackApplied(cwd, backups, f) {
   const dirtyFiles = [];
   let firstError;
@@ -7811,6 +7836,7 @@ var defaultFSOps, __testFSOps;
 var init_transaction = __esm({
   "src/transaction.ts"() {
     "use strict";
+    init_guard();
     defaultFSOps = {
       exists(dest) {
         return fsExistsSync(dest);
@@ -28324,6 +28350,9 @@ async function getWorkspaceStatus(input) {
   };
 }
 
+// src/verification.ts
+init_guard();
+
 // src/claude-cli.ts
 var getJobStore2 = getJobStore;
 var toJobSummary2 = toJobSummary;
@@ -28356,6 +28385,7 @@ var ZH_REVIEW_RE = /审查|检查|评审|看看有没有问题|找一下风险|�
 var EN_READ_RE = /\b(explain|analyse|analyze|why|how|what|summarize|describe|read-only|understand)\b/;
 var ZH_READ_RE = /解释|分析|总结|为什么|怎么|如何|说明|描述|理解/;
 var ZH_QUERY_PREFIX_RE = /^(解释|说明|为什么|怎么|如何|怎样|分析|总结|描述|理解|搞清楚)/;
+var ZH_RISK_SIGNAL_RE = /风险|安全|问题|漏洞|隐患|有没有问题|安不安全|有没有风险/;
 function inferClaudeTaskMode(input) {
   const requestedMode = input.mode ?? "auto";
   if (input.mode && input.mode !== "auto") {
@@ -28384,6 +28414,22 @@ function inferClaudeTaskMode(input) {
       return {
         mode: "read",
         inference: { requested_mode: "auto", delegated_mode: "read", reason: "query_prefix_override", confidence: "medium", matched_hints: [matched] }
+      };
+    }
+  }
+  if (input.task) {
+    const hasWriteSignal = EN_WRITE_RE.test(text) || ZH_WRITE_RE.test(input.task);
+    const riskMatch = input.task.match(ZH_RISK_SIGNAL_RE) ?? /\b(risk|safety|security|vulnerab)/i.exec(text);
+    if (hasWriteSignal && riskMatch) {
+      return {
+        mode: "review",
+        inference: {
+          requested_mode: "auto",
+          delegated_mode: "review",
+          reason: "mixed_intent_review_first",
+          confidence: "medium",
+          matched_hints: [riskMatch[0]]
+        }
       };
     }
   }
