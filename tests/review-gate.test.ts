@@ -430,4 +430,109 @@ describe("review gate pending metadata", () => {
     expect(result.cleared).toBe(false);
     expect(result.reason).toBe("gate_not_enabled");
   });
+
+  // ---- STATE-MACHINE-002: fingerprint binding fault-injection coverage ----
+
+  it("clearReviewGatePendingIfMatches clears when only reviewed_fingerprint matches (no run_id or worktree)", async () => {
+    const { repo } = await createFixtureRepo();
+    const reloaded = await import("../src/claude-cli.js");
+    await reloaded.manageClaudeReviewGate({ cwd: repo, action: "enable" });
+
+    const { markReviewGatePending, clearReviewGatePendingIfMatches } = await import("../src/review-gate.js");
+    await markReviewGatePending(repo, {
+      activity: "write",
+      run_id: "run-fp-only",
+      fingerprint: "fp-sole-binding",
+    });
+
+    // Only fingerprint provided — no run_id or worktree
+    const result = await clearReviewGatePendingIfMatches(repo, {
+      review_run_id: "review-fp-sole",
+      reviewed_fingerprint: "fp-sole-binding",
+    });
+    expect(result.cleared).toBe(true);
+    expect(result.reason).toBe("cleared");
+
+    const configRaw = await readFile(path.join(repo, ".codex-claude-delegate", "review-gate.json"), "utf8");
+    const config = JSON.parse(configRaw);
+    expect(config.pending_review).toBe(false);
+    expect(config.pending_fingerprint).toBeUndefined();
+  });
+
+  it("clearReviewGatePendingIfMatches returns fingerprint_mismatch when pending fingerprint is empty string and input is non-empty", async () => {
+    const { repo } = await createFixtureRepo();
+    const reloaded = await import("../src/claude-cli.js");
+    await reloaded.manageClaudeReviewGate({ cwd: repo, action: "enable" });
+
+    const { markReviewGatePending, clearReviewGatePendingIfMatches } = await import("../src/review-gate.js");
+    await markReviewGatePending(repo, {
+      activity: "write",
+      run_id: "run-empty-fp",
+      fingerprint: "",
+    });
+
+    const result = await clearReviewGatePendingIfMatches(repo, {
+      review_run_id: "review-empty-fp",
+      reviewed_run_id: "run-empty-fp",
+      reviewed_fingerprint: "fp-non-empty",
+    });
+    expect(result.cleared).toBe(false);
+    expect(result.reason).toBe("fingerprint_mismatch");
+  });
+
+  it("clearReviewGatePendingIfMatches rejects when all three matchers provided but fingerprint mismatches", async () => {
+    const { repo } = await createFixtureRepo();
+    const reloaded = await import("../src/claude-cli.js");
+    await reloaded.manageClaudeReviewGate({ cwd: repo, action: "enable" });
+
+    const { markReviewGatePending, clearReviewGatePendingIfMatches } = await import("../src/review-gate.js");
+    await markReviewGatePending(repo, {
+      activity: "write",
+      run_id: "run-triple",
+      worktree_path: ".claude/worktrees/codex-delegated-triple",
+      fingerprint: "fp-triple-correct",
+    });
+
+    // run_id and worktree match, but fingerprint mismatches
+    const result = await clearReviewGatePendingIfMatches(repo, {
+      review_run_id: "review-triple",
+      reviewed_run_id: "run-triple",
+      reviewed_worktree_path: ".claude/worktrees/codex-delegated-triple",
+      reviewed_fingerprint: "fp-triple-wrong",
+    });
+    expect(result.cleared).toBe(false);
+    expect(result.reason).toBe("fingerprint_mismatch");
+
+    // Pending should still be true
+    const configRaw = await readFile(path.join(repo, ".codex-claude-delegate", "review-gate.json"), "utf8");
+    const config = JSON.parse(configRaw);
+    expect(config.pending_review).toBe(true);
+    expect(config.pending_run_id).toBe("run-triple");
+  });
+
+  it("clearReviewGatePendingIfMatches treats empty string reviewed_fingerprint as stale fingerprint", async () => {
+    const { repo } = await createFixtureRepo();
+    const reloaded = await import("../src/claude-cli.js");
+    await reloaded.manageClaudeReviewGate({ cwd: repo, action: "enable" });
+
+    const { markReviewGatePending, clearReviewGatePendingIfMatches } = await import("../src/review-gate.js");
+    await markReviewGatePending(repo, {
+      activity: "apply",
+      run_id: "run-str-fp",
+      fingerprint: "fp-real",
+    });
+
+    const result = await clearReviewGatePendingIfMatches(repo, {
+      review_run_id: "review-str-fp",
+      reviewed_run_id: "run-str-fp",
+      reviewed_fingerprint: "",
+    });
+    expect(result.cleared).toBe(false);
+    expect(result.reason).toBe("fingerprint_mismatch");
+
+    const configRaw = await readFile(path.join(repo, ".codex-claude-delegate", "review-gate.json"), "utf8");
+    const config = JSON.parse(configRaw);
+    expect(config.pending_review).toBe(true);
+    expect(config.pending_fingerprint).toBe("fp-real");
+  });
 });

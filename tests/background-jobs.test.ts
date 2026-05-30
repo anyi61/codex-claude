@@ -283,7 +283,7 @@ describe("background jobs module", () => {
 
   it("recoverCrashedJobs marks running job with dead pid as crashed", async () => {
     const { repo, store } = await createJobFixture();
-    const staleTime = new Date(Date.now() - 60_000).toISOString();
+    const staleTime = new Date(Date.now() - 600_000).toISOString();
     await store.create({
       job_id: "job-dead-pid",
       type: "implement",
@@ -323,6 +323,7 @@ describe("background jobs module", () => {
       type: "query",
       status: "queued",
       cwd: repo,
+      pid: 999987,
       created_at: staleTime,
       updated_at: staleTime,
       heartbeat_at: staleTime,
@@ -996,5 +997,111 @@ describe("background jobs module", () => {
     const summary = module.toJobSummary(record as any);
     expect(summary.goal_item_id).toBeUndefined();
     expect(summary.supersedes_run_id).toBeUndefined();
+  });
+
+  // ---- STATE-MACHINE-002: fault-injection coverage ----
+
+  it("recoverCrashedJobs skips recovery when process.kill(pid, 0) throws EPERM (pid alive but not owned)", async () => {
+    const { repo, store } = await createJobFixture();
+    const staleTime = new Date(Date.now() - 60_000).toISOString();
+    await store.create({
+      job_id: "job-eperm",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      pid: 999990,
+      created_at: staleTime,
+      updated_at: staleTime,
+      heartbeat_at: staleTime,
+      payload: { cwd: repo, task: "ship it" },
+    });
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+      const err = new Error("EPERM") as NodeJS.ErrnoException;
+      err.code = "EPERM";
+      throw err;
+    });
+    const module = await import("../src/background-jobs.js");
+    const count = await module.recoverCrashedJobs();
+    expect(count).toBe(0);
+    const updated = await store.get("job-eperm");
+    expect(updated?.status).toBe("running");
+    killSpy.mockRestore();
+  });
+
+  it("recoverCrashedJobs skips recovery for job with unparseable created_at", async () => {
+    const { repo, store } = await createJobFixture();
+    await store.create({
+      job_id: "job-bad-date",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      pid: 999989,
+      created_at: "not-a-date",
+      updated_at: "not-a-date",
+      heartbeat_at: "not-a-date",
+      payload: { cwd: repo, task: "ship it" },
+    });
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+      const err = new Error("ESRCH") as NodeJS.ErrnoException;
+      err.code = "ESRCH";
+      throw err;
+    });
+    const module = await import("../src/background-jobs.js");
+    const count = await module.recoverCrashedJobs();
+    expect(count).toBe(0);
+    const updated = await store.get("job-bad-date");
+    expect(updated?.status).toBe("running");
+    killSpy.mockRestore();
+  });
+
+  it("recoverCrashedJobs crashes queued job with no pid and no heartbeat when beyond grace window", async () => {
+    const { repo, store } = await createJobFixture();
+    const staleTime = new Date(Date.now() - 600_000).toISOString();
+    await store.create({
+      job_id: "job-no-pid-no-hb",
+      type: "query",
+      status: "queued",
+      cwd: repo,
+      created_at: staleTime,
+      updated_at: staleTime,
+      // heartbeat_at is undefined
+      payload: { cwd: repo, task: "explain" },
+    });
+    const module = await import("../src/background-jobs.js");
+    const count = await module.recoverCrashedJobs();
+    expect(count).toBe(1);
+    const updated = await store.get("job-no-pid-no-hb");
+    expect(updated?.status).toBe("crashed");
+    expect(updated?.error).toContain("recovered as crashed");
+  });
+
+  it("repeated recoverCrashedJobs calls are idempotent after terminal recovery", async () => {
+    const { repo, store } = await createJobFixture();
+    const staleTime = new Date(Date.now() - 600_000).toISOString();
+    await store.create({
+      job_id: "job-conc-a",
+      type: "implement",
+      status: "running",
+      cwd: repo,
+      pid: 999988,
+      created_at: staleTime,
+      updated_at: staleTime,
+      heartbeat_at: staleTime,
+      payload: { cwd: repo, task: "task A" },
+    });
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+      const err = new Error("ESRCH") as NodeJS.ErrnoException;
+      err.code = "ESRCH";
+      throw err;
+    });
+    const module = await import("../src/background-jobs.js");
+    const first = await module.recoverCrashedJobs();
+    const second = await module.recoverCrashedJobs();
+
+    expect(first).toBe(1);
+    expect(second).toBe(0);
+    const jobA = await store.get("job-conc-a");
+    expect(jobA?.status).toBe("crashed");
+    killSpy.mockRestore();
   });
 });

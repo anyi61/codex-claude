@@ -142,18 +142,21 @@ export async function clearReviewGatePendingIfMatches(cwd: string, input: ClearR
     return { cleared: false, reason: "no_pending" };
   }
 
-  const hasReviewedBinding = !!input.reviewed_run_id || !!input.reviewed_worktree_path || !!input.reviewed_fingerprint;
+  const hasReviewedBinding =
+    input.reviewed_run_id !== undefined ||
+    input.reviewed_worktree_path !== undefined ||
+    input.reviewed_fingerprint !== undefined;
   if (!hasReviewedBinding) {
     return { cleared: false, reason: "no_binding" };
   }
 
-  if (input.reviewed_run_id && input.reviewed_run_id !== current.pending_run_id) {
+  if (input.reviewed_run_id !== undefined && input.reviewed_run_id !== current.pending_run_id) {
     return { cleared: false, reason: "run_id_mismatch" };
   }
-  if (input.reviewed_worktree_path && input.reviewed_worktree_path !== current.pending_worktree_path) {
+  if (input.reviewed_worktree_path !== undefined && input.reviewed_worktree_path !== current.pending_worktree_path) {
     return { cleared: false, reason: "worktree_path_mismatch" };
   }
-  if (input.reviewed_fingerprint && input.reviewed_fingerprint !== current.pending_fingerprint) {
+  if (input.reviewed_fingerprint !== undefined && input.reviewed_fingerprint !== current.pending_fingerprint) {
     return { cleared: false, reason: "fingerprint_mismatch" };
   }
 

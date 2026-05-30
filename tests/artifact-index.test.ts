@@ -496,6 +496,172 @@ describe("registerVerificationArtifacts", () => {
   });
 });
 
+// ---- STATE-MACHINE-002: fault-injection coverage ----
+
+describe("artifact index fault injection", () => {
+  it("returns empty index for wrong version number", async () => {
+    const { repo } = await createFixture();
+    const artifactDir = path.join(repo, ".codex-claude-delegate", "artifacts");
+    await mkdir(artifactDir, { recursive: true });
+    await writeFile(path.join(artifactDir, "artifacts.json"), JSON.stringify({
+      version: 2,
+      entries: [
+        { type: "patch", path: "a.patch", sha256: "a", sizeBytes: 1, createdAt: "2026-01-01", producer: "t", sensitivity: "safe" },
+      ],
+    }), "utf8");
+
+    const index = await readArtifactIndex(repo);
+    expect(index.version).toBe(1);
+    expect(index.entries).toEqual([]);
+  });
+
+  it("reads real index when leftover tmp file exists alongside", async () => {
+    const { repo } = await createFixture();
+    const artifactDir = path.join(repo, ".codex-claude-delegate", "artifacts");
+    await mkdir(artifactDir, { recursive: true });
+    await writeFile(path.join(artifactDir, "artifacts.json"), JSON.stringify({
+      version: 1,
+      entries: [
+        { type: "patch", path: "real.patch", sha256: "abc", sizeBytes: 10, createdAt: "2026-01-01T00:00:00Z", producer: "test", sensitivity: "safe" },
+      ],
+      updatedAt: "2026-01-01T00:00:00Z",
+    }), "utf8");
+    await writeFile(path.join(artifactDir, "artifacts.json.tmp.abc123"), "leftover tmp content", "utf8");
+
+    const index = await readArtifactIndex(repo);
+    expect(index.entries).toHaveLength(1);
+    expect(index.entries[0].path).toBe("real.patch");
+  });
+
+  it("prune skips entry with non-finite createdAt", async () => {
+    const { repo } = await createFixture();
+    const artifactDir = path.join(repo, ".codex-claude-delegate", "artifacts");
+    await writeTestFile(path.join(artifactDir, "bad-date.txt"), "content");
+
+    await addArtifactEntry(repo, {
+      type: "patch",
+      path: ".codex-claude-delegate/artifacts/bad-date.txt",
+      sha256: "abc",
+      sizeBytes: 7,
+      producer: "test",
+      sensitivity: "safe",
+      createdAt: "not-a-date",
+    });
+
+    const result = await pruneArtifactIndex(repo, { older_than_hours: 0, dry_run: false, limit: 10 });
+    expect(result.matched_count).toBe(0);
+    expect(result.removed_count).toBe(0);
+
+    const index = await readArtifactIndex(repo);
+    expect(index.entries).toHaveLength(1);
+    expect(existsSync(path.join(artifactDir, "bad-date.txt"))).toBe(true);
+  });
+
+  it("prune tolerates stale file reference where disk file is already deleted", async () => {
+    const { repo } = await createFixture();
+    const artifactDir = path.join(repo, ".codex-claude-delegate", "artifacts");
+    await writeTestFile(path.join(artifactDir, "will-vanish.txt"), "content");
+
+    await addArtifactEntry(repo, {
+      type: "patch",
+      path: ".codex-claude-delegate/artifacts/will-vanish.txt",
+      sha256: "abc",
+      sizeBytes: 7,
+      producer: "test",
+      sensitivity: "safe",
+      createdAt: "2020-01-01T00:00:00Z",
+    });
+
+    // External process deletes the file
+    await rm(path.join(artifactDir, "will-vanish.txt"), { force: true });
+
+    const result = await pruneArtifactIndex(repo, { older_than_hours: 0, dry_run: false, limit: 10 });
+    expect(result.removed_count).toBe(1);
+    expect(result.failed_count).toBe(0);
+
+    const index = await readArtifactIndex(repo);
+    expect(index.entries).toHaveLength(0);
+  });
+
+  it("prune removes only safe stale entries while keeping unsafe or fresh entries", async () => {
+    const { repo } = await createFixture();
+    const artifactDir = path.join(repo, ".codex-claude-delegate", "artifacts");
+    await writeTestFile(path.join(artifactDir, "old-safe.txt"), "old-safe");
+    await writeTestFile(path.join(repo, "old-unsafe.txt"), "old-unsafe");
+    await writeTestFile(path.join(artifactDir, "fresh-safe.txt"), "fresh-safe");
+
+    await addArtifactEntry(repo, {
+      type: "patch",
+      path: ".codex-claude-delegate/artifacts/old-safe.txt",
+      sha256: "a",
+      sizeBytes: 8,
+      producer: "test",
+      sensitivity: "safe",
+      createdAt: "2020-01-01T00:00:00Z",
+    });
+    await addArtifactEntry(repo, {
+      type: "patch",
+      path: "old-unsafe.txt",
+      sha256: "b",
+      sizeBytes: 11,
+      producer: "test",
+      sensitivity: "safe",
+      createdAt: "2020-01-01T00:00:00Z",
+    });
+    await addArtifactEntry(repo, {
+      type: "patch",
+      path: ".codex-claude-delegate/artifacts/fresh-safe.txt",
+      sha256: "c",
+      sizeBytes: 10,
+      producer: "test",
+      sensitivity: "safe",
+      createdAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+
+    const result = await pruneArtifactIndex(repo, { older_than_hours: 0, dry_run: false, limit: 10 });
+    expect(result.removed_count).toBe(1);
+    expect(result.matched_count).toBe(1);
+
+    const index = await readArtifactIndex(repo);
+    expect(index.entries).toHaveLength(2);
+    const paths = index.entries.map((e) => e.path).sort();
+    expect(paths).toEqual([".codex-claude-delegate/artifacts/fresh-safe.txt", "old-unsafe.txt"].sort());
+  });
+
+  it("getArtifactSummary returns empty summary for wrong version index", async () => {
+    const { repo } = await createFixture();
+    const artifactDir = path.join(repo, ".codex-claude-delegate", "artifacts");
+    await mkdir(artifactDir, { recursive: true });
+    await writeFile(path.join(artifactDir, "artifacts.json"), JSON.stringify({
+      version: 99,
+      entries: [{ type: "patch", path: "x.patch", sha256: "x", sizeBytes: 1, createdAt: "2026-01-01", producer: "t", sensitivity: "safe" }],
+    }), "utf8");
+
+    const summary = await getArtifactSummary(repo);
+    expect(summary).not.toBeNull();
+    expect(summary!.entry_count).toBe(0);
+    expect(summary!.latest_timestamp).toBeNull();
+    expect(summary!.type_counts).toEqual({});
+  });
+
+  it("getArtifactSummary returns empty summary for empty entries array", async () => {
+    const { repo } = await createFixture();
+    const artifactDir = path.join(repo, ".codex-claude-delegate", "artifacts");
+    await mkdir(artifactDir, { recursive: true });
+    await writeFile(path.join(artifactDir, "artifacts.json"), JSON.stringify({
+      version: 1,
+      entries: [],
+      updatedAt: "2026-05-30T00:00:00Z",
+    }), "utf8");
+
+    const summary = await getArtifactSummary(repo);
+    expect(summary).not.toBeNull();
+    expect(summary!.entry_count).toBe(0);
+    expect(summary!.latest_timestamp).toBeNull();
+    expect(summary!.type_counts).toEqual({});
+  });
+});
+
 // ---- addArtifactEntry robustness ----
 
 describe("addArtifactEntry robustness", () => {
