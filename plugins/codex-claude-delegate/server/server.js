@@ -26062,6 +26062,7 @@ function summarizeRunLog(runId, raw, updatedAt) {
   const worktreePath = typeof raw.observed?.worktree_path === "string" ? raw.observed.worktree_path : typeof raw.input?.worktree_path === "string" ? raw.input.worktree_path : void 0;
   const verified = summarizeServerVerified(raw.server_verified);
   const audit = summarizeToolCallAudit(raw.report);
+  const rawRecord = raw;
   return {
     run_id: runId,
     type: typeof raw.type === "string" ? raw.type : "unknown",
@@ -26078,7 +26079,9 @@ function summarizeRunLog(runId, raw, updatedAt) {
     started_at: typeof raw.started_at === "string" ? raw.started_at : updatedAt,
     updated_at: typeof raw.updated_at === "string" ? raw.updated_at : updatedAt,
     ...verified ? { server_verified: verified } : {},
-    ...audit ? { tool_call_audit: audit } : {}
+    ...audit ? { tool_call_audit: audit } : {},
+    ...typeof rawRecord.goal_item_id === "string" && rawRecord.goal_item_id.length > 0 ? { goal_item_id: rawRecord.goal_item_id } : {},
+    ...typeof rawRecord.supersedes_run_id === "string" && rawRecord.supersedes_run_id.length > 0 ? { supersedes_run_id: rawRecord.supersedes_run_id } : {}
   };
 }
 function summarizeRecentRuns(entries) {
@@ -26122,6 +26125,7 @@ async function listRunLogs(input) {
         if (input.type && summary.type !== input.type) continue;
         if (input.status && summary.status !== input.status) continue;
         if (input.worktree_name && summary.worktree_name !== input.worktree_name) continue;
+        if (input.goal_item_id && summary.goal_item_id !== input.goal_item_id) continue;
         summaries.push(summary);
         if (summaries.length >= limit) break;
       } catch {
@@ -26169,6 +26173,30 @@ function buildResultSummaryFromRun(entry) {
   if (entry.summary) return entry.summary;
   if (entry.error) return `${entry.type} failed: ${entry.error}`;
   return `${entry.type} ${entry.lifecycle}`;
+}
+function buildRunGroupSummary(goalItemId, entries, limit = 20) {
+  const matching = entries.filter((e) => e.goal_item_id === goalItemId);
+  if (matching.length === 0) return void 0;
+  const sorted = [...matching].sort((a, b) => {
+    const aTime = a.updated_at ?? a.started_at ?? "";
+    const bTime = b.updated_at ?? b.started_at ?? "";
+    return bTime.localeCompare(aTime);
+  });
+  const latest = sorted[0];
+  const supersededSet = /* @__PURE__ */ new Set();
+  for (const entry of matching) {
+    if (entry.supersedes_run_id) supersededSet.add(entry.supersedes_run_id);
+  }
+  return {
+    goal_item_id: goalItemId,
+    run_count: matching.length,
+    latest_run_id: latest.run_id,
+    latest_status: latest.status,
+    latest_lifecycle: latest.lifecycle,
+    latest_updated_at: latest.updated_at,
+    superseded_run_ids: [...supersededSet].sort(),
+    entries: sorted.slice(0, limit)
+  };
 }
 
 // src/worktree-observer.ts
@@ -26527,6 +26555,8 @@ var sensitiveFilePolicySchema = external_exports.enum(["default", "strict", "off
 var verificationCommandsSchema = external_exports.array(
   external_exports.string().trim().min(1).max(200).regex(/^[^\u0000-\u001f\u007f]+$/, "verification command may not contain control characters")
 ).min(1).max(10).optional();
+var goalItemIdSchema = external_exports.string().trim().min(1).max(128).regex(/^[A-Za-z0-9._:\/-]+$/, "goal_item_id may only contain letters, numbers, dot, underscore, slash, colon, and hyphen").optional();
+var supersedesRunIdSchema = external_exports.string().trim().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/, "supersedes_run_id may only contain letters, numbers, underscores, and hyphens").optional();
 var contextRootSchema = external_exports.object({
   alias: external_exports.string().trim().min(1, "alias is required").max(32, "alias must be at most 32 characters").regex(/^[A-Za-z0-9_-]+$/, "alias may only contain letters, numbers, hyphens, and underscores"),
   cwd: external_exports.string().trim().min(1, "cwd is required")
@@ -26580,7 +26610,9 @@ var claudeImplementInputSchema = external_exports.object({
   dirty_policy: dirtyPolicySchema,
   security_profile: securityProfileSchema,
   sensitive_file_policy: sensitiveFilePolicySchema,
-  verification_commands: verificationCommandsSchema
+  verification_commands: verificationCommandsSchema,
+  goal_item_id: goalItemIdSchema,
+  supersedes_run_id: supersedesRunIdSchema
 }).strict().refine((value) => !value.fork_session || !!value.session_key, {
   message: "fork_session requires session_key",
   path: ["fork_session"]
@@ -26609,7 +26641,9 @@ var claudeTaskInputSchema = external_exports.object({
   sensitive_file_policy: sensitiveFilePolicySchema,
   reviewed_run_id: external_exports.string().trim().min(1).optional(),
   reviewed_worktree_path: external_exports.string().trim().min(1).optional(),
-  verification_commands: verificationCommandsSchema
+  verification_commands: verificationCommandsSchema,
+  goal_item_id: goalItemIdSchema,
+  supersedes_run_id: supersedesRunIdSchema
 }).strict().refine((value) => value.mode !== "read" || !value.resume_latest, {
   message: "resume_latest is only supported for write mode",
   path: ["resume_latest"]
@@ -26652,7 +26686,8 @@ var claudeRunsInputSchema = external_exports.object({
   limit: external_exports.number().int().positive().max(200).optional().default(20),
   type: external_exports.enum(["query", "review", "implement", "apply", "cleanup"]).optional(),
   status: external_exports.enum(["success", "failed", "partial", "needs_user", "unknown"]).optional(),
-  worktree_name: external_exports.string().trim().min(1).optional()
+  worktree_name: external_exports.string().trim().min(1).optional(),
+  goal_item_id: goalItemIdSchema
 }).strict();
 var claudeRunInspectInputSchema = external_exports.object({
   cwd: cwdSchema,
@@ -27084,7 +27119,9 @@ function toJobSummary(record2) {
     run_id: record2.run_id,
     worktree_name: record2.worktree_name,
     summary: record2.summary,
-    error: record2.error
+    error: record2.error,
+    ...typeof record2.goal_item_id === "string" && record2.goal_item_id.length > 0 ? { goal_item_id: record2.goal_item_id } : {},
+    ...typeof record2.supersedes_run_id === "string" && record2.supersedes_run_id.length > 0 ? { supersedes_run_id: record2.supersedes_run_id } : {}
   };
 }
 function stableJson(value) {
@@ -27301,7 +27338,9 @@ async function enqueueBackgroundJob(input) {
   }
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const jobId = `job-${randomUUID2()}`;
-  const record2 = { job_id: jobId, type: input.type, status: "queued", cwd: input.cwd, created_at: now, updated_at: now, fingerprint, payload: input.payload };
+  const goalId = typeof input.payload.goal_item_id === "string" && input.payload.goal_item_id.trim().length > 0 ? input.payload.goal_item_id.trim() : void 0;
+  const supersedesId = typeof input.payload.supersedes_run_id === "string" && input.payload.supersedes_run_id.trim().length > 0 ? input.payload.supersedes_run_id.trim() : void 0;
+  const record2 = { job_id: jobId, type: input.type, status: "queued", cwd: input.cwd, created_at: now, updated_at: now, fingerprint, payload: input.payload, ...goalId ? { goal_item_id: goalId } : {}, ...supersedesId ? { supersedes_run_id: supersedesId } : {} };
   await jobStore.create(record2);
   let child;
   const runnerArgs = getJobRunnerArgs(jobId);
@@ -27982,6 +28021,7 @@ function buildNextActions(input) {
   }
   return actions;
 }
+var MAX_GROUP_SIBLING_RUNS = 50;
 function compareRecency(a, b) {
   const aTime = a ? Date.parse(a) : 0;
   const bTime = b ? Date.parse(b) : 0;
@@ -28085,6 +28125,11 @@ async function getClaudeResult(input) {
   const summary = resolvedJob?.summary ?? (runEntry ? buildResultSummaryFromRun(runEntry) : "Background job resolved");
   const jobIsActive = resolvedJob?.status === "queued" || resolvedJob?.status === "running";
   const artifactSummary = await getArtifactSummary(input.cwd);
+  let runGroup;
+  if (runEntry?.goal_item_id) {
+    const siblingRuns = await listRunLogs({ cwd: input.cwd, limit: MAX_GROUP_SIBLING_RUNS, goal_item_id: runEntry.goal_item_id });
+    runGroup = buildRunGroupSummary(runEntry.goal_item_id, siblingRuns.entries, MAX_GROUP_SIBLING_RUNS) ?? void 0;
+  }
   return {
     source_type: resolvedJob ? "job" : "run",
     summary,
@@ -28102,7 +28147,8 @@ async function getClaudeResult(input) {
       session,
       change_count: changeCount
     }),
-    artifact_summary: artifactSummary ?? void 0
+    artifact_summary: artifactSummary ?? void 0,
+    run_group: runGroup
   };
 }
 async function getWorkspaceStatus(input) {
@@ -28235,6 +28281,15 @@ async function getWorkspaceStatus(input) {
     });
   }
   const artifactSummary = await getArtifactSummary(input.cwd);
+  const runGroups = [];
+  const goalIds = /* @__PURE__ */ new Set();
+  for (const entry of recentRuns.entries) {
+    if (entry.goal_item_id) goalIds.add(entry.goal_item_id);
+  }
+  for (const goalId of goalIds) {
+    const group = buildRunGroupSummary(goalId, recentRuns.entries);
+    if (group) runGroups.push(group);
+  }
   return {
     workspace_root: input.cwd,
     running_jobs: runningJobs.entries,
@@ -28246,6 +28301,7 @@ async function getWorkspaceStatus(input) {
     latest_sessions: latestSessions,
     delegated_worktrees: summarizedWorktrees,
     recent_artifacts: recentArtifacts.length > 0 ? recentArtifacts : void 0,
+    run_groups: runGroups,
     counts: {
       running_jobs: runningJobs.entries.length,
       queued_jobs: queuedJobs.entries.length,
@@ -28257,7 +28313,8 @@ async function getWorkspaceStatus(input) {
       orphan_worktrees: summarizedWorktrees.filter((worktree) => worktree.orphaned).length,
       apply_blocked_runs: recentRuns.entries.filter((run) => run.lifecycle === "apply_blocked").length,
       active_implement_jobs: activeImplementJobs.length,
-      active_claude_processes: activeProcesses.length
+      active_claude_processes: activeProcesses.length,
+      run_groups: runGroups.length
     },
     do_not_start_duplicate_job: activeJobs.length > 0 ? true : void 0,
     next_actions: workspaceNextActions.length > 0 ? workspaceNextActions : crashedNextActions.length > 0 ? crashedNextActions : void 0,
@@ -28637,7 +28694,9 @@ async function runClaudeTask(input, _runId) {
         security_profile: input.security_profile,
         sensitive_file_policy: input.sensitive_file_policy,
         max_changed_files: input.max_changed_files,
-        verification_commands: input.verification_commands
+        verification_commands: input.verification_commands,
+        goal_item_id: input.goal_item_id,
+        supersedes_run_id: input.supersedes_run_id
       });
       if (!("job" in implementResult)) {
         return {
@@ -29939,7 +29998,8 @@ var BASE_TOOL_DEFINITIONS = [
         limit: { type: "number", description: "Maximum number of recent runs to return (default 20)" },
         type: { type: "string", enum: ["query", "review", "implement", "apply", "cleanup"], description: "Filter by tool type" },
         status: { type: "string", enum: ["success", "failed", "partial", "needs_user", "unknown"], description: "Filter by derived run status" },
-        worktree_name: { type: "string", description: "Filter by delegated worktree name" }
+        worktree_name: { type: "string", description: "Filter by delegated worktree name" },
+        goal_item_id: { type: "string", description: "Filter by goal item id to find runs for the same high-level task." }
       }
     }
   },
@@ -30023,7 +30083,9 @@ var BASE_TOOL_DEFINITIONS = [
         reviewed_run_id: { type: "string", description: "Bind this review to a specific implement/apply run id for review-gate clearing." },
         reviewed_worktree_path: { type: "string", description: "Bind this review to a specific worktree path for review-gate clearing." },
         sensitive_file_policy: { type: "string", enum: ["default", "strict", "off"], description: "Controls sensitive-file deny rules. default blocks .env/.env.*/secrets/** reads; strict adds .pem/.key/.ssh/.aws/credentials and similar; off removes only sensitive-file denies (dangerous Bash denies remain)." },
-        verification_commands: { type: "array", minItems: 1, maxItems: 10, items: { type: "string", minLength: 1, maxLength: 200 }, description: "Server-side verification commands to run in the delegated worktree after a write-mode task completes. Commands are parsed into argv and executed without a shell under a conservative allowlist." }
+        verification_commands: { type: "array", minItems: 1, maxItems: 10, items: { type: "string", minLength: 1, maxLength: 200 }, description: "Server-side verification commands to run in the delegated worktree after a write-mode task completes. Commands are parsed into argv and executed without a shell under a conservative allowlist." },
+        goal_item_id: { type: "string", description: "Optional high-level goal id used to group related write runs in results and workspace status." },
+        supersedes_run_id: { type: "string", description: "Optional previous run id that this write run supersedes." }
       }
     }
   },
@@ -30136,7 +30198,9 @@ var BASE_TOOL_DEFINITIONS = [
         dirty_policy: { type: "string", enum: ["ask", "committed", "snapshot"], description: "Handling for uncommitted main-workspace changes: ask (default), committed (ignore dirty changes and use HEAD), or snapshot (copy dirty files into the delegated worktree)." },
         security_profile: { type: "string", enum: ["strict", "default", "permissive"], description: "Command allowlist profile for implementation tasks. default excludes remote package execution paths such as npx; permissive allows broader local project commands." },
         sensitive_file_policy: { type: "string", enum: ["default", "strict", "off"], description: "Controls sensitive-file deny rules. default blocks .env/.env.*/secrets/** reads; strict adds .pem/.key/.ssh/.aws/credentials and similar; off removes only sensitive-file denies (dangerous Bash denies remain)." },
-        verification_commands: { type: "array", minItems: 1, maxItems: 10, items: { type: "string", minLength: 1, maxLength: 200 }, description: "Server-side verification commands to run in the delegated worktree after Claude completes. Commands are parsed into argv and executed without a shell under a conservative allowlist. Results appear in the output as server_verified." }
+        verification_commands: { type: "array", minItems: 1, maxItems: 10, items: { type: "string", minLength: 1, maxLength: 200 }, description: "Server-side verification commands to run in the delegated worktree after Claude completes. Commands are parsed into argv and executed without a shell under a conservative allowlist. Results appear in the output as server_verified." },
+        goal_item_id: { type: "string", description: "Optional high-level goal id used to group related implement runs in results and workspace status." },
+        supersedes_run_id: { type: "string", description: "Optional previous run id that this implement run supersedes." }
       }
     }
   },
@@ -30553,10 +30617,10 @@ async function handleToolCall(name, args, runId = randomUUID5()) {
       case "claude_runs": {
         const parsed = claudeRunsInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { cwd, limit, type, status, worktree_name } = parsed.data;
+        const { cwd, limit, type, status, worktree_name, goal_item_id } = parsed.data;
         const check2 = await validateCwd(cwd);
         if (!check2.ok) return errorResult(check2.error);
-        return jsonResult(await listRunLogs({ cwd: check2.resolved, limit, type, status, worktree_name }));
+        return jsonResult(await listRunLogs({ cwd: check2.resolved, limit, type, status, worktree_name, goal_item_id }));
       }
       case "claude_run_inspect": {
         const parsed = claudeRunInspectInputSchema.safeParse(args);
@@ -30685,7 +30749,7 @@ async function handleToolCall(name, args, runId = randomUUID5()) {
       case "claude_implement": {
         const parsed = claudeImplementInputSchema.safeParse(args);
         if (!parsed.success) return errorResult(validationErrorMessage(parsed.error));
-        const { task, cwd, files, constraints, timeout_sec, max_turns, session_key, fork_session, resume_latest, max_cost_usd, max_changed_files, worktreeName, dirty_policy, security_profile, sensitive_file_policy, verification_commands } = parsed.data;
+        const { task, cwd, files, constraints, timeout_sec, max_turns, session_key, fork_session, resume_latest, max_cost_usd, max_changed_files, worktreeName, dirty_policy, security_profile, sensitive_file_policy, verification_commands, goal_item_id, supersedes_run_id } = parsed.data;
         const check2 = await validateCwd(cwd);
         if (!check2.ok) return errorResult(check2.error);
         const fileCheck = await validateFilesWithinCwd(check2.resolved, files);
@@ -30714,7 +30778,9 @@ async function handleToolCall(name, args, runId = randomUUID5()) {
           dirty_policy,
           security_profile,
           sensitive_file_policy,
-          verification_commands
+          verification_commands,
+          goal_item_id,
+          supersedes_run_id
         }));
       }
       case "claude_jobs": {

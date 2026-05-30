@@ -1288,6 +1288,7 @@ function summarizeRunLog(runId, raw, updatedAt) {
   const worktreePath = typeof raw.observed?.worktree_path === "string" ? raw.observed.worktree_path : typeof raw.input?.worktree_path === "string" ? raw.input.worktree_path : void 0;
   const verified = summarizeServerVerified(raw.server_verified);
   const audit = summarizeToolCallAudit(raw.report);
+  const rawRecord = raw;
   return {
     run_id: runId,
     type: typeof raw.type === "string" ? raw.type : "unknown",
@@ -1304,7 +1305,9 @@ function summarizeRunLog(runId, raw, updatedAt) {
     started_at: typeof raw.started_at === "string" ? raw.started_at : updatedAt,
     updated_at: typeof raw.updated_at === "string" ? raw.updated_at : updatedAt,
     ...verified ? { server_verified: verified } : {},
-    ...audit ? { tool_call_audit: audit } : {}
+    ...audit ? { tool_call_audit: audit } : {},
+    ...typeof rawRecord.goal_item_id === "string" && rawRecord.goal_item_id.length > 0 ? { goal_item_id: rawRecord.goal_item_id } : {},
+    ...typeof rawRecord.supersedes_run_id === "string" && rawRecord.supersedes_run_id.length > 0 ? { supersedes_run_id: rawRecord.supersedes_run_id } : {}
   };
 }
 async function readRunLogFile(runId, cwd) {
@@ -1341,6 +1344,7 @@ async function listRunLogs(input) {
         if (input.type && summary.type !== input.type) continue;
         if (input.status && summary.status !== input.status) continue;
         if (input.worktree_name && summary.worktree_name !== input.worktree_name) continue;
+        if (input.goal_item_id && summary.goal_item_id !== input.goal_item_id) continue;
         summaries.push(summary);
         if (summaries.length >= limit) break;
       } catch {
@@ -16133,6 +16137,8 @@ var sensitiveFilePolicySchema = external_exports.enum(["default", "strict", "off
 var verificationCommandsSchema = external_exports.array(
   external_exports.string().trim().min(1).max(200).regex(/^[^\u0000-\u001f\u007f]+$/, "verification command may not contain control characters")
 ).min(1).max(10).optional();
+var goalItemIdSchema = external_exports.string().trim().min(1).max(128).regex(/^[A-Za-z0-9._:\/-]+$/, "goal_item_id may only contain letters, numbers, dot, underscore, slash, colon, and hyphen").optional();
+var supersedesRunIdSchema = external_exports.string().trim().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/, "supersedes_run_id may only contain letters, numbers, underscores, and hyphens").optional();
 var contextRootSchema = external_exports.object({
   alias: external_exports.string().trim().min(1, "alias is required").max(32, "alias must be at most 32 characters").regex(/^[A-Za-z0-9_-]+$/, "alias may only contain letters, numbers, hyphens, and underscores"),
   cwd: external_exports.string().trim().min(1, "cwd is required")
@@ -16186,7 +16192,9 @@ var claudeImplementInputSchema = external_exports.object({
   dirty_policy: dirtyPolicySchema,
   security_profile: securityProfileSchema,
   sensitive_file_policy: sensitiveFilePolicySchema,
-  verification_commands: verificationCommandsSchema
+  verification_commands: verificationCommandsSchema,
+  goal_item_id: goalItemIdSchema,
+  supersedes_run_id: supersedesRunIdSchema
 }).strict().refine((value) => !value.fork_session || !!value.session_key, {
   message: "fork_session requires session_key",
   path: ["fork_session"]
@@ -16215,7 +16223,9 @@ var claudeTaskInputSchema = external_exports.object({
   sensitive_file_policy: sensitiveFilePolicySchema,
   reviewed_run_id: external_exports.string().trim().min(1).optional(),
   reviewed_worktree_path: external_exports.string().trim().min(1).optional(),
-  verification_commands: verificationCommandsSchema
+  verification_commands: verificationCommandsSchema,
+  goal_item_id: goalItemIdSchema,
+  supersedes_run_id: supersedesRunIdSchema
 }).strict().refine((value) => value.mode !== "read" || !value.resume_latest, {
   message: "resume_latest is only supported for write mode",
   path: ["resume_latest"]
@@ -16258,7 +16268,8 @@ var claudeRunsInputSchema = external_exports.object({
   limit: external_exports.number().int().positive().max(200).optional().default(20),
   type: external_exports.enum(["query", "review", "implement", "apply", "cleanup"]).optional(),
   status: external_exports.enum(["success", "failed", "partial", "needs_user", "unknown"]).optional(),
-  worktree_name: external_exports.string().trim().min(1).optional()
+  worktree_name: external_exports.string().trim().min(1).optional(),
+  goal_item_id: goalItemIdSchema
 }).strict();
 var claudeRunInspectInputSchema = external_exports.object({
   cwd: cwdSchema,
@@ -18096,7 +18107,7 @@ async function executeBackgroundJob(jobId) {
       const implPayload = payload;
       const worktreeName = deriveImplementWorktreeName(implPayload, runId);
       await jobStore.update(jobId, { worktree_name: worktreeName, run_id: runId });
-      result = toResultRecord(await runClaudeImplement(implPayload, runId));
+      result = toResultRecord(await runClaudeImplement(implPayload, runId, running.goal_item_id, running.supersedes_run_id));
     } else if (running.type === "apply") {
       result = toResultRecord(await runClaudeApply(payload, runId));
     } else {
@@ -18158,7 +18169,7 @@ function buildPermissionDenialWarning(report) {
   const toolsText = remaining > 0 ? `${shown.join(", ")} and ${remaining} more` : shown.join(", ") || "unknown";
   return `Claude was denied permission for ${count} tool call${count === 1 ? "" : "s"} (denied: ${toolsText}); treat any self-reported test or verification results as incomplete and rerun verification locally.`;
 }
-async function runClaudeImplement(input, runId) {
+async function runClaudeImplement(input, runId, goalItemId, supersedesRunId) {
   const store = await getStore(input.cwd);
   const repoKey = await computeRepoKey(input.cwd);
   let implementInput = input;
@@ -18307,7 +18318,14 @@ async function runClaudeImplement(input, runId) {
           });
         }
       } else {
-        await logRun(runId, { type: "implement", input: implementInput, error: errorMsg, duration_ms: Date.now() - startTime }, implementInput.cwd);
+        await logRun(runId, {
+          type: "implement",
+          input: implementInput,
+          error: errorMsg,
+          duration_ms: Date.now() - startTime,
+          ...typeof goalItemId === "string" && goalItemId.length > 0 ? { goal_item_id: goalItemId } : {},
+          ...typeof supersedesRunId === "string" && supersedesRunId.length > 0 ? { supersedes_run_id: supersedesRunId } : {}
+        }, implementInput.cwd);
         throw err;
       }
     }
@@ -18378,7 +18396,9 @@ async function runClaudeImplement(input, runId) {
       session: sessionLog,
       duration_ms: Date.now() - startTime,
       ...fallbackFreshRetry ? { fallback_fresh_retry: true } : {},
-      ...serverVerified ? { server_verified: serverVerified } : {}
+      ...serverVerified ? { server_verified: serverVerified } : {},
+      ...typeof goalItemId === "string" && goalItemId.length > 0 ? { goal_item_id: goalItemId } : {},
+      ...typeof supersedesRunId === "string" && supersedesRunId.length > 0 ? { supersedes_run_id: supersedesRunId } : {}
     }, implementInput.cwd);
     await store.prune();
     const baseStatus = implementEnvelopeStatus(report, execution, observed);
