@@ -16386,18 +16386,15 @@ function buildSensitiveFileDenyPatternsForContextRoots(policy, roots) {
 }
 function buildContextRootsPromptSection(contextRoots) {
   if (!contextRoots || contextRoots.length === 0) return "";
-  let section = `## Context Roots
-
-`;
-  section += `You have read-only access to the following additional repositories:
-
-`;
+  let section = "## Context Roots\n\n";
+  section += "You have read-only access to the following additional repositories:\n\n";
   for (const root of contextRoots) {
     section += `- **${root.alias}**: \`${root.cwd}\`
 `;
   }
-  section += `
-You may read files and run read-only git commands within these repositories. Do NOT modify any files in context roots.
+  section += "\nYou may read files and run read-only git commands within these repositories. Do NOT modify any files in context roots.\n\n";
+  const aliasBrackets = contextRoots.map((r) => `[${r.alias}]`).join(", ");
+  section += `Cite context-root evidence. When a finding, claim, or answer is based on a file or command output from a context root, identify the source as ${aliasBrackets} followed by the relevant file path or git command. Claims based only on the primary repository do not need a context-root citation.
 
 `;
   return section;
@@ -17078,17 +17075,17 @@ async function clearReviewGatePendingIfMatches(cwd, input) {
   if (!current.pending_review) {
     return { cleared: false, reason: "no_pending" };
   }
-  const hasReviewedBinding = !!input.reviewed_run_id || !!input.reviewed_worktree_path || !!input.reviewed_fingerprint;
+  const hasReviewedBinding = input.reviewed_run_id !== void 0 || input.reviewed_worktree_path !== void 0 || input.reviewed_fingerprint !== void 0;
   if (!hasReviewedBinding) {
     return { cleared: false, reason: "no_binding" };
   }
-  if (input.reviewed_run_id && input.reviewed_run_id !== current.pending_run_id) {
+  if (input.reviewed_run_id !== void 0 && input.reviewed_run_id !== current.pending_run_id) {
     return { cleared: false, reason: "run_id_mismatch" };
   }
-  if (input.reviewed_worktree_path && input.reviewed_worktree_path !== current.pending_worktree_path) {
+  if (input.reviewed_worktree_path !== void 0 && input.reviewed_worktree_path !== current.pending_worktree_path) {
     return { cleared: false, reason: "worktree_path_mismatch" };
   }
-  if (input.reviewed_fingerprint && input.reviewed_fingerprint !== current.pending_fingerprint) {
+  if (input.reviewed_fingerprint !== void 0 && input.reviewed_fingerprint !== current.pending_fingerprint) {
     return { cleared: false, reason: "fingerprint_mismatch" };
   }
   const pathCheck = resolveRepoLocalPath(cwd, REVIEW_GATE_RELATIVE_PATH);

@@ -1,6 +1,6 @@
 {
   "name": "codex-claude-delegate",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "Delegate implementation tasks to Claude Code from Codex CLI. Claude runs in an isolated git worktree, returns structured results, and Codex reviews before applying.",
   "author": {
     "name": "codex-claude-delegate",
