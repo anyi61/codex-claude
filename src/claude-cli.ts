@@ -210,6 +210,8 @@ const EN_READ_RE = /\b(explain|analyse|analyze|why|how|what|summarize|describe|r
 const ZH_READ_RE = /解释|分析|总结|为什么|怎么|如何|说明|描述|理解/;
 /** Chinese query prefixes — checked at start of task only. */
 const ZH_QUERY_PREFIX_RE = /^(解释|说明|为什么|怎么|如何|怎样|分析|总结|描述|理解|搞清楚)/;
+/** Chinese risk/safety/problem signals used for mixed-intent detection. */
+const ZH_RISK_SIGNAL_RE = /风险|安全|问题|漏洞|隐患|有没有问题|安不安全|有没有风险/;
 
 export function inferClaudeTaskMode(input: ClaudeTaskInput): { mode: Exclude<ClaudeTaskMode, "auto">; inference: ModeInference } {
   const requestedMode: ClaudeTaskMode = input.mode ?? "auto";
@@ -248,6 +250,24 @@ export function inferClaudeTaskMode(input: ClaudeTaskInput): { mode: Exclude<Cla
       return {
         mode: "read",
         inference: { requested_mode: "auto", delegated_mode: "read", reason: "query_prefix_override", confidence: "medium", matched_hints: [matched] },
+      };
+    }
+  }
+
+  // Priority 4.5: mixed intent with write keywords and risk/safety signals routes to review.
+  if (input.task) {
+    const hasWriteSignal = EN_WRITE_RE.test(text) || ZH_WRITE_RE.test(input.task);
+    const riskMatch = input.task.match(ZH_RISK_SIGNAL_RE) ?? /\b(risk|safety|security|vulnerab)/i.exec(text);
+    if (hasWriteSignal && riskMatch) {
+      return {
+        mode: "review",
+        inference: {
+          requested_mode: "auto",
+          delegated_mode: "review",
+          reason: "mixed_intent_review_first",
+          confidence: "medium",
+          matched_hints: [riskMatch[0]],
+        },
       };
     }
   }

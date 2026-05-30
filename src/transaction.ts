@@ -2,6 +2,7 @@ import { writeFile as fsWriteFile, mkdir as fsMkdir, readFile as fsReadFile, rm 
 import { existsSync as fsExistsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { resolveRepoLocalPath } from "./guard.js";
 import type { ApplyDirtyEntry } from "./schema.js";
 
 // ---- Injectable FS operations for fault injection ----
@@ -73,6 +74,18 @@ export async function applyChangesTransactional(
   changes: ChangeEntry[],
 ): Promise<TransactionApplyResult> {
   const f = fs();
+
+  // Phase 0: validate all caller-provided paths before any filesystem mutation.
+  for (const change of changes) {
+    const fileCheck = validateTransactionPath(cwd, change.file, "file");
+    if (fileCheck) return fileCheck;
+
+    if ((change.status === "R" || change.status === "C") && change.old_file) {
+      const oldFileCheck = validateTransactionPath(cwd, change.old_file, "old_file");
+      if (oldFileCheck) return oldFileCheck;
+    }
+  }
+
   const backupDir = path.join(cwd, ".codex-claude-delegate", "apply-backups", randomUUID());
   const backups: BackupRecord[] = [];
   const appliedFiles: string[] = [];
@@ -209,6 +222,27 @@ export async function applyChangesTransactional(
   // Success: clean up backups
   await f.rm(backupDir).catch(() => {});
   return { applied_files: appliedFiles };
+}
+
+function validateTransactionPath(
+  cwd: string,
+  file: string,
+  field: "file" | "old_file",
+): TransactionApplyResult | undefined {
+  if (path.isAbsolute(file)) {
+    return {
+      applied_files: [],
+      error: `Invalid ${field} path (absolute): ${file}`,
+    };
+  }
+  const check = resolveRepoLocalPath(cwd, file);
+  if (!check.ok) {
+    return {
+      applied_files: [],
+      error: `Invalid ${field} path ${file}: ${check.error}`,
+    };
+  }
+  return undefined;
 }
 
 interface RollbackResult {

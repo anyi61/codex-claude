@@ -106,6 +106,7 @@ export type ModeInferenceReason =
   | "diff"
   | "constraints"
   | "query_prefix_override"
+  | "mixed_intent_review_first"
   | "write_hints"
   | "review_hints"
   | "read_hints"

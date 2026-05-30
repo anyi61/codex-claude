@@ -592,6 +592,72 @@ describe("applyChangesTransactional rollback", () => {
   });
 });
 
+describe("applyChangesTransactional path boundary validation", () => {
+  it("apply rejects file path escaping cwd", async () => {
+    const { cwd, worktree } = await makeFixture("escape-file");
+    const existingContent = await readFile(path.join(cwd, "existing.txt"), "utf8");
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "A", file: "../escape.txt" },
+    ]);
+
+    expect(result.error).toContain("escapes cwd");
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_recovery_needed).toBeUndefined();
+    expect(await readFile(path.join(cwd, "existing.txt"), "utf8")).toBe(existingContent);
+    expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
+  });
+
+  it("apply rejects absolute file path", async () => {
+    const { cwd, worktree } = await makeFixture("abs-file");
+    const absoluteInsideCwd = path.join(cwd, "add.txt");
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "A", file: absoluteInsideCwd },
+    ]);
+
+    expect(result.error).toContain("absolute");
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_recovery_needed).toBeUndefined();
+    expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
+  });
+
+  it("apply rejects rename old_file escaping cwd", async () => {
+    const { cwd, worktree } = await makeFixture("escape-old-file");
+    await writeFile(path.join(worktree, "new.txt"), "content\n");
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "R", file: "new.txt", old_file: "../../escape.txt" },
+    ]);
+
+    expect(result.error).toContain("escapes cwd");
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_recovery_needed).toBeUndefined();
+    expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
+  });
+
+  it("apply accepts valid repo-relative path", async () => {
+    const { cwd, worktree } = await makeFixture("valid-path");
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "A", file: "add.txt" },
+    ]);
+
+    expect(result.error).toBeUndefined();
+    expect(result.applied_files).toEqual(["add.txt"]);
+    expect(await readFile(path.join(cwd, "add.txt"), "utf8")).toBe("new file\n");
+  });
+
+  it("apply rejects absolute old_file for copy entries before mutation", async () => {
+    const { cwd, worktree } = await makeFixture("abs-old-file");
+    await writeFile(path.join(worktree, "new.txt"), "content\n");
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "C", file: "new.txt", old_file: path.join(cwd, "existing.txt") },
+    ]);
+
+    expect(result.error).toContain("absolute");
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_recovery_needed).toBeUndefined();
+    expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
+  });
+});
+
 // Helper for temp dir (async version of mkdtemp)
 async function mkdtemp(prefix: string): Promise<string> {
   const { mkdtemp } = await import("node:fs/promises");

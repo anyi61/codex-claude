@@ -493,7 +493,7 @@ describe("schema definitions", () => {
     expect(claudeWorkspaceStatusInputSchema.safeParse({ cwd: "/repo", limit: 0 }).success).toBe(false);
   });
 
-  it("rejects max_turns on claude_task input", () => {
+  it("claude_task rejects max_turns", () => {
     const parsed = claudeTaskInputSchema.safeParse({
       cwd: "/repo",
       task: "write docs",
@@ -503,13 +503,31 @@ describe("schema definitions", () => {
     expect(parsed.success).toBe(false);
   });
 
-  it("rejects timeout_sec on claude_task input", () => {
+  it("claude_task rejects timeout_sec", () => {
     const parsed = claudeTaskInputSchema.safeParse({
       cwd: "/repo",
       task: "write docs",
       timeout_sec: 10,
     });
     expect(parsed.success).toBe(false);
+  });
+
+  it("claude_task rejects max_cost_usd", () => {
+    const parsed = claudeTaskInputSchema.safeParse({
+      cwd: "/repo",
+      task: "write docs",
+      max_cost_usd: 5,
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it("claude_task accepts valid simple input", () => {
+    const parsed = claudeTaskInputSchema.safeParse({
+      cwd: "/repo",
+      task: "explain the auth flow",
+      mode: "read",
+    });
+    expect(parsed.success).toBe(true);
   });
 
   it("accepts wait_strategy, wait_timeout_sec, and job_id on claude_task", () => {
@@ -735,6 +753,7 @@ describe("ModeInference type and mode_inference field", () => {
       "diff",
       "constraints",
       "query_prefix_override",
+      "mixed_intent_review_first",
       "write_hints",
       "review_hints",
       "read_hints",

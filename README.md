@@ -250,20 +250,21 @@ enabled_tools = [
 
 ## 重要说明
 
-- **`mode_inference` 返回字段：** `claude_task` 结果包含可选的 `mode_inference` 对象，记录自动模式推断详情。字段：`requested_mode`（原始请求 mode）、`delegated_mode`（最终 read/review/write）、`reason`（推断原因，如 `write_hints`/`review_hints`/`read_hints`/`query_prefix_override`/`diff`/`constraints`/`explicit`/`files_fallback`/`default_read`）、`confidence`（`high`/`medium`/`low`）、`matched_hints`（命中的关键词数组，如 `["修复"]`）。支持中文/混合语言关键词自动路由。旧客户端可忽略此字段。
+- **`mode_inference` 返回字段：** `claude_task` 结果包含可选的 `mode_inference` 对象，记录自动模式推断详情。字段：`requested_mode`（原始请求 mode）、`delegated_mode`（最终 read/review/write）、`reason`（推断原因，如 `write_hints`/`review_hints`/`read_hints`/`query_prefix_override`/`mixed_intent_review_first`/`diff`/`constraints`/`explicit`/`files_fallback`/`default_read`）、`confidence`（`high`/`medium`/`low`）、`matched_hints`（命中的关键词数组，如 `["修复"]`）。支持中文/混合语言关键词自动路由；包含 write 关键词和风险/安全/问题信号的混合意图会保守路由到 review。旧客户端可忽略此字段。
 - **安全 profile：** 写入任务默认使用 `security_profile="default"`，不允许 `npx *` 这类远程包执行路径。`strict` 更收窄；只有在明确需要并理解风险时才使用 `permissive`，它会恢复更宽的本地命令 allowlist。
 - **敏感文件保护：** `sensitive_file_policy` 控制 Read/Grep/Glob 和 Bash 读取命令（cat/head/tail/grep）对敏感文件的 deny 规则。`default`（默认）阻止根目录或子目录中的 `.env`/`.env.*` 以及 `secrets/**`；`strict` 额外阻止 `**/*.pem`/`**/*.key`/`**/*.p12`/`**/*.pfx`、`**/id_rsa*`/`**/id_ed25519*`/`**/id_ecdsa*`、`.aws`/`.ssh`/`.gnupg`/`.kube`/`.docker`、`.netrc`/`.npmrc`/`.pypirc`、`credentials*`/`credential*`；`off` 移除所有敏感文件 deny 规则，但保留 `rm *`/`sudo *` 等危险 Bash 命令的 deny。此字段适用于 `claude_task`、`claude_query`、`claude_review`、`claude_implement`。
 - **Server-side verification：** `verification_commands` 适用于 `claude_task` 写入模式和 `claude_implement`。Claude 完成后，server 会在 delegated worktree 内按顺序运行受控验证命令，并在返回体/run log 中写入 `server_verified`。命令会被解析为 argv 且不经过 shell；只允许测试/类型检查/lint 类命令族，例如 `npm test`、`npm run <script>`、`npx vitest ...`、`npx tsc ...`、`pytest ...`、`go test ...`、`cargo test ...`。验证失败会把原本的 success 降为 partial，但不会自动 apply 或清理 worktree。验证的 stdout/stderr tails 会被写入 `.codex-claude-delegate/artifacts/verification/<runId>/` 并在产物索引中注册为高敏感度条目。
+- **Package-manager verification scripts：** `npm test`、`npm run <script>`、`yarn test`、`yarn run <script>`、`pnpm test`、`pnpm run <script>` 执行 delegated worktree 中仓库定义的脚本。产品决策是保持这些 package-manager scripts 可用，以保留 Claude 自主验证能力。风险缓解来自：(1) 环境清洗（`sanitizeEnv()` 防止 secret 泄露），(2) 命令解析为 argv 且不经过 shell（防止 shell 注入），(3) `FORBIDDEN_SCRIPT_NAMES` 阻止高风险脚本名（`install`/`publish`/`deploy`/`start` 等）。
 - **instruction_files vs `files`：** 对普通 `claude_task`，计划、清单、规格文档必须放在 `instruction_files`，或直接在 `task` 中提到。`claude_task.files` 已废弃，只作为兼容的上下文文件处理，不是 apply 范围限制。`instruction_files` 仅限主仓库（primary cwd）路径。
 - **context_roots：** `claude_task`/`claude_query`/`claude_review` 可通过 `context_roots` 传入最多 5 个额外的只读仓库根目录（`{ alias, cwd }`）。验证规则：alias 唯一且仅含 `[A-Za-z0-9_-]`（最长 32），cwd 必须与 primary cwd 不重叠且不是 delegated worktree 路径。写入模式下传入 `context_roots` 会被拒绝。查询模式下 Bash allowlist 会收窄为 `git diff/log/status/show`（移除 `find`/`rg`/`wc`/`ls`/`head`/`tail`/`cat`），并为每个上下文根按绝对路径注入敏感文件 deny 规则。基于上下文根文件或命令输出的发现、回答必须使用 `[alias]` 加文件路径或 git 命令标注来源；仅基于主仓库的内容不需要上下文根引用。
 - **`allowed_files`：** 在 `claude_task` 写入模式中，`allowed_files` 定义硬文件范围——只有列表中的文件可以被修改。超出范围的文件变更会被 scope checker 拒绝。读取/审查模式下 `allowed_files` 会被静默忽略。`allowed_files` 和 `max_changed_files` 会透传到底层 `claude_implement`。
 - **`claude_implement.files`** 是严格的范围控制，用于需要精确文件约束的场景。`claude_task.allowed_files` 和 `claude_implement.files` 语义相同。
 - **未提交的工作区变更：** 默认返回 `needs_user`。传入 `dirty_policy=committed` 忽略本地变更，或 `dirty_policy=snapshot` 将脏文件复制到 worktree。
-- **内联等待：** `claude_task` 默认在 MCP 服务器内部等待任务结果长达 `wait_timeout_sec` 秒（默认 540，最大 540）。如果任务在该窗口中完成，直接返回标准化结果（`completed_inline=true`）。
+- **内联等待：** `claude_task` 默认在 MCP 服务器内部等待任务结果长达 `wait_timeout_sec` 秒（默认 540，最大 540）。如果任务在该窗口中完成，直接返回标准化结果（`completed_inline=true`）。`wait_timeout_sec` 仅控制 inline wait 窗口，不是任务总执行超时；任务可能在后台继续运行直到内部 3600 秒上限。
 - **长任务恢复：** 如果任务超过 `wait_timeout_sec` 仍未完成，使用 `claude_task(job_id=...)` 继续等待。不要重新委托同一任务。
 - **后台模式：** 使用 `wait_strategy="background"` 或 `background=true` 让 `claude_task` 立即返回，稍后用 `claude_task(job_id=...)` 获取结果。
 - **内部执行超时：** Claude CLI 的内部执行超时固定为 3600 秒（1 小时），独立于 `wait_timeout_sec`。这确保长任务可以在多个等待周期后完成。
-- **回合上限：** `claude_task` 不接受 `max_turns`。需要显式回合限制时，使用高级工具（`claude_query` / `claude_review` / `claude_implement`）。
+- **回合上限与预算控制：** `claude_task` 不接受 `timeout_sec`、`max_turns` 或 `max_cost_usd`。需要显式回合限制或硬预算控制时，使用高级工具（`claude_query` / `claude_review` / `claude_implement`）。
 - **应用安全：** `preview=true` 不会修改主工作区，并返回 `preview_token`（64 位十六进制）。非预览模式的 `claude_apply` 需要用户确认后设置 `confirmed_by_user=true`，且必须传入匹配的 `preview_token`。token 包含了 worktree 内容哈希和主工作区目标文件状态的确定性摘要——如果 worktree 内容或主工作区目标文件在预览和 apply 之间被修改，token 不匹配会导致 apply 被拒绝，防止 TOCTOU 攻击。主工作区碰撞检测（脏文件、未跟踪文件、gitignored 文件、目录/文件冲突、父路径为文件、大小写兄弟冲突）在 preview 阶段即拒绝 unsafe 状态。
 - **无效组合：** `preview=true` + `cleanup=true` 会被拒绝——预览不应删除 worktree。
 - **下一步操作：** `claude_result` 和已完成的内联等待仅建议预览操作（`preview=true`），绝不直接建议非预览应用。
@@ -274,7 +275,9 @@ enabled_tools = [
 
 ### 允许根目录（Allow roots）
 
-默认允许的根目录为 `~/projects`、`~/work`、`~/codex-claude`。可通过以下方式扩展：
+默认允许的根目录为 `~/projects`、`~/work`、`~/codex-claude`。`CODEX_CLAUDE_ALLOW_ROOTS` 环境变量存在时会覆盖默认白名单；该变量就是完整允许列表，默认目录不会隐式保留。
+
+如需保留默认目录，必须将它们显式列在环境变量中。新增目录时，建议使用 `codex-claude setup --write --allow-root <path>` 写入配置，或手动将完整列表写入环境变量。
 
 ```toml
 # ~/.codex/config.toml
@@ -380,6 +383,14 @@ npm run check:plugin
 ```
 
 插件目录（`plugins/`）用于内部打包。开发时使用 `npm run dev` 或 `npm run build`。
+
+### 安全扫描
+
+```bash
+npm run security:grep
+```
+
+扫描 `src/` 中的安全敏感模式，包括 `spawn()`、`shell: true`、`process.env` 直接访问和边界敏感文件中的 `path.join()`。Phase 1 使用已知安全位置白名单，不新增 lint 依赖；新增命中会以非零退出提示审查。
 
 ## 故障排查
 

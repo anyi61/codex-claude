@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 
+import { sanitizeEnv } from "./guard.js";
 import type {
   ServerVerified,
   ServerVerifiedCommand,
@@ -133,7 +134,8 @@ async function runSingleVerificationCommand(
   command: string,
   cwd: string,
   timeoutMs: number,
-  allowedScripts?: string[],
+  allowedScripts: string[] | undefined,
+  env: Record<string, string>,
 ): Promise<ServerVerifiedCommand> {
   let argv: string[];
   try {
@@ -156,6 +158,7 @@ async function runSingleVerificationCommand(
 
     const child = spawn(bin, args, {
       cwd,
+      env,
       stdio: ["ignore", "pipe", "pipe"],
     });
     const timeout = setTimeout(() => {
@@ -213,10 +216,11 @@ export async function runVerificationCommands(
     ? clampVerificationTimeout(opts.timeoutMs)
     : timeoutMs;
   const allowedScripts = opts?.allowedScripts;
+  const sanitizedEnv = sanitizeEnv();
 
   const results: ServerVerifiedCommand[] = [];
   for (const command of commands) {
-    results.push(await runSingleVerificationCommand(command, cwd, effectiveTimeout, allowedScripts));
+    results.push(await runSingleVerificationCommand(command, cwd, effectiveTimeout, allowedScripts, sanitizedEnv));
   }
 
   return {

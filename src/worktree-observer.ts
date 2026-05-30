@@ -1,7 +1,7 @@
 import { cp, rm, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { execCapture } from "./guard.js";
+import { execCapture, resolveRepoLocalPath } from "./guard.js";
 import { normalizeRepoPath } from "./run-logs.js";
 
 export async function ensureImplementWorkspaceScaffold(worktreePath: string): Promise<void> {
@@ -62,10 +62,30 @@ export function formatDirtyImplementMessage(dirtyFiles: string[], requestedFiles
 
 export async function applyDirtySnapshotToWorktree(cwd: string, worktreePath: string): Promise<string[]> {
   const entries = await listDirtyMainWorkspaceEntries(cwd);
+  return applyDirtyEntries(cwd, worktreePath, entries);
+}
+
+export async function applyDirtyEntries(
+  cwd: string,
+  worktreePath: string,
+  entries: Array<{ status: string; file: string }>,
+): Promise<string[]> {
   const copied: string[] = [];
   for (const entry of entries) {
-    const source = path.join(cwd, entry.file);
-    const destination = path.join(worktreePath, entry.file);
+    if (path.isAbsolute(entry.file)) {
+      throw new Error(`Dirty snapshot entry must be repo-relative: ${entry.file}`);
+    }
+    const sourceCheck = resolveRepoLocalPath(cwd, entry.file);
+    if (!sourceCheck.ok) {
+      throw new Error(`Dirty snapshot source path escapes cwd: ${entry.file}`);
+    }
+    const destinationCheck = resolveRepoLocalPath(worktreePath, entry.file);
+    if (!destinationCheck.ok) {
+      throw new Error(`Dirty snapshot destination path escapes worktree: ${entry.file}`);
+    }
+
+    const source = sourceCheck.resolved;
+    const destination = destinationCheck.resolved;
     if (entry.status === "D") {
       await rm(destination, { recursive: true, force: true });
       copied.push(entry.file);

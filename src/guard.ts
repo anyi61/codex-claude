@@ -454,17 +454,34 @@ export function getEnvSanitizationDiagnostics(): EnvSanitizationDiagnostics {
 
 // ---- Cli execution helper ----
 
+/**
+ * Run a trusted local command and capture stdout.
+ *
+ * Environment semantics:
+ * - Omitting `opts.env` keeps Node's default full `process.env` inheritance.
+ * - Passing `opts.env` uses merge mode by default: `{ ...process.env, ...opts.env }`.
+ * - Passing `envMode: "replace"` uses exactly `opts.env`.
+ *
+ * Current call sites use this for trusted local commands such as git, Claude CLI,
+ * and version probes. Future untrusted workspace commands should pass
+ * `{ env: sanitizeEnv(), envMode: "replace" }`.
+ */
 export function execCapture(
   command: string,
   args: string[],
-  opts: { cwd: string; timeoutMs?: number; env?: Record<string, string | undefined> }
+  opts: { cwd: string; timeoutMs?: number; env?: Record<string, string | undefined>; envMode?: "merge" | "replace" }
 ): Promise<string> {
   return new Promise((resolve, reject) => {
+    const env = opts.env && opts.envMode === "replace"
+      ? opts.env
+      : opts.env
+        ? { ...process.env, ...opts.env }
+        : undefined;
     const child = spawn(command, args, {
       cwd: opts.cwd,
       timeout: opts.timeoutMs ?? 30_000,
       stdio: ["ignore", "pipe", "pipe"],
-      env: opts.env ? { ...process.env, ...opts.env } : undefined,
+      env,
     });
 
     let stdout = "";

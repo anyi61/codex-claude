@@ -5631,6 +5631,38 @@ describe("inferClaudeTaskMode — Chinese/mixed-language keyword routing", () =>
     const { inference } = inferClaudeTaskMode({ cwd: "/repo", task: "hello world" });
     expect(inference.matched_hints).toEqual([]);
   });
+
+  it("infers review for Chinese mixed risk and write intent", () => {
+    const { mode, inference } = inferClaudeTaskMode({ cwd: "/repo", task: "检查这个实现有没有问题，顺手修一下" });
+    expect(mode).toBe("review");
+    expect(inference.reason).toBe("mixed_intent_review_first");
+    expect(inference.confidence).toBe("medium");
+  });
+
+  it("infers review for Chinese package script safety question", () => {
+    const { mode, inference } = inferClaudeTaskMode({ cwd: "/repo", task: "看下 package.json 的 update script 安不安全" });
+    expect(mode).toBe("review");
+    expect(inference.reason).toBe("mixed_intent_review_first");
+    expect(inference.confidence).toBe("medium");
+  });
+
+  it("infers review for Chinese optimization risk question", () => {
+    const { mode, inference } = inferClaudeTaskMode({ cwd: "/repo", task: "优化一下这段逻辑有什么风险" });
+    expect(mode).toBe("review");
+    expect(inference.reason).toBe("mixed_intent_review_first");
+  });
+
+  it("keeps pure Chinese write prompt as write", () => {
+    const { mode, inference } = inferClaudeTaskMode({ cwd: "/repo", task: "优化登录流程" });
+    expect(mode).toBe("write");
+    expect(inference.reason).toBe("write_hints");
+  });
+
+  it("explicit mode overrides mixed-intent inference", () => {
+    const { mode, inference } = inferClaudeTaskMode({ cwd: "/repo", task: "优化一下这段逻辑有什么风险", mode: "write" });
+    expect(mode).toBe("write");
+    expect(inference.reason).toBe("explicit");
+  });
 });
 
 describe("runClaudeApply — nested delegated worktree path detection", () => {

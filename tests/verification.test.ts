@@ -20,11 +20,11 @@ async function createFixture() {
 }
 
 function mockSpawn(results: Array<{ code?: number | null; stdout?: string; stderr?: string; error?: Error; hang?: boolean }>) {
-  const calls: Array<{ bin: string; args: string[]; cwd?: string; shell?: boolean }> = [];
+  const calls: Array<{ bin: string; args: string[]; cwd?: string; shell?: boolean; env?: Record<string, string> }> = [];
   vi.doMock("node:child_process", async () => {
     const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
-    const spawn = vi.fn((bin: string, args: string[], options: { cwd?: string; shell?: boolean }) => {
-      calls.push({ bin, args, cwd: options.cwd, shell: options.shell });
+    const spawn = vi.fn((bin: string, args: string[], options: { cwd?: string; shell?: boolean; env?: Record<string, string> }) => {
+      calls.push({ bin, args, cwd: options.cwd, shell: options.shell, env: options.env });
       const result = results.shift() ?? { code: 0 };
       const child = new EventEmitter() as EventEmitter & {
         stdout: PassThrough;
@@ -74,7 +74,7 @@ describe("verification command parsing and execution", () => {
     expect(result?.status).toBe("passed");
     expect(result?.commands[0]).toMatchObject({ command: "npx vitest run \"tests/foo bar.test.ts\"", status: "passed", exit_code: 0 });
     expect(result?.commands[0].stdout_tail).toBe("ok");
-    expect(calls).toEqual([{ bin: "npx", args: ["vitest", "run", "tests/foo bar.test.ts"], cwd: repo, shell: undefined }]);
+    expect(calls).toEqual([{ bin: "npx", args: ["vitest", "run", "tests/foo bar.test.ts"], cwd: repo, shell: undefined, env: expect.any(Object) }]);
   });
 
   it("reports mixed command results as failed", async () => {
@@ -277,6 +277,60 @@ describe("verification command parsing and execution", () => {
 
     expect(result?.status).toBe("passed");
     expect(calls.length).toBe(1);
+  });
+
+  it("verification passes sanitized env to spawned commands", async () => {
+    const calls = mockSpawn([{ code: 0, stdout: "ok" }]);
+    const repo = await createFixture();
+    const { runVerificationCommands } = await import("../src/verification.js");
+    const result = await runVerificationCommands(["npm test"], repo, 5000);
+
+    expect(result?.status).toBe("passed");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].env).toBeDefined();
+    expect(typeof calls[0].env).toBe("object");
+  });
+
+  it("verification removes secret-like parent env variables", async () => {
+    const savedEnv = { ...process.env };
+    try {
+      process.env.GITHUB_TOKEN = "ghp_fake_secret_token";
+      process.env.ANTHROPIC_API_KEY = "sk-ant-fake";
+      process.env.OPENAI_API_KEY = "sk-fake";
+
+      const calls = mockSpawn([{ code: 0 }]);
+      const repo = await createFixture();
+      const { runVerificationCommands } = await import("../src/verification.js");
+      await runVerificationCommands(["npm test"], repo, 5000);
+
+      expect(calls[0].env).toBeDefined();
+      expect(calls[0].env!["GITHUB_TOKEN"]).toBeUndefined();
+      expect(calls[0].env!["ANTHROPIC_API_KEY"]).toBeUndefined();
+      expect(calls[0].env!["OPENAI_API_KEY"]).toBeUndefined();
+    } finally {
+      process.env = { ...savedEnv };
+    }
+  });
+
+  it("verification keeps safe baseline env for command execution", async () => {
+    const savedEnv = { ...process.env };
+    try {
+      process.env.PATH = "/usr/bin:/usr/local/bin";
+      process.env.HOME = "/tmp/codex-home";
+      process.env.GITHUB_TOKEN = "ghp_should_be_stripped";
+
+      const calls = mockSpawn([{ code: 0 }]);
+      const repo = await createFixture();
+      const { runVerificationCommands } = await import("../src/verification.js");
+      await runVerificationCommands(["npm test"], repo, 5000);
+
+      expect(calls[0].env).toBeDefined();
+      expect(calls[0].env!["PATH"]).toBe("/usr/bin:/usr/local/bin");
+      expect(calls[0].env!["HOME"]).toBe("/tmp/codex-home");
+      expect(calls[0].env!["GITHUB_TOKEN"]).toBeUndefined();
+    } finally {
+      process.env = { ...savedEnv };
+    }
   });
 });
 
