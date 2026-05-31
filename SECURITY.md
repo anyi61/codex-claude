@@ -218,6 +218,21 @@ yarn add/remove, pnpm add/remove
 - 未找到 worktree 的 implement 元数据
 - 工作区状态码异常
 
+#### Transactional apply 路径边界
+
+`claude_apply` 的实际写入由 `applyChangesTransactional()` 执行。写入前的 Phase 0 会先完成以下校验，失败时不创建 backup 目录，也不修改主工作区：
+
+- `file` 必须同时位于 `cwd` 和 delegated `worktreeRoot` 的词法边界内；`old_file` 必须位于 `cwd` 的词法边界内。
+- 对 `A` / `M` / `R` / `C`，source 会先经过 `lstat()`，拒绝符号链接和非普通文件，再通过 `realpath()` 确认真实路径仍在 `worktreeRoot` 内。
+- 对写入目标，现有父目录会通过 `realpath()` 确认仍在 `cwd` 内，避免 `cwd` 内的 symlink 目录把写入导出仓库。
+- 对删除目标和 rename 的 `old_file`，现有路径或现有父目录会通过 `realpath()` 确认仍在 `cwd` 内。
+- 不支持的 git status，以及 `R` / `C` 缺少 `old_file`，会在 Phase 0 拒绝。
+
+残余风险：
+
+- Phase 0 校验与 Phase 2 写入/删除之间仍存在本地并发修改窗口。攻击者若能在同一主机上同时改动 `cwd` 或 delegated worktree 的路径条目，仍可能触发竞态；当前缓解依赖 preview token、主工作区状态校验和 Phase 0 的 fail-closed 行为。
+- hard link 与普通文件共享 inode，`realpath()` 不会显示外部原始路径。当前策略按普通文件处理 hard link；需要更严格隔离的环境应把 hard link 作为部署/仓库策略禁用项。
+
 #### 脏工作区策略
 
 默认 `dirty_policy="ask"`：当主工作区有未提交变更时，implement 请求返回 `needs_user` 状态，要求用户在 commit/stash/snapshot 之间选择。

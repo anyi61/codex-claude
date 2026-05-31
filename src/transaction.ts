@@ -16,7 +16,7 @@ import type { ApplyDirtyEntry } from "./schema.js";
 
 export interface TransactionFSOps {
   exists(dest: string): boolean;
-  lstat(target: string): Promise<{ isSymbolicLink(): boolean }>;
+  lstat(target: string): Promise<{ isFile(): boolean; isSymbolicLink(): boolean }>;
   mkdir(dir: string): Promise<void>;
   readFile(filePath: string): Promise<Buffer>;
   realpath(target: string): Promise<string>;
@@ -28,7 +28,7 @@ export const defaultFSOps: TransactionFSOps = {
   exists(dest: string): boolean {
     return fsExistsSync(dest);
   },
-  async lstat(target: string): Promise<{ isSymbolicLink(): boolean }> {
+  async lstat(target: string): Promise<{ isFile(): boolean; isSymbolicLink(): boolean }> {
     return fsLstat(target);
   },
   async mkdir(dir: string): Promise<void> {
@@ -251,6 +251,12 @@ async function validateSourcePathReal(
       return {
         applied_files: [],
         error: `Invalid source path for worktreeRoot ${file}: source path is a symlink`,
+      };
+    }
+    if (!sourceStat.isFile()) {
+      return {
+        applied_files: [],
+        error: `Invalid source path for worktreeRoot ${file}: source path is not a regular file`,
       };
     }
   } catch (err) {

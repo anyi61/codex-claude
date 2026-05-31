@@ -749,6 +749,21 @@ describe("applyChangesTransactional path boundary validation", () => {
     expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
   });
 
+  it("apply rejects non-regular source paths before creating backups", async () => {
+    const { cwd, worktree } = await makeFixture("source-directory");
+    await mkdir(path.join(worktree, "source-dir"));
+
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "A", file: "source-dir" },
+    ]);
+
+    expect(result.error).toContain("source path is not a regular file");
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_recovery_needed).toBeUndefined();
+    expect(existsSync(path.join(cwd, "source-dir"))).toBe(false);
+    expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
+  });
+
   it("apply rejects delete target symlink before deleting outside cwd", async () => {
     const { root, cwd, worktree } = await makeFixture("delete-target-symlink");
     const outside = path.join(root, "outside-delete.txt");
