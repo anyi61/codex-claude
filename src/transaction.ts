@@ -1,4 +1,11 @@
-import { writeFile as fsWriteFile, mkdir as fsMkdir, readFile as fsReadFile, rm as fsRm } from "node:fs/promises";
+import {
+  writeFile as fsWriteFile,
+  lstat as fsLstat,
+  mkdir as fsMkdir,
+  readFile as fsReadFile,
+  realpath as fsRealpath,
+  rm as fsRm,
+} from "node:fs/promises";
 import { existsSync as fsExistsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -9,8 +16,10 @@ import type { ApplyDirtyEntry } from "./schema.js";
 
 export interface TransactionFSOps {
   exists(dest: string): boolean;
+  lstat(target: string): Promise<{ isSymbolicLink(): boolean }>;
   mkdir(dir: string): Promise<void>;
   readFile(filePath: string): Promise<Buffer>;
+  realpath(target: string): Promise<string>;
   writeFile(filePath: string, data: Buffer): Promise<void>;
   rm(target: string): Promise<void>;
 }
@@ -19,11 +28,17 @@ export const defaultFSOps: TransactionFSOps = {
   exists(dest: string): boolean {
     return fsExistsSync(dest);
   },
+  async lstat(target: string): Promise<{ isSymbolicLink(): boolean }> {
+    return fsLstat(target);
+  },
   async mkdir(dir: string): Promise<void> {
     await fsMkdir(dir, { recursive: true });
   },
   async readFile(filePath: string): Promise<Buffer> {
     return fsReadFile(filePath);
+  },
+  async realpath(target: string): Promise<string> {
+    return fsRealpath(target);
   },
   async writeFile(filePath: string, data: Buffer): Promise<void> {
     await fsWriteFile(filePath, data);
@@ -68,6 +83,8 @@ export interface ChangeEntry {
 
 // ---- Core logic ----
 
+const ALLOWED_STATUSES = new Set(["A", "M", "D", "R", "C"]);
+
 export async function applyChangesTransactional(
   cwd: string,
   worktreeRoot: string,
@@ -77,6 +94,20 @@ export async function applyChangesTransactional(
 
   // Phase 0: validate all caller-provided paths before any filesystem mutation.
   for (const change of changes) {
+    if (!ALLOWED_STATUSES.has(change.status)) {
+      return {
+        applied_files: [],
+        error: `Unsupported change status "${change.status}" for ${change.file}`,
+      };
+    }
+
+    if ((change.status === "R" || change.status === "C") && !change.old_file) {
+      return {
+        applied_files: [],
+        error: `Change "${change.status} ${change.file}" is missing a source path (old_file)`,
+      };
+    }
+
     const targetFileCheck = validateTransactionPath(cwd, change.file, "file", "cwd");
     if (targetFileCheck) return targetFileCheck;
 
@@ -86,6 +117,22 @@ export async function applyChangesTransactional(
     if ((change.status === "R" || change.status === "C") && change.old_file) {
       const oldFileCheck = validateTransactionPath(cwd, change.old_file, "old_file", "cwd");
       if (oldFileCheck) return oldFileCheck;
+
+      const oldFileParentCheck = await validateDestinationParentReal(cwd, change.old_file, f);
+      if (oldFileParentCheck) return oldFileParentCheck;
+    }
+
+    const destParentCheck = await validateDestinationParentReal(cwd, change.file, f);
+    if (destParentCheck) return destParentCheck;
+
+    if (change.status === "D") {
+      const destPathCheck = await validateExistingDestinationReal(cwd, change.file, f);
+      if (destPathCheck) return destPathCheck;
+    }
+
+    if (change.status !== "D") {
+      const sourceRealCheck = await validateSourcePathReal(worktreeRoot, change.file, f);
+      if (sourceRealCheck) return sourceRealCheck;
     }
   }
 
@@ -132,48 +179,11 @@ export async function applyChangesTransactional(
     backupEndIndices.push(backups.length);
   }
 
-  // Phase 2: apply changes
+  // Phase 2: apply changes. Phase 0 minimizes symlink escape risk, but another
+  // process can still race filesystem entries between validation and mutation.
   for (let i = 0; i < changes.length; i++) {
     const c = changes[i];
     const dest = path.join(cwd, c.file);
-
-    // Unknown status — fail closed
-    if (!["A", "M", "D", "R", "C"].includes(c.status)) {
-      const rollbackOk = await rollbackApplied(cwd, backups.slice(0, backupEndIndices[i]), f);
-      await f.rm(backupDir).catch(() => {});
-      if (rollbackOk.ok) {
-        return {
-          applied_files: [],
-          error: `Unsupported change status "${c.status}" for ${c.file}`,
-        };
-      }
-      return {
-        applied_files: [],
-        dirty_recovery_needed: true,
-        dirty_files: rollbackOk.dirtyFiles,
-        rollback_error: rollbackOk.error,
-        error: `Unsupported change status "${c.status}" for ${c.file}. Rollback also failed.`,
-      };
-    }
-
-    // R/C without old_file must be rejected
-    if ((c.status === "R" || c.status === "C") && !c.old_file) {
-      const rollbackOk = await rollbackApplied(cwd, backups.slice(0, backupEndIndices[i]), f);
-      await f.rm(backupDir).catch(() => {});
-      if (rollbackOk.ok) {
-        return {
-          applied_files: [],
-          error: `Change "${c.status} ${c.file}" is missing a source path (old_file)`,
-        };
-      }
-      return {
-        applied_files: [],
-        dirty_recovery_needed: true,
-        dirty_files: rollbackOk.dirtyFiles,
-        rollback_error: rollbackOk.error,
-        error: `Change "${c.status} ${c.file}" is missing a source path (old_file). Rollback also failed.`,
-      };
-    }
 
     try {
       if (c.status === "D") {
@@ -225,6 +235,106 @@ export async function applyChangesTransactional(
   // Success: clean up backups
   await f.rm(backupDir).catch(() => {});
   return { applied_files: appliedFiles };
+}
+
+async function validateSourcePathReal(
+  worktreeRoot: string,
+  file: string,
+  f: TransactionFSOps,
+): Promise<TransactionApplyResult | undefined> {
+  const rootReal = await f.realpath(worktreeRoot);
+  const source = path.resolve(rootReal, file);
+
+  try {
+    const sourceStat = await f.lstat(source);
+    if (sourceStat.isSymbolicLink()) {
+      return {
+        applied_files: [],
+        error: `Invalid source path for worktreeRoot ${file}: source path is a symlink`,
+      };
+    }
+  } catch (err) {
+    return {
+      applied_files: [],
+      error: `Invalid source path for worktreeRoot ${file}: ${errorMessage(err)}`,
+    };
+  }
+
+  const sourceReal = await f.realpath(source);
+  if (sourceReal !== rootReal && !sourceReal.startsWith(rootReal + path.sep)) {
+    return {
+      applied_files: [],
+      error: `Invalid source path for worktreeRoot ${file}: source path escapes worktreeRoot`,
+    };
+  }
+
+  return undefined;
+}
+
+async function validateDestinationParentReal(
+  cwd: string,
+  file: string,
+  f: TransactionFSOps,
+): Promise<TransactionApplyResult | undefined> {
+  const cwdReal = await f.realpath(cwd);
+  let candidate = path.dirname(path.resolve(cwdReal, file));
+
+  while (candidate !== cwdReal && !f.exists(candidate)) {
+    const next = path.dirname(candidate);
+    if (next === candidate) break;
+    candidate = next;
+  }
+
+  try {
+    const parentReal = await f.realpath(candidate);
+    if (parentReal !== cwdReal && !parentReal.startsWith(cwdReal + path.sep)) {
+      return {
+        applied_files: [],
+        error: `Invalid destination path for cwd ${file}: destination parent escapes cwd`,
+      };
+    }
+  } catch (err) {
+    return {
+      applied_files: [],
+      error: `Invalid destination path for cwd ${file}: ${errorMessage(err)}`,
+    };
+  }
+
+  return undefined;
+}
+
+async function validateExistingDestinationReal(
+  cwd: string,
+  file: string,
+  f: TransactionFSOps,
+): Promise<TransactionApplyResult | undefined> {
+  const cwdReal = await f.realpath(cwd);
+  const dest = path.resolve(cwdReal, file);
+
+  if (!f.exists(dest)) {
+    return undefined;
+  }
+
+  try {
+    const destReal = await f.realpath(dest);
+    if (destReal !== cwdReal && !destReal.startsWith(cwdReal + path.sep)) {
+      return {
+        applied_files: [],
+        error: `Invalid destination path for cwd ${file}: destination path escapes cwd`,
+      };
+    }
+  } catch (err) {
+    return {
+      applied_files: [],
+      error: `Invalid destination path for cwd ${file}: ${errorMessage(err)}`,
+    };
+  }
+
+  return undefined;
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function validateTransactionPath(

@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach } from "vitest";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -252,6 +252,7 @@ describe("applyChangesTransactional", () => {
     expect(result.error).toContain("X");
     expect(result.applied_files).toEqual([]);
     expect(result.dirty_recovery_needed).toBeUndefined();
+    expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
   });
 
   it("rejects R/C change missing old_file with fail-closed error", async () => {
@@ -264,9 +265,10 @@ describe("applyChangesTransactional", () => {
     expect(result.error).toContain("R");
     expect(result.applied_files).toEqual([]);
     expect(result.dirty_recovery_needed).toBeUndefined();
+    expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
   });
 
-  it("rolls back prior A/M/D changes when a later unsupported status is encountered", async () => {
+  it("rejects all changes in Phase 0 when any entry has an unsupported status", async () => {
     const { cwd, worktree } = await makeFixture("rb-unknown");
     const result = await applyChangesTransactional(cwd, worktree, [
       { status: "M", file: "modify.txt" },
@@ -277,7 +279,7 @@ describe("applyChangesTransactional", () => {
     expect(result.error).toContain("X");
     expect(result.applied_files).toEqual([]);
     expect(result.dirty_recovery_needed).toBeUndefined();
-    // modify.txt must be rolled back
+    expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
     expect(await readFile(path.join(cwd, "modify.txt"), "utf8")).toBe("original\n");
   });
 });
@@ -674,6 +676,114 @@ describe("applyChangesTransactional path boundary validation", () => {
     expect(result.error).toContain("absolute");
     expect(result.applied_files).toEqual([]);
     expect(result.dirty_recovery_needed).toBeUndefined();
+    expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
+  });
+
+  it("apply rejects source symlink before reading outside the delegated worktree", async () => {
+    const { root, cwd, worktree } = await makeFixture("source-symlink");
+    const secret = path.join(root, "secret.txt");
+    await writeFile(secret, "do not copy\n");
+    await symlink(secret, path.join(worktree, "leak.txt"));
+
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "A", file: "leak.txt" },
+    ]);
+
+    expect(result.error).toContain("source path is a symlink");
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_recovery_needed).toBeUndefined();
+    expect(existsSync(path.join(cwd, "leak.txt"))).toBe(false);
+    expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
+  });
+
+  it("apply rejects source symlink even when it points inside the delegated worktree", async () => {
+    const { cwd, worktree } = await makeFixture("source-symlink-inside");
+    await writeFile(path.join(worktree, "target.txt"), "copy target\n");
+    await symlink(path.join(worktree, "target.txt"), path.join(worktree, "link.txt"));
+
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "A", file: "link.txt" },
+    ]);
+
+    expect(result.error).toContain("source path is a symlink");
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_recovery_needed).toBeUndefined();
+    expect(existsSync(path.join(cwd, "link.txt"))).toBe(false);
+    expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
+  });
+
+  it("apply rejects destination parent symlink before writing outside cwd", async () => {
+    const { root, cwd, worktree } = await makeFixture("dest-parent-symlink");
+    const outside = path.join(root, "outside");
+    await mkdir(outside);
+    await symlink(outside, path.join(cwd, "out"));
+    await mkdir(path.join(worktree, "out"));
+    await writeFile(path.join(worktree, "out", "file.txt"), "new file\n");
+
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "A", file: "out/file.txt" },
+    ]);
+
+    expect(result.error).toContain("destination parent escapes cwd");
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_recovery_needed).toBeUndefined();
+    expect(existsSync(path.join(outside, "file.txt"))).toBe(false);
+    expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
+  });
+
+  it("apply rejects source path escaping through an intermediate worktree symlink", async () => {
+    const { root, cwd, worktree } = await makeFixture("source-intermediate-symlink");
+    const outside = path.join(root, "outside-source");
+    await mkdir(outside);
+    await writeFile(path.join(outside, "secret.txt"), "do not copy\n");
+    await symlink(outside, path.join(worktree, "linked-dir"));
+
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "A", file: "linked-dir/secret.txt" },
+    ]);
+
+    expect(result.error).toContain("source path escapes worktreeRoot");
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_recovery_needed).toBeUndefined();
+    expect(existsSync(path.join(cwd, "linked-dir", "secret.txt"))).toBe(false);
+    expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
+  });
+
+  it("apply rejects delete target symlink before deleting outside cwd", async () => {
+    const { root, cwd, worktree } = await makeFixture("delete-target-symlink");
+    const outside = path.join(root, "outside-delete.txt");
+    await writeFile(outside, "outside content\n");
+    await symlink(outside, path.join(cwd, "delete-link.txt"));
+
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "D", file: "delete-link.txt" },
+    ]);
+
+    expect(result.error).toContain("destination path escapes cwd");
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_recovery_needed).toBeUndefined();
+    expect(await readFile(outside, "utf8")).toBe("outside content\n");
+    expect(existsSync(path.join(cwd, "delete-link.txt"))).toBe(true);
+    expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
+  });
+
+  it("apply rejects rename old_file parent symlink before deleting outside cwd", async () => {
+    const { root, cwd, worktree } = await makeFixture("old-file-parent-symlink");
+    const outside = path.join(root, "outside-old");
+    await mkdir(outside);
+    await writeFile(path.join(outside, "old.txt"), "outside old\n");
+    await symlink(outside, path.join(cwd, "old-dir"));
+    await writeFile(path.join(worktree, "new.txt"), "renamed\n");
+
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "R", file: "new.txt", old_file: "old-dir/old.txt" },
+    ]);
+
+    expect(result.error).toContain("destination parent escapes cwd");
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_recovery_needed).toBeUndefined();
+    expect(await readFile(path.join(outside, "old.txt"), "utf8")).toBe("outside old\n");
+    expect(existsSync(path.join(cwd, "new.txt"))).toBe(false);
     expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
   });
 });
