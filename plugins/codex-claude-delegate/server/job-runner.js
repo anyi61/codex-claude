@@ -625,6 +625,7 @@ function fs() {
 }
 async function applyChangesTransactional(cwd, worktreeRoot, changes) {
   const f = fs();
+  const backupId = randomUUID2();
   for (const change of changes) {
     if (!ALLOWED_STATUSES.has(change.status)) {
       return {
@@ -645,29 +646,35 @@ async function applyChangesTransactional(cwd, worktreeRoot, changes) {
     if ((change.status === "R" || change.status === "C") && change.old_file) {
       const oldFileCheck = validateTransactionPath(cwd, change.old_file, "old_file", "cwd");
       if (oldFileCheck) return oldFileCheck;
-      const oldFileParentCheck = await validateDestinationParentReal(cwd, change.old_file, f);
+      const oldFileParentCheck = await validateDestinationParentReal(cwd, change.old_file, "old_file", f);
       if (oldFileParentCheck) return oldFileParentCheck;
     }
-    const destParentCheck = await validateDestinationParentReal(cwd, change.file, f);
+    const destParentCheck = await validateDestinationParentReal(cwd, change.file, "destination", f);
     if (destParentCheck) return destParentCheck;
-    if (change.status === "D") {
-      const destPathCheck = await validateExistingDestinationReal(cwd, change.file, f);
-      if (destPathCheck) return destPathCheck;
+    const destPathCheck = await validateExistingWorkspaceFileForIO(cwd, change.file, "destination", f);
+    if (destPathCheck) return destPathCheck;
+    if (change.status === "R" && change.old_file) {
+      const oldFilePathCheck = await validateExistingWorkspaceFileForIO(cwd, change.old_file, "old_file", f);
+      if (oldFilePathCheck) return oldFilePathCheck;
     }
     if (change.status !== "D") {
       const sourceRealCheck = await validateSourcePathReal(worktreeRoot, change.file, f);
       if (sourceRealCheck) return sourceRealCheck;
     }
+    const backupEntities = getBackupEntities(change);
+    for (const file2 of backupEntities) {
+      const backupParentCheck = await validateInternalBackupPathParent(cwd, backupId, file2, f);
+      if (backupParentCheck) return backupParentCheck;
+      const backupFinalCheck = await validateBackupFinalPathDoesNotExist(cwd, backupId, file2, f);
+      if (backupFinalCheck) return backupFinalCheck;
+    }
   }
-  const backupDir = path12.join(cwd, ".codex-claude-delegate", "apply-backups", randomUUID2());
+  const backupDir = path12.join(cwd, BACKUP_ROOT, BACKUP_SUBDIR, backupId);
   const backups = [];
   const appliedFiles = [];
   const backupEndIndices = [];
   for (const change of changes) {
-    const entitiesToBackup = [change.file];
-    if (change.status === "R" && change.old_file) {
-      entitiesToBackup.push(change.old_file);
-    }
+    const entitiesToBackup = getBackupEntities(change);
     for (const file2 of entitiesToBackup) {
       const dest = path12.join(cwd, file2);
       const bakPath = path12.join(backupDir, file2);
@@ -676,7 +683,7 @@ async function applyChangesTransactional(cwd, worktreeRoot, changes) {
         await f.mkdir(path12.dirname(bakPath));
         try {
           const content = await f.readFile(dest);
-          await f.writeFile(bakPath, content);
+          await f.writeFile(bakPath, content, { flag: "wx" });
           backups.push({ file: file2, backupPath: bakPath, existed: true });
         } catch (err) {
           await f.rm(backupDir).catch(() => {
@@ -738,6 +745,13 @@ async function applyChangesTransactional(cwd, worktreeRoot, changes) {
   });
   return { applied_files: appliedFiles };
 }
+function getBackupEntities(change) {
+  const entitiesToBackup = [change.file];
+  if (change.status === "R" && change.old_file) {
+    entitiesToBackup.push(change.old_file);
+  }
+  return entitiesToBackup;
+}
 async function validateSourcePathReal(worktreeRoot, file2, f) {
   const rootReal = await f.realpath(worktreeRoot);
   const source = path12.resolve(rootReal, file2);
@@ -747,6 +761,12 @@ async function validateSourcePathReal(worktreeRoot, file2, f) {
       return {
         applied_files: [],
         error: `Invalid source path for worktreeRoot ${file2}: source path is a symlink`
+      };
+    }
+    if (!sourceStat.isFile()) {
+      return {
+        applied_files: [],
+        error: `Invalid source path for worktreeRoot ${file2}: source path is not a regular file`
       };
     }
   } catch (err) {
@@ -764,51 +784,130 @@ async function validateSourcePathReal(worktreeRoot, file2, f) {
   }
   return void 0;
 }
-async function validateDestinationParentReal(cwd, file2, f) {
+async function validateExistingWorkspaceFileForIO(cwd, file2, label, f) {
   const cwdReal = await f.realpath(cwd);
-  let candidate = path12.dirname(path12.resolve(cwdReal, file2));
-  while (candidate !== cwdReal && !f.exists(candidate)) {
-    const next = path12.dirname(candidate);
-    if (next === candidate) break;
-    candidate = next;
+  const dest = path12.resolve(cwdReal, file2);
+  const destStat = await lstatOrNull(dest, f);
+  if (!destStat) {
+    return void 0;
   }
-  try {
-    const parentReal = await f.realpath(candidate);
-    if (parentReal !== cwdReal && !parentReal.startsWith(cwdReal + path12.sep)) {
-      return {
-        applied_files: [],
-        error: `Invalid destination path for cwd ${file2}: destination parent escapes cwd`
-      };
-    }
-  } catch (err) {
+  if (destStat.isSymbolicLink()) {
     return {
       applied_files: [],
-      error: `Invalid destination path for cwd ${file2}: ${errorMessage(err)}`
+      error: `Invalid ${label} path for cwd ${file2}: ${label} path is a symlink`
+    };
+  }
+  if (!destStat.isFile()) {
+    return {
+      applied_files: [],
+      error: `Invalid ${label} path for cwd ${file2}: ${label} path is not a regular file`
+    };
+  }
+  const destReal = await f.realpath(dest);
+  if (!pathIsInside(cwdReal, destReal)) {
+    return {
+      applied_files: [],
+      error: `Invalid ${label} path for cwd ${file2}: ${label} path escapes cwd`
     };
   }
   return void 0;
 }
-async function validateExistingDestinationReal(cwd, file2, f) {
+async function validateDestinationParentReal(cwd, file2, label, f) {
   const cwdReal = await f.realpath(cwd);
-  const dest = path12.resolve(cwdReal, file2);
-  if (!f.exists(dest)) {
-    return void 0;
-  }
-  try {
-    const destReal = await f.realpath(dest);
-    if (destReal !== cwdReal && !destReal.startsWith(cwdReal + path12.sep)) {
+  const parent = path12.dirname(path12.resolve(cwdReal, file2));
+  const relParent = path12.relative(cwdReal, parent);
+  const parts = relParent.split(path12.sep).filter(Boolean);
+  let candidate = cwdReal;
+  for (const part of parts) {
+    candidate = path12.join(candidate, part);
+    const candidateStat = await lstatOrNull(candidate, f);
+    if (!candidateStat) return void 0;
+    if (!candidateStat.isSymbolicLink() && !candidateStat.isDirectory()) {
       return {
         applied_files: [],
-        error: `Invalid destination path for cwd ${file2}: destination path escapes cwd`
+        error: `Invalid ${label} path for cwd ${file2}: ${label} parent is not a directory`
       };
     }
+    try {
+      const parentReal = await f.realpath(candidate);
+      if (!pathIsInside(cwdReal, parentReal)) {
+        return {
+          applied_files: [],
+          error: `Invalid ${label} path for cwd ${file2}: ${label} parent escapes cwd`
+        };
+      }
+    } catch (err) {
+      return {
+        applied_files: [],
+        error: `Invalid ${label} path for cwd ${file2}: ${errorMessage(err)}`
+      };
+    }
+  }
+  return void 0;
+}
+async function validateBackupFinalPathDoesNotExist(cwd, backupId, file2, f) {
+  const cwdReal = await f.realpath(cwd);
+  const backupPath = path12.join(cwdReal, BACKUP_ROOT, BACKUP_SUBDIR, backupId, file2);
+  try {
+    const backupStat = await lstatOrNull(backupPath, f);
+    if (!backupStat) return void 0;
   } catch (err) {
     return {
       applied_files: [],
-      error: `Invalid destination path for cwd ${file2}: ${errorMessage(err)}`
+      error: `Invalid backup path for cwd ${file2}: ${errorMessage(err)}`
     };
   }
+  return {
+    applied_files: [],
+    error: `Invalid backup path for cwd ${file2}: backup path already exists`
+  };
+}
+async function validateInternalBackupPathParent(cwd, backupId, file2, f) {
+  const cwdReal = await f.realpath(cwd);
+  const backupRelParent = path12.dirname(path12.join(BACKUP_ROOT, BACKUP_SUBDIR, backupId, file2));
+  const parts = backupRelParent.split(path12.sep).filter(Boolean);
+  let candidate = cwdReal;
+  for (const part of parts) {
+    candidate = path12.join(candidate, part);
+    const candidateStat = await lstatOrNull(candidate, f);
+    if (!candidateStat) return void 0;
+    if (candidateStat.isSymbolicLink()) {
+      return {
+        applied_files: [],
+        error: `Invalid backup path for cwd ${file2}: backup path component is a symlink`
+      };
+    }
+    if (!candidateStat.isDirectory()) {
+      return {
+        applied_files: [],
+        error: `Invalid backup path for cwd ${file2}: backup path component is not a directory`
+      };
+    }
+    const candidateReal = await f.realpath(candidate);
+    if (!pathIsInside(cwdReal, candidateReal)) {
+      return {
+        applied_files: [],
+        error: `Invalid backup path for cwd ${file2}: backup path escapes cwd`
+      };
+    }
+  }
   return void 0;
+}
+async function lstatOrNull(target, f) {
+  try {
+    return await f.lstat(target);
+  } catch (err) {
+    if (isErrno(err, "ENOENT")) {
+      return null;
+    }
+    throw err;
+  }
+}
+function isErrno(err, code) {
+  return typeof err === "object" && err !== null && "code" in err && err.code === code;
+}
+function pathIsInside(root, candidate) {
+  return candidate === root || candidate.startsWith(root + path12.sep);
 }
 function errorMessage(err) {
   return err instanceof Error ? err.message : String(err);
@@ -863,7 +962,7 @@ async function rollbackApplied(cwd, backups, f) {
     error: firstError ?? "Rollback failed for some files"
   };
 }
-var defaultFSOps, __testFSOps, ALLOWED_STATUSES;
+var defaultFSOps, __testFSOps, ALLOWED_STATUSES, BACKUP_ROOT, BACKUP_SUBDIR;
 var init_transaction = __esm({
   "src/transaction.ts"() {
     "use strict";
@@ -884,14 +983,16 @@ var init_transaction = __esm({
       async realpath(target) {
         return fsRealpath(target);
       },
-      async writeFile(filePath, data) {
-        await fsWriteFile(filePath, data);
+      async writeFile(filePath, data, options) {
+        await fsWriteFile(filePath, data, options);
       },
       async rm(target) {
         await fsRm(target, { recursive: true, force: true });
       }
     };
     ALLOWED_STATUSES = /* @__PURE__ */ new Set(["A", "M", "D", "R", "C"]);
+    BACKUP_ROOT = ".codex-claude-delegate";
+    BACKUP_SUBDIR = "apply-backups";
   }
 });
 
