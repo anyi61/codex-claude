@@ -20,7 +20,7 @@ export interface TransactionFSOps {
   mkdir(dir: string): Promise<void>;
   readFile(filePath: string): Promise<Buffer>;
   realpath(target: string): Promise<string>;
-  writeFile(filePath: string, data: Buffer): Promise<void>;
+  writeFile(filePath: string, data: Buffer, options?: { flag?: string }): Promise<void>;
   rm(target: string): Promise<void>;
 }
 
@@ -40,8 +40,8 @@ export const defaultFSOps: TransactionFSOps = {
   async realpath(target: string): Promise<string> {
     return fsRealpath(target);
   },
-  async writeFile(filePath: string, data: Buffer): Promise<void> {
-    await fsWriteFile(filePath, data);
+  async writeFile(filePath: string, data: Buffer, options?: { flag?: string }): Promise<void> {
+    await fsWriteFile(filePath, data, options);
   },
   async rm(target: string): Promise<void> {
     await fsRm(target, { recursive: true, force: true });
@@ -121,11 +121,11 @@ export async function applyChangesTransactional(
       const oldFileCheck = validateTransactionPath(cwd, change.old_file, "old_file", "cwd");
       if (oldFileCheck) return oldFileCheck;
 
-      const oldFileParentCheck = await validateDestinationParentReal(cwd, change.old_file, f);
+      const oldFileParentCheck = await validateDestinationParentReal(cwd, change.old_file, "old_file", f);
       if (oldFileParentCheck) return oldFileParentCheck;
     }
 
-    const destParentCheck = await validateDestinationParentReal(cwd, change.file, f);
+    const destParentCheck = await validateDestinationParentReal(cwd, change.file, "destination", f);
     if (destParentCheck) return destParentCheck;
 
     const destPathCheck = await validateExistingWorkspaceFileForIO(cwd, change.file, "destination", f);
@@ -145,6 +145,9 @@ export async function applyChangesTransactional(
     for (const file of backupEntities) {
       const backupParentCheck = await validateInternalBackupPathParent(cwd, backupId, file, f);
       if (backupParentCheck) return backupParentCheck;
+
+      const backupFinalCheck = await validateBackupFinalPathDoesNotExist(cwd, backupId, file, f);
+      if (backupFinalCheck) return backupFinalCheck;
     }
   }
 
@@ -169,7 +172,7 @@ export async function applyChangesTransactional(
         await f.mkdir(path.dirname(bakPath));
         try {
           const content = await f.readFile(dest);
-          await f.writeFile(bakPath, content);
+          await f.writeFile(bakPath, content, { flag: "wx" });
           backups.push({ file, backupPath: bakPath, existed: true });
         } catch (err) {
           await f.rm(backupDir).catch(() => {});
@@ -336,33 +339,69 @@ async function validateExistingWorkspaceFileForIO(
 async function validateDestinationParentReal(
   cwd: string,
   file: string,
+  label: "destination" | "old_file",
   f: TransactionFSOps,
 ): Promise<TransactionApplyResult | undefined> {
   const cwdReal = await f.realpath(cwd);
-  let candidate = path.dirname(path.resolve(cwdReal, file));
+  const parent = path.dirname(path.resolve(cwdReal, file));
+  const relParent = path.relative(cwdReal, parent);
+  const parts = relParent.split(path.sep).filter(Boolean);
+  let candidate = cwdReal;
 
-  while (candidate !== cwdReal && !f.exists(candidate)) {
-    const next = path.dirname(candidate);
-    if (next === candidate) break;
-    candidate = next;
-  }
+  for (const part of parts) {
+    candidate = path.join(candidate, part);
+    const candidateStat = await lstatOrNull(candidate, f);
+    if (!candidateStat) return undefined;
 
-  try {
-    const parentReal = await f.realpath(candidate);
-    if (!pathIsInside(cwdReal, parentReal)) {
+    if (!candidateStat.isSymbolicLink() && !candidateStat.isDirectory()) {
       return {
         applied_files: [],
-        error: `Invalid destination path for cwd ${file}: destination parent escapes cwd`,
+        error: `Invalid ${label} path for cwd ${file}: ${label} parent is not a directory`,
       };
     }
-  } catch (err) {
-    return {
-      applied_files: [],
-      error: `Invalid destination path for cwd ${file}: ${errorMessage(err)}`,
-    };
+
+    try {
+      const parentReal = await f.realpath(candidate);
+      if (!pathIsInside(cwdReal, parentReal)) {
+        return {
+          applied_files: [],
+          error: `Invalid ${label} path for cwd ${file}: ${label} parent escapes cwd`,
+        };
+      }
+    } catch (err) {
+      return {
+        applied_files: [],
+        error: `Invalid ${label} path for cwd ${file}: ${errorMessage(err)}`,
+      };
+    }
   }
 
   return undefined;
+}
+
+async function validateBackupFinalPathDoesNotExist(
+  cwd: string,
+  backupId: string,
+  file: string,
+  f: TransactionFSOps,
+): Promise<TransactionApplyResult | undefined> {
+  const cwdReal = await f.realpath(cwd);
+  const backupPath = path.join(cwdReal, BACKUP_ROOT, BACKUP_SUBDIR, backupId, file);
+
+  try {
+    const backupStat = await lstatOrNull(backupPath, f);
+    if (!backupStat) return undefined;
+  } catch (err) {
+    return {
+      applied_files: [],
+      error: `Invalid backup path for cwd ${file}: ${errorMessage(err)}`,
+    };
+  }
+
+  return {
+    applied_files: [],
+    error: `Invalid backup path for cwd ${file}: backup path already exists`,
+  };
 }
 
 async function validateInternalBackupPathParent(

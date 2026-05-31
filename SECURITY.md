@@ -226,8 +226,8 @@ yarn add/remove, pnpm add/remove
 - 对 `A` / `M` / `R` / `C`，source 会先经过 `lstat()`，拒绝符号链接和非普通文件，再通过 `realpath()` 确认真实路径仍在 `worktreeRoot` 内。
 - 对所有 `A` / `M` / `D` / `R` / `C` 的 `file`，如果主工作区目标路径已存在，它必须是普通文件，不能是符号链接，且 `realpath()` 必须仍在 `cwd` 内。
 - 对 `R old_file`，如果主工作区路径已存在，它必须是普通文件，不能是符号链接，且 `realpath()` 必须仍在 `cwd` 内。`C old_file` 当前只作为 metadata，不会被 read、backup 或 delete。
-- 对写入目标、删除目标和 `old_file` 的父目录，现有父路径会通过 `realpath()` 确认仍在 `cwd` 内，避免 `cwd` 内的 symlink 目录把操作导出仓库。
-- 对内部 backup 路径，`.codex-claude-delegate`、`apply-backups`、本次 backup id 和实体父目录的已存在祖先会逐级经过 `lstat()` / `realpath()` 校验；符号链接、非目录和逃逸 `cwd` 的真实路径都会被拒绝。
+- 对写入目标、删除目标和 `old_file` 的父目录，已存在父路径必须是目录，并会通过 `realpath()` 确认仍在 `cwd` 内，避免 `cwd` 内的 symlink 目录把操作导出仓库。
+- 对内部 backup 路径，`.codex-claude-delegate`、`apply-backups`、本次 backup id 和实体父目录的已存在祖先会逐级经过 `lstat()` / `realpath()` 校验；符号链接、非目录和逃逸 `cwd` 的真实路径都会被拒绝。最终 backup 输出路径如果已存在会被拒绝，backup 写入使用 exclusive creation，避免覆盖或跟随预先存在的 backup 输出路径。
 - 不支持的 git status，以及 `R` / `C` 缺少 `old_file`，会在 Phase 0 拒绝。
 
 残余风险：

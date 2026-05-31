@@ -32,6 +32,24 @@ function hasBackupFiles(backupParent: string): boolean {
   }
 }
 
+const fakeFileStat = {
+  isDirectory: () => false,
+  isFile: () => true,
+  isSymbolicLink: () => false,
+};
+
+const fakeSymlinkStat = {
+  isDirectory: () => false,
+  isFile: () => false,
+  isSymbolicLink: () => true,
+};
+
+const fakeDirectoryStat = {
+  isDirectory: () => true,
+  isFile: () => false,
+  isSymbolicLink: () => false,
+};
+
 async function makeFixture(name: string) {
   const root = await mkdtemp(path.join(os.tmpdir(), `codex-tx-${name}-`));
   cleanupPaths.push(root);
@@ -318,11 +336,11 @@ describe("applyChangesTransactional rollback", () => {
 
     const failingOps: TransactionFSOps = {
       ...defaultFSOps,
-      async writeFile(filePath: string, data: Buffer): Promise<void> {
+      async writeFile(filePath: string, data: Buffer, options?: { flag?: string }): Promise<void> {
         if (filePath.includes(".codex-claude-delegate/apply-backups")) {
           throw new Error("ENOSPC: backup write failed");
         }
-        return defaultFSOps.writeFile(filePath, data);
+        return defaultFSOps.writeFile(filePath, data, options);
       },
     };
     __setTestFSOps(failingOps);
@@ -345,13 +363,13 @@ describe("applyChangesTransactional rollback", () => {
 
     const failingOps: TransactionFSOps = {
       ...defaultFSOps,
-      async writeFile(filePath: string, data: Buffer): Promise<void> {
+      async writeFile(filePath: string, data: Buffer, options?: { flag?: string }): Promise<void> {
         if (!failedOnce && filePath.endsWith("modify.txt") && !filePath.includes(".codex-claude-delegate")) {
           failedOnce = true;
-          await defaultFSOps.writeFile(filePath, Buffer.from("partial corrupt\n"));
+          await defaultFSOps.writeFile(filePath, Buffer.from("partial corrupt\n"), options);
           throw new Error("EIO: partial write failed");
         }
-        return defaultFSOps.writeFile(filePath, data);
+        return defaultFSOps.writeFile(filePath, data, options);
       },
     };
     __setTestFSOps(failingOps);
@@ -372,13 +390,13 @@ describe("applyChangesTransactional rollback", () => {
 
     const failingOps: TransactionFSOps = {
       ...defaultFSOps,
-      async writeFile(filePath: string, data: Buffer): Promise<void> {
+      async writeFile(filePath: string, data: Buffer, options?: { flag?: string }): Promise<void> {
         if (!failedOnce && filePath.endsWith("add.txt") && !filePath.includes(".codex-claude-delegate")) {
           failedOnce = true;
-          await defaultFSOps.writeFile(filePath, Buffer.from("partial new\n"));
+          await defaultFSOps.writeFile(filePath, Buffer.from("partial new\n"), options);
           throw new Error("EIO: partial add failed");
         }
-        return defaultFSOps.writeFile(filePath, data);
+        return defaultFSOps.writeFile(filePath, data, options);
       },
     };
     __setTestFSOps(failingOps);
@@ -401,12 +419,12 @@ describe("applyChangesTransactional rollback", () => {
     let failedApplyWrite = false;
     const failingOps: TransactionFSOps = {
       ...defaultFSOps,
-      async writeFile(filePath: string, data: Buffer): Promise<void> {
+      async writeFile(filePath: string, data: Buffer, options?: { flag?: string }): Promise<void> {
         if (!failedApplyWrite && !filePath.includes(".codex-claude-delegate") && filePath.includes("modify.txt")) {
           failedApplyWrite = true;
           throw new Error("ENOSPC: no space left on device");
         }
-        return defaultFSOps.writeFile(filePath, data);
+        return defaultFSOps.writeFile(filePath, data, options);
       },
     };
     __setTestFSOps(failingOps);
@@ -481,13 +499,13 @@ describe("applyChangesTransactional rollback", () => {
 
     const failingOps: TransactionFSOps = {
       ...defaultFSOps,
-      async writeFile(filePath: string, data: Buffer): Promise<void> {
+      async writeFile(filePath: string, data: Buffer, options?: { flag?: string }): Promise<void> {
         // Fail only when writing add.txt in cwd (the second apply write).
         // Rollback writes must succeed.
         if (!filePath.includes(".codex-claude-delegate") && filePath.endsWith("add.txt")) {
           throw new Error("ENOSPC: no space left on device");
         }
-        return defaultFSOps.writeFile(filePath, data);
+        return defaultFSOps.writeFile(filePath, data, options);
       },
     };
     __setTestFSOps(failingOps);
@@ -521,14 +539,14 @@ describe("applyChangesTransactional rollback", () => {
     let applyWriteCount = 0;
     const failingOps: TransactionFSOps = {
       ...defaultFSOps,
-      async writeFile(filePath: string, data: Buffer): Promise<void> {
+      async writeFile(filePath: string, data: Buffer, options?: { flag?: string }): Promise<void> {
         if (!filePath.includes(".codex-claude-delegate")) {
           applyWriteCount++;
           if (applyWriteCount === 2) {
             throw new Error("ENOSPC: no space");
           }
         }
-        return defaultFSOps.writeFile(filePath, data);
+        return defaultFSOps.writeFile(filePath, data, options);
       },
       async rm(target: string): Promise<void> {
         // Fail when removing the newly added file (add.txt) during rollback
@@ -561,11 +579,11 @@ describe("applyChangesTransactional rollback", () => {
     let applySucceeded = false;
     const failingOps: TransactionFSOps = {
       ...defaultFSOps,
-      async writeFile(filePath: string, data: Buffer): Promise<void> {
+      async writeFile(filePath: string, data: Buffer, options?: { flag?: string }): Promise<void> {
         // First: normal write for modify.txt
         if (!applySucceeded && !filePath.includes(".codex-claude-delegate")) {
           applySucceeded = true;
-          return defaultFSOps.writeFile(filePath, data);
+          return defaultFSOps.writeFile(filePath, data, options);
         }
         // Second: fail when writing add.txt
         if (applySucceeded && filePath.endsWith("add.txt") && !filePath.includes(".codex-claude-delegate")) {
@@ -575,7 +593,7 @@ describe("applyChangesTransactional rollback", () => {
         if (filePath.endsWith("modify.txt") && !filePath.includes("worktree") && !filePath.includes(".codex-claude-delegate") && applySucceeded) {
           throw new Error("EIO: restore failed");
         }
-        return defaultFSOps.writeFile(filePath, data);
+        return defaultFSOps.writeFile(filePath, data, options);
       },
     };
     __setTestFSOps(failingOps);
@@ -883,10 +901,45 @@ describe("applyChangesTransactional path boundary validation", () => {
       { status: "R", file: "new.txt", old_file: "old-dir/old.txt" },
     ]);
 
-    expect(result.error).toContain("destination parent escapes cwd");
+    expect(result.error).toContain("old_file parent escapes cwd");
     expect(result.applied_files).toEqual([]);
     expect(result.dirty_recovery_needed).toBeUndefined();
     expect(await readFile(path.join(outside, "old.txt"), "utf8")).toBe("outside old\n");
+    expect(existsSync(path.join(cwd, "new.txt"))).toBe(false);
+    expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
+  });
+
+  it("apply rejects destination parent that is not a directory before creating backups", async () => {
+    const { cwd, worktree } = await makeFixture("dest-parent-file");
+    await writeFile(path.join(cwd, "file-parent"), "not a directory\n");
+    await mkdir(path.join(worktree, "file-parent"));
+    await writeFile(path.join(worktree, "file-parent", "child.txt"), "new content\n");
+
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "A", file: "file-parent/child.txt" },
+    ]);
+
+    expect(result.error).toContain("destination parent is not a directory");
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_recovery_needed).toBeUndefined();
+    expect(await readFile(path.join(cwd, "file-parent"), "utf8")).toBe("not a directory\n");
+    expect(existsSync(path.join(cwd, "file-parent", "child.txt"))).toBe(false);
+    expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
+  });
+
+  it("apply rejects rename old_file parent that is not a directory before creating backups", async () => {
+    const { cwd, worktree } = await makeFixture("old-file-parent-file");
+    await writeFile(path.join(cwd, "old-parent"), "not a directory\n");
+    await writeFile(path.join(worktree, "new.txt"), "renamed\n");
+
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "R", file: "new.txt", old_file: "old-parent/old.txt" },
+    ]);
+
+    expect(result.error).toContain("old_file parent is not a directory");
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_recovery_needed).toBeUndefined();
+    expect(await readFile(path.join(cwd, "old-parent"), "utf8")).toBe("not a directory\n");
     expect(existsSync(path.join(cwd, "new.txt"))).toBe(false);
     expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
   });
@@ -978,6 +1031,113 @@ describe("applyChangesTransactional path boundary validation", () => {
     expect(result.dirty_recovery_needed).toBeUndefined();
     expect(await readFile(path.join(cwd, "modify.txt"), "utf8")).toBe("original\n");
     expect(await readFile(path.join(cwd, ".codex-claude-delegate"), "utf8")).toBe("not a directory\n");
+  });
+
+  it("apply rejects pre-existing backup final path before creating backups", async () => {
+    const { cwd, worktree } = await makeFixture("backup-final-file");
+    await writeFile(path.join(worktree, "modify.txt"), "replacement\n");
+    await mkdir(path.join(cwd, ".codex-claude-delegate", "apply-backups"), { recursive: true });
+    const ops: TransactionFSOps = {
+      ...defaultFSOps,
+      async lstat(target: string) {
+        if (target.includes(`${path.sep}.codex-claude-delegate${path.sep}apply-backups${path.sep}`)
+          && target.endsWith(`${path.sep}modify.txt`)) {
+          return fakeFileStat;
+        }
+        return defaultFSOps.lstat(target);
+      },
+    };
+    __setTestFSOps(ops);
+
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "M", file: "modify.txt" },
+    ]);
+
+    expect(result.error).toContain("backup path already exists");
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_recovery_needed).toBeUndefined();
+    expect(await readFile(path.join(cwd, "modify.txt"), "utf8")).toBe("original\n");
+    expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
+  });
+
+  it("apply rejects pre-existing backup final symlink before creating backups", async () => {
+    const { cwd, worktree } = await makeFixture("backup-final-symlink");
+    await writeFile(path.join(worktree, "modify.txt"), "replacement\n");
+    await mkdir(path.join(cwd, ".codex-claude-delegate", "apply-backups"), { recursive: true });
+    const ops: TransactionFSOps = {
+      ...defaultFSOps,
+      async lstat(target: string) {
+        if (target.includes(`${path.sep}.codex-claude-delegate${path.sep}apply-backups${path.sep}`)
+          && target.endsWith(`${path.sep}modify.txt`)) {
+          return fakeSymlinkStat;
+        }
+        return defaultFSOps.lstat(target);
+      },
+    };
+    __setTestFSOps(ops);
+
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "M", file: "modify.txt" },
+    ]);
+
+    expect(result.error).toContain("backup path already exists");
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_recovery_needed).toBeUndefined();
+    expect(await readFile(path.join(cwd, "modify.txt"), "utf8")).toBe("original\n");
+    expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
+  });
+
+  it("apply rejects pre-existing backup final directory before creating backups", async () => {
+    const { cwd, worktree } = await makeFixture("backup-final-directory");
+    await writeFile(path.join(worktree, "modify.txt"), "replacement\n");
+    await mkdir(path.join(cwd, ".codex-claude-delegate", "apply-backups"), { recursive: true });
+    const ops: TransactionFSOps = {
+      ...defaultFSOps,
+      async lstat(target: string) {
+        if (target.includes(`${path.sep}.codex-claude-delegate${path.sep}apply-backups${path.sep}`)
+          && target.endsWith(`${path.sep}modify.txt`)) {
+          return fakeDirectoryStat;
+        }
+        return defaultFSOps.lstat(target);
+      },
+    };
+    __setTestFSOps(ops);
+
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "M", file: "modify.txt" },
+    ]);
+
+    expect(result.error).toContain("backup path already exists");
+    expect(result.applied_files).toEqual([]);
+    expect(result.dirty_recovery_needed).toBeUndefined();
+    expect(await readFile(path.join(cwd, "modify.txt"), "utf8")).toBe("original\n");
+    expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
+  });
+
+  it("apply writes backups with exclusive create", async () => {
+    const { cwd, worktree } = await makeFixture("backup-exclusive-write");
+    await writeFile(path.join(worktree, "modify.txt"), "replacement\n");
+    const backupWriteFlags: Array<string | undefined> = [];
+    const ops: TransactionFSOps = {
+      ...defaultFSOps,
+      async writeFile(filePath, data, options) {
+        if (filePath.includes(`${path.sep}.codex-claude-delegate${path.sep}apply-backups${path.sep}`)) {
+          backupWriteFlags.push(options?.flag);
+        }
+        await defaultFSOps.writeFile(filePath, data, options);
+      },
+    };
+    __setTestFSOps(ops);
+
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "M", file: "modify.txt" },
+    ]);
+
+    expect(result.error).toBeUndefined();
+    expect(result.applied_files).toEqual(["modify.txt"]);
+    expect(backupWriteFlags).toEqual(["wx"]);
+    expect(await readFile(path.join(cwd, "modify.txt"), "utf8")).toBe("replacement\n");
+    expect(hasBackupFiles(path.join(cwd, ".codex-claude-delegate", "apply-backups"))).toBe(false);
   });
 
   it("apply still modifies an existing regular destination after preflight hardening", async () => {
