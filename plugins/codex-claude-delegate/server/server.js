@@ -7647,7 +7647,14 @@ __export(transaction_exports, {
   applyChangesTransactional: () => applyChangesTransactional,
   defaultFSOps: () => defaultFSOps
 });
-import { writeFile as fsWriteFile, mkdir as fsMkdir, readFile as fsReadFile, rm as fsRm } from "node:fs/promises";
+import {
+  writeFile as fsWriteFile,
+  lstat as fsLstat,
+  mkdir as fsMkdir,
+  readFile as fsReadFile,
+  realpath as fsRealpath,
+  rm as fsRm
+} from "node:fs/promises";
 import { existsSync as fsExistsSync } from "node:fs";
 import { randomUUID as randomUUID3 } from "node:crypto";
 import path12 from "node:path";
@@ -7660,6 +7667,18 @@ function fs() {
 async function applyChangesTransactional(cwd, worktreeRoot, changes) {
   const f = fs();
   for (const change of changes) {
+    if (!ALLOWED_STATUSES.has(change.status)) {
+      return {
+        applied_files: [],
+        error: `Unsupported change status "${change.status}" for ${change.file}`
+      };
+    }
+    if ((change.status === "R" || change.status === "C") && !change.old_file) {
+      return {
+        applied_files: [],
+        error: `Change "${change.status} ${change.file}" is missing a source path (old_file)`
+      };
+    }
     const targetFileCheck = validateTransactionPath(cwd, change.file, "file", "cwd");
     if (targetFileCheck) return targetFileCheck;
     const sourceFileCheck = validateTransactionPath(worktreeRoot, change.file, "file", "worktreeRoot");
@@ -7667,6 +7686,18 @@ async function applyChangesTransactional(cwd, worktreeRoot, changes) {
     if ((change.status === "R" || change.status === "C") && change.old_file) {
       const oldFileCheck = validateTransactionPath(cwd, change.old_file, "old_file", "cwd");
       if (oldFileCheck) return oldFileCheck;
+      const oldFileParentCheck = await validateDestinationParentReal(cwd, change.old_file, f);
+      if (oldFileParentCheck) return oldFileParentCheck;
+    }
+    const destParentCheck = await validateDestinationParentReal(cwd, change.file, f);
+    if (destParentCheck) return destParentCheck;
+    if (change.status === "D") {
+      const destPathCheck = await validateExistingDestinationReal(cwd, change.file, f);
+      if (destPathCheck) return destPathCheck;
+    }
+    if (change.status !== "D") {
+      const sourceRealCheck = await validateSourcePathReal(worktreeRoot, change.file, f);
+      if (sourceRealCheck) return sourceRealCheck;
     }
   }
   const backupDir = path12.join(cwd, ".codex-claude-delegate", "apply-backups", randomUUID3());
@@ -7706,42 +7737,6 @@ async function applyChangesTransactional(cwd, worktreeRoot, changes) {
   for (let i = 0; i < changes.length; i++) {
     const c = changes[i];
     const dest = path12.join(cwd, c.file);
-    if (!["A", "M", "D", "R", "C"].includes(c.status)) {
-      const rollbackOk = await rollbackApplied(cwd, backups.slice(0, backupEndIndices[i]), f);
-      await f.rm(backupDir).catch(() => {
-      });
-      if (rollbackOk.ok) {
-        return {
-          applied_files: [],
-          error: `Unsupported change status "${c.status}" for ${c.file}`
-        };
-      }
-      return {
-        applied_files: [],
-        dirty_recovery_needed: true,
-        dirty_files: rollbackOk.dirtyFiles,
-        rollback_error: rollbackOk.error,
-        error: `Unsupported change status "${c.status}" for ${c.file}. Rollback also failed.`
-      };
-    }
-    if ((c.status === "R" || c.status === "C") && !c.old_file) {
-      const rollbackOk = await rollbackApplied(cwd, backups.slice(0, backupEndIndices[i]), f);
-      await f.rm(backupDir).catch(() => {
-      });
-      if (rollbackOk.ok) {
-        return {
-          applied_files: [],
-          error: `Change "${c.status} ${c.file}" is missing a source path (old_file)`
-        };
-      }
-      return {
-        applied_files: [],
-        dirty_recovery_needed: true,
-        dirty_files: rollbackOk.dirtyFiles,
-        rollback_error: rollbackOk.error,
-        error: `Change "${c.status} ${c.file}" is missing a source path (old_file). Rollback also failed.`
-      };
-    }
     try {
       if (c.status === "D") {
         if (f.exists(dest)) {
@@ -7783,6 +7778,81 @@ async function applyChangesTransactional(cwd, worktreeRoot, changes) {
   await f.rm(backupDir).catch(() => {
   });
   return { applied_files: appliedFiles };
+}
+async function validateSourcePathReal(worktreeRoot, file2, f) {
+  const rootReal = await f.realpath(worktreeRoot);
+  const source = path12.resolve(rootReal, file2);
+  try {
+    const sourceStat = await f.lstat(source);
+    if (sourceStat.isSymbolicLink()) {
+      return {
+        applied_files: [],
+        error: `Invalid source path for worktreeRoot ${file2}: source path is a symlink`
+      };
+    }
+  } catch (err) {
+    return {
+      applied_files: [],
+      error: `Invalid source path for worktreeRoot ${file2}: ${errorMessage(err)}`
+    };
+  }
+  const sourceReal = await f.realpath(source);
+  if (sourceReal !== rootReal && !sourceReal.startsWith(rootReal + path12.sep)) {
+    return {
+      applied_files: [],
+      error: `Invalid source path for worktreeRoot ${file2}: source path escapes worktreeRoot`
+    };
+  }
+  return void 0;
+}
+async function validateDestinationParentReal(cwd, file2, f) {
+  const cwdReal = await f.realpath(cwd);
+  let candidate = path12.dirname(path12.resolve(cwdReal, file2));
+  while (candidate !== cwdReal && !f.exists(candidate)) {
+    const next = path12.dirname(candidate);
+    if (next === candidate) break;
+    candidate = next;
+  }
+  try {
+    const parentReal = await f.realpath(candidate);
+    if (parentReal !== cwdReal && !parentReal.startsWith(cwdReal + path12.sep)) {
+      return {
+        applied_files: [],
+        error: `Invalid destination path for cwd ${file2}: destination parent escapes cwd`
+      };
+    }
+  } catch (err) {
+    return {
+      applied_files: [],
+      error: `Invalid destination path for cwd ${file2}: ${errorMessage(err)}`
+    };
+  }
+  return void 0;
+}
+async function validateExistingDestinationReal(cwd, file2, f) {
+  const cwdReal = await f.realpath(cwd);
+  const dest = path12.resolve(cwdReal, file2);
+  if (!f.exists(dest)) {
+    return void 0;
+  }
+  try {
+    const destReal = await f.realpath(dest);
+    if (destReal !== cwdReal && !destReal.startsWith(cwdReal + path12.sep)) {
+      return {
+        applied_files: [],
+        error: `Invalid destination path for cwd ${file2}: destination path escapes cwd`
+      };
+    }
+  } catch (err) {
+    return {
+      applied_files: [],
+      error: `Invalid destination path for cwd ${file2}: ${errorMessage(err)}`
+    };
+  }
+  return void 0;
+}
+function errorMessage(err) {
+  return err instanceof Error ? err.message : String(err);
 }
 function validateTransactionPath(cwd, file2, field, scope) {
   if (path12.isAbsolute(file2)) {
@@ -7834,7 +7904,7 @@ async function rollbackApplied(cwd, backups, f) {
     error: firstError ?? "Rollback failed for some files"
   };
 }
-var defaultFSOps, __testFSOps;
+var defaultFSOps, __testFSOps, ALLOWED_STATUSES;
 var init_transaction = __esm({
   "src/transaction.ts"() {
     "use strict";
@@ -7843,11 +7913,17 @@ var init_transaction = __esm({
       exists(dest) {
         return fsExistsSync(dest);
       },
+      async lstat(target) {
+        return fsLstat(target);
+      },
       async mkdir(dir) {
         await fsMkdir(dir, { recursive: true });
       },
       async readFile(filePath) {
         return fsReadFile(filePath);
+      },
+      async realpath(target) {
+        return fsRealpath(target);
       },
       async writeFile(filePath, data) {
         await fsWriteFile(filePath, data);
@@ -7856,6 +7932,7 @@ var init_transaction = __esm({
         await fsRm(target, { recursive: true, force: true });
       }
     };
+    ALLOWED_STATUSES = /* @__PURE__ */ new Set(["A", "M", "D", "R", "C"]);
   }
 });
 
@@ -24034,8 +24111,8 @@ var Protocol = class {
                   if (queuedMessage.type === "response") {
                     resolver(message);
                   } else {
-                    const errorMessage = message;
-                    const error51 = new McpError(errorMessage.error.code, errorMessage.error.message, errorMessage.error.data);
+                    const errorMessage2 = message;
+                    const error51 = new McpError(errorMessage2.error.code, errorMessage2.error.message, errorMessage2.error.data);
                     resolver(error51);
                   }
                 } else {
@@ -25335,23 +25412,23 @@ var Server = class extends Protocol {
       const wrappedHandler = async (request, extra) => {
         const validatedRequest = safeParse2(CallToolRequestSchema, request);
         if (!validatedRequest.success) {
-          const errorMessage = validatedRequest.error instanceof Error ? validatedRequest.error.message : String(validatedRequest.error);
-          throw new McpError(ErrorCode.InvalidParams, `Invalid tools/call request: ${errorMessage}`);
+          const errorMessage2 = validatedRequest.error instanceof Error ? validatedRequest.error.message : String(validatedRequest.error);
+          throw new McpError(ErrorCode.InvalidParams, `Invalid tools/call request: ${errorMessage2}`);
         }
         const { params } = validatedRequest.data;
         const result = await Promise.resolve(handler(request, extra));
         if (params.task) {
           const taskValidationResult = safeParse2(CreateTaskResultSchema, result);
           if (!taskValidationResult.success) {
-            const errorMessage = taskValidationResult.error instanceof Error ? taskValidationResult.error.message : String(taskValidationResult.error);
-            throw new McpError(ErrorCode.InvalidParams, `Invalid task creation result: ${errorMessage}`);
+            const errorMessage2 = taskValidationResult.error instanceof Error ? taskValidationResult.error.message : String(taskValidationResult.error);
+            throw new McpError(ErrorCode.InvalidParams, `Invalid task creation result: ${errorMessage2}`);
           }
           return taskValidationResult.data;
         }
         const validationResult = safeParse2(CallToolResultSchema, result);
         if (!validationResult.success) {
-          const errorMessage = validationResult.error instanceof Error ? validationResult.error.message : String(validationResult.error);
-          throw new McpError(ErrorCode.InvalidParams, `Invalid tools/call result: ${errorMessage}`);
+          const errorMessage2 = validationResult.error instanceof Error ? validationResult.error.message : String(validationResult.error);
+          throw new McpError(ErrorCode.InvalidParams, `Invalid tools/call result: ${errorMessage2}`);
         }
         return validationResult.data;
       };
