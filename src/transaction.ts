@@ -16,7 +16,7 @@ import type { ApplyDirtyEntry } from "./schema.js";
 
 export interface TransactionFSOps {
   exists(dest: string): boolean;
-  lstat(target: string): Promise<{ isFile(): boolean; isSymbolicLink(): boolean }>;
+  lstat(target: string): Promise<{ isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean }>;
   mkdir(dir: string): Promise<void>;
   readFile(filePath: string): Promise<Buffer>;
   realpath(target: string): Promise<string>;
@@ -28,7 +28,7 @@ export const defaultFSOps: TransactionFSOps = {
   exists(dest: string): boolean {
     return fsExistsSync(dest);
   },
-  async lstat(target: string): Promise<{ isFile(): boolean; isSymbolicLink(): boolean }> {
+  async lstat(target: string): Promise<{ isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean }> {
     return fsLstat(target);
   },
   async mkdir(dir: string): Promise<void> {
@@ -84,6 +84,8 @@ export interface ChangeEntry {
 // ---- Core logic ----
 
 const ALLOWED_STATUSES = new Set(["A", "M", "D", "R", "C"]);
+const BACKUP_ROOT = ".codex-claude-delegate";
+const BACKUP_SUBDIR = "apply-backups";
 
 export async function applyChangesTransactional(
   cwd: string,
@@ -91,6 +93,7 @@ export async function applyChangesTransactional(
   changes: ChangeEntry[],
 ): Promise<TransactionApplyResult> {
   const f = fs();
+  const backupId = randomUUID();
 
   // Phase 0: validate all caller-provided paths before any filesystem mutation.
   for (const change of changes) {
@@ -125,18 +128,27 @@ export async function applyChangesTransactional(
     const destParentCheck = await validateDestinationParentReal(cwd, change.file, f);
     if (destParentCheck) return destParentCheck;
 
-    if (change.status === "D") {
-      const destPathCheck = await validateExistingDestinationReal(cwd, change.file, f);
-      if (destPathCheck) return destPathCheck;
+    const destPathCheck = await validateExistingWorkspaceFileForIO(cwd, change.file, "destination", f);
+    if (destPathCheck) return destPathCheck;
+
+    if (change.status === "R" && change.old_file) {
+      const oldFilePathCheck = await validateExistingWorkspaceFileForIO(cwd, change.old_file, "old_file", f);
+      if (oldFilePathCheck) return oldFilePathCheck;
     }
 
     if (change.status !== "D") {
       const sourceRealCheck = await validateSourcePathReal(worktreeRoot, change.file, f);
       if (sourceRealCheck) return sourceRealCheck;
     }
+
+    const backupEntities = getBackupEntities(change);
+    for (const file of backupEntities) {
+      const backupParentCheck = await validateInternalBackupPathParent(cwd, backupId, file, f);
+      if (backupParentCheck) return backupParentCheck;
+    }
   }
 
-  const backupDir = path.join(cwd, ".codex-claude-delegate", "apply-backups", randomUUID());
+  const backupDir = path.join(cwd, BACKUP_ROOT, BACKUP_SUBDIR, backupId);
   const backups: BackupRecord[] = [];
   const appliedFiles: string[] = [];
   // Tracks how many backup records exist after processing each change (used for
@@ -146,12 +158,7 @@ export async function applyChangesTransactional(
   // Phase 1: create backups. Fail closed: if any existing target cannot be
   // backed up, do not mutate the main workspace.
   for (const change of changes) {
-    const entitiesToBackup: string[] = [change.file];
-    // R backs up both destination and source (old_file)
-    if (change.status === "R" && change.old_file) {
-      entitiesToBackup.push(change.old_file);
-    }
-    // C backs up destination only (old_file/source must NOT be backed up or mutated)
+    const entitiesToBackup = getBackupEntities(change);
 
     for (const file of entitiesToBackup) {
       const dest = path.join(cwd, file);
@@ -237,6 +244,16 @@ export async function applyChangesTransactional(
   return { applied_files: appliedFiles };
 }
 
+function getBackupEntities(change: ChangeEntry): string[] {
+  const entitiesToBackup: string[] = [change.file];
+  // R backs up both destination and source (old_file).
+  if (change.status === "R" && change.old_file) {
+    entitiesToBackup.push(change.old_file);
+  }
+  // C backs up destination only; old_file is metadata and is not read, backed up, or deleted.
+  return entitiesToBackup;
+}
+
 async function validateSourcePathReal(
   worktreeRoot: string,
   file: string,
@@ -277,6 +294,45 @@ async function validateSourcePathReal(
   return undefined;
 }
 
+async function validateExistingWorkspaceFileForIO(
+  cwd: string,
+  file: string,
+  label: "destination" | "old_file",
+  f: TransactionFSOps,
+): Promise<TransactionApplyResult | undefined> {
+  const cwdReal = await f.realpath(cwd);
+  const dest = path.resolve(cwdReal, file);
+
+  const destStat = await lstatOrNull(dest, f);
+  if (!destStat) {
+    return undefined;
+  }
+
+  if (destStat.isSymbolicLink()) {
+    return {
+      applied_files: [],
+      error: `Invalid ${label} path for cwd ${file}: ${label} path is a symlink`,
+    };
+  }
+
+  if (!destStat.isFile()) {
+    return {
+      applied_files: [],
+      error: `Invalid ${label} path for cwd ${file}: ${label} path is not a regular file`,
+    };
+  }
+
+  const destReal = await f.realpath(dest);
+  if (!pathIsInside(cwdReal, destReal)) {
+    return {
+      applied_files: [],
+      error: `Invalid ${label} path for cwd ${file}: ${label} path escapes cwd`,
+    };
+  }
+
+  return undefined;
+}
+
 async function validateDestinationParentReal(
   cwd: string,
   file: string,
@@ -293,7 +349,7 @@ async function validateDestinationParentReal(
 
   try {
     const parentReal = await f.realpath(candidate);
-    if (parentReal !== cwdReal && !parentReal.startsWith(cwdReal + path.sep)) {
+    if (!pathIsInside(cwdReal, parentReal)) {
       return {
         applied_files: [],
         error: `Invalid destination path for cwd ${file}: destination parent escapes cwd`,
@@ -309,34 +365,68 @@ async function validateDestinationParentReal(
   return undefined;
 }
 
-async function validateExistingDestinationReal(
+async function validateInternalBackupPathParent(
   cwd: string,
+  backupId: string,
   file: string,
   f: TransactionFSOps,
 ): Promise<TransactionApplyResult | undefined> {
   const cwdReal = await f.realpath(cwd);
-  const dest = path.resolve(cwdReal, file);
+  const backupRelParent = path.dirname(path.join(BACKUP_ROOT, BACKUP_SUBDIR, backupId, file));
+  const parts = backupRelParent.split(path.sep).filter(Boolean);
+  let candidate = cwdReal;
 
-  if (!f.exists(dest)) {
-    return undefined;
-  }
+  for (const part of parts) {
+    candidate = path.join(candidate, part);
+    const candidateStat = await lstatOrNull(candidate, f);
+    if (!candidateStat) return undefined;
 
-  try {
-    const destReal = await f.realpath(dest);
-    if (destReal !== cwdReal && !destReal.startsWith(cwdReal + path.sep)) {
+    if (candidateStat.isSymbolicLink()) {
       return {
         applied_files: [],
-        error: `Invalid destination path for cwd ${file}: destination path escapes cwd`,
+        error: `Invalid backup path for cwd ${file}: backup path component is a symlink`,
       };
     }
-  } catch (err) {
-    return {
-      applied_files: [],
-      error: `Invalid destination path for cwd ${file}: ${errorMessage(err)}`,
-    };
+
+    if (!candidateStat.isDirectory()) {
+      return {
+        applied_files: [],
+        error: `Invalid backup path for cwd ${file}: backup path component is not a directory`,
+      };
+    }
+
+    const candidateReal = await f.realpath(candidate);
+    if (!pathIsInside(cwdReal, candidateReal)) {
+      return {
+        applied_files: [],
+        error: `Invalid backup path for cwd ${file}: backup path escapes cwd`,
+      };
+    }
   }
 
   return undefined;
+}
+
+async function lstatOrNull(
+  target: string,
+  f: TransactionFSOps,
+): Promise<{ isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean } | null> {
+  try {
+    return await f.lstat(target);
+  } catch (err) {
+    if (isErrno(err, "ENOENT")) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+function isErrno(err: unknown, code: string): boolean {
+  return typeof err === "object" && err !== null && "code" in err && (err as { code?: unknown }).code === code;
+}
+
+function pathIsInside(root: string, candidate: string): boolean {
+  return candidate === root || candidate.startsWith(root + path.sep);
 }
 
 function errorMessage(err: unknown): string {

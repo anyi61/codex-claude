@@ -224,14 +224,17 @@ yarn add/remove, pnpm add/remove
 
 - `file` 必须同时位于 `cwd` 和 delegated `worktreeRoot` 的词法边界内；`old_file` 必须位于 `cwd` 的词法边界内。
 - 对 `A` / `M` / `R` / `C`，source 会先经过 `lstat()`，拒绝符号链接和非普通文件，再通过 `realpath()` 确认真实路径仍在 `worktreeRoot` 内。
-- 对写入目标，现有父目录会通过 `realpath()` 确认仍在 `cwd` 内，避免 `cwd` 内的 symlink 目录把写入导出仓库。
-- 对删除目标和 rename 的 `old_file`，现有路径或现有父目录会通过 `realpath()` 确认仍在 `cwd` 内。
+- 对所有 `A` / `M` / `D` / `R` / `C` 的 `file`，如果主工作区目标路径已存在，它必须是普通文件，不能是符号链接，且 `realpath()` 必须仍在 `cwd` 内。
+- 对 `R old_file`，如果主工作区路径已存在，它必须是普通文件，不能是符号链接，且 `realpath()` 必须仍在 `cwd` 内。`C old_file` 当前只作为 metadata，不会被 read、backup 或 delete。
+- 对写入目标、删除目标和 `old_file` 的父目录，现有父路径会通过 `realpath()` 确认仍在 `cwd` 内，避免 `cwd` 内的 symlink 目录把操作导出仓库。
+- 对内部 backup 路径，`.codex-claude-delegate`、`apply-backups`、本次 backup id 和实体父目录的已存在祖先会逐级经过 `lstat()` / `realpath()` 校验；符号链接、非目录和逃逸 `cwd` 的真实路径都会被拒绝。
 - 不支持的 git status，以及 `R` / `C` 缺少 `old_file`，会在 Phase 0 拒绝。
 
 残余风险：
 
-- Phase 0 校验与 Phase 2 写入/删除之间仍存在本地并发修改窗口。攻击者若能在同一主机上同时改动 `cwd` 或 delegated worktree 的路径条目，仍可能触发竞态；当前缓解依赖 preview token、主工作区状态校验和 Phase 0 的 fail-closed 行为。
-- hard link 与普通文件共享 inode，`realpath()` 不会显示外部原始路径。当前策略按普通文件处理 hard link；需要更严格隔离的环境应把 hard link 作为部署/仓库策略禁用项。
+- Phase 0 校验与 Phase 1 backup、Phase 2 写入/删除、Phase 3 rollback 之间仍存在本地并发修改窗口。攻击者若能在同一主机上同时改动 `cwd` 或 delegated worktree 的路径条目，仍可能触发竞态；当前缓解依赖 preview token、主工作区状态校验和 Phase 0 的 fail-closed 行为。
+- hard link 与普通文件共享 inode，`realpath()` 不会显示外部原始路径。当前策略把 source 和 destination hard link 都按普通文件处理；需要更严格隔离的环境应把 hard link 作为部署/仓库策略禁用项。
+- 这些校验是本地文件系统 preflight 边界检查，不提供 OS sandbox 级别隔离。
 
 #### 脏工作区策略
 
