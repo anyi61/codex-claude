@@ -27,12 +27,23 @@ const validReadme = [
   "`claude_apply`",
   "`claude_cleanup`",
   "`claude_job_wait` Advanced / Recovery",
-  "`claude_export`",
+  "See docs/advanced-tools.md.",
   "",
 ].join("\n");
 
 const placeholderDocs: Record<string, string> = {
   "docs/uninstall-execution-checklist.md": "# Current docs\n",
+  "docs/advanced-tools.md": [
+    "# Advanced Tools",
+    "`claude_setup`",
+    "`claude_task`",
+    "`claude_result`",
+    "`claude_apply`",
+    "`claude_cleanup`",
+    "`claude_job_wait` Advanced / Recovery",
+    "`claude_export`",
+    "",
+  ].join("\n"),
 };
 
 const validSourceFiles: Record<string, string> = {
@@ -447,7 +458,22 @@ describe("audit-docs.mjs", () => {
     expect(result.stdout).toContain("doc audit ok");
   });
 
-  it("fails when README is missing advanced tool documentation", async () => {
+  it("fails when README does not link to advanced tool documentation", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme.replace("See docs/advanced-tools.md.", ""),
+      "docs/product/current.md": "# Current PRD\n",
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("README.md: missing link to advanced tool documentation");
+  });
+
+  it("fails when advanced tool reference is missing tools from source", async () => {
     const sourceWithExport = {
       ...validSourceFiles,
       "src/server.ts": [
@@ -455,24 +481,25 @@ describe("audit-docs.mjs", () => {
         "",
       ].join("\n"),
     };
-    const readmeWithoutExport = validReadme.replace("`claude_export`\n", "");
+    const advancedWithoutExport = placeholderDocs["docs/advanced-tools.md"].replace("`claude_export`\n", "");
 
     const repo = await writeFixtureRepo({
       ...placeholderDocs,
       ...sourceWithExport,
       ...validPackageFiles,
-      "README.md": readmeWithoutExport,
+      "README.md": validReadme,
+      "docs/advanced-tools.md": advancedWithoutExport,
       "docs/product/current.md": "# Current PRD\n",
     });
 
     const result = runAudit(repo);
 
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("README.md: missing advanced tool documentation");
+    expect(result.stderr).toContain("docs/advanced-tools.md: missing advanced tool documentation");
     expect(result.stderr).toContain("claude_export");
   });
 
-  it("passes when README documents all advanced tools from source", async () => {
+  it("passes when advanced tool reference documents all tools from source", async () => {
     const repo = await writeFixtureRepo({
       ...placeholderDocs,
       ...validSourceFiles,

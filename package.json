@@ -16,8 +16,12 @@
     "plugins/codex-claude-delegate/.codex-plugin/",
     "plugins/codex-claude-delegate/.mcp.json",
     "scripts/uninstall-plugin.mjs",
+    "docs/advanced-tools.md",
+    "docs/configuration-reference.md",
+    "docs/workflows.md",
     "README.md",
     "SECURITY.md",
+    "CONTRIBUTING.md",
     "LICENSE"
   ],
   "engines": {

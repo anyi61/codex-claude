@@ -1,10 +1,14 @@
 #!/usr/bin/env node
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 
 const root = process.cwd();
 const checkedRoots = [
   "README.md",
+  "CONTRIBUTING.md",
+  "docs/advanced-tools.md",
+  "docs/configuration-reference.md",
+  "docs/workflows.md",
   "docs/uninstall-execution-checklist.md",
   "docs/product",
   "plugins/codex-claude-delegate/skills",
@@ -23,6 +27,8 @@ const requiredReadmePhrases = [
 
 async function listFiles(target) {
   const absolute = path.join(root, target);
+  const info = await stat(absolute).catch(() => null);
+  if (!info) return [];
   if (!target.includes(".") || target.endsWith("/")) {
     const entries = await readdir(absolute, { withFileTypes: true }).catch(() => []);
     const nested = await Promise.all(entries.map((entry) => listFiles(path.join(target, entry.name))));
@@ -324,14 +330,19 @@ if (versionEntries.length > 1) {
   }
 }
 
-// Check advanced tools in README
+// Check advanced tools in the advanced-tools reference. README only needs to
+// link to that reference so the user entry point can stay concise.
 if (manifest.baseToolNames.length > 0) {
-  const readmeToolMentions = readme.match(/\bclaude_[a-z_]+\b/g) || [];
+  if (!readme.includes("docs/advanced-tools.md")) {
+    failures.push("README.md: missing link to advanced tool documentation");
+  }
+  const advancedTools = await readFile(path.join(root, "docs/advanced-tools.md"), "utf8").catch(() => "");
+  const advancedToolMentions = advancedTools.match(/\bclaude_[a-z_]+\b/g) || [];
   const missingAdvanced = manifest.baseToolNames.filter(
-    (tool) => !readmeToolMentions.includes(tool),
+    (tool) => !advancedToolMentions.includes(tool),
   );
   if (missingAdvanced.length > 0) {
-    failures.push(`README.md: missing advanced tool documentation: ${missingAdvanced.join(", ")}`);
+    failures.push(`docs/advanced-tools.md: missing advanced tool documentation: ${missingAdvanced.join(", ")}`);
   }
 }
 
