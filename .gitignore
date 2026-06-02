@@ -12,6 +12,7 @@ debug/
 !/.agents/plugins/marketplace.json
 /AGENTS.md
 /CLAUDE.md
+/ISSUE_CONFIRMATION_CHECKLIST.md
 .worktrees/
 .codegraph/
 .cursor/
