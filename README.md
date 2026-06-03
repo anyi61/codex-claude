@@ -22,15 +22,7 @@ codex-claude setup --write --allow-root "$(pwd)"
 codex-claude doctor
 ```
 
-`npx` 不是推荐安装路径：MCP server 需要稳定的可执行命令、PATH、版本和卸载行为；临时 `npx` 生命周期不适合作为 Codex 的长期 MCP 配置。
-
-Ready means：
-
-- Codex 配置中 `claude_delegate` 使用 `command = "codex-claude"`。
-- 默认启用恰好 5 个工具：`claude_setup`、`claude_task`、`claude_result`、`claude_apply`、`claude_cleanup`。
-- `tool_timeout_sec` 至少为 600，可以覆盖默认 540 秒 inline wait。
-- 当前仓库在 `CODEX_CLAUDE_ALLOW_ROOTS` 中。
-- Claude CLI 可用；如果 doctor 报告 auth unknown，请先手动确认 Claude Code 能运行一次简单任务。
+`codex-claude doctor` 通过后，应满足：Codex 能找到 `claude_delegate`，当前仓库已加入 allow roots，Claude CLI 可启动，默认工具已启用。
 
 ## 功能概览
 

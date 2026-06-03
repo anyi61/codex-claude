@@ -17,10 +17,9 @@ const checkedRoots = [
 
 const requiredReadmePhrases = [
   "非官方项目",
-  "Ready means",
+  "`codex-claude doctor` 通过后，应满足",
   "One Message To Codex",
   "instruction_files vs `files`",
-  "npx` 不是推荐安装路径",
   "security_profile=\"default\"",
   "claude_task(job_id=...)",
 ];

@@ -15,10 +15,9 @@ type AuditResult = {
 const validReadme = [
   "# Fixture README",
   "非官方项目",
-  "Ready means the setup checks passed.",
+  "`codex-claude doctor` 通过后，应满足",
   "One Message To Codex",
   "instruction_files vs `files`",
-  "npx` 不是推荐安装路径",
   "security_profile=\"default\"",
   "Continue with claude_task(job_id=...).",
   "`claude_setup`",
@@ -221,14 +220,14 @@ describe("audit-docs.mjs", () => {
       ...placeholderDocs,
       ...validSourceFiles,
       ...validPackageFiles,
-      "README.md": validReadme.replace("Ready means", "Ready almost means"),
+      "README.md": validReadme.replace("`codex-claude doctor` 通过后，应满足", "`codex-claude doctor`"),
       "docs/product/current.md": "# Current PRD\n",
     });
 
     const result = runAudit(repo);
 
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain('README.md: missing required phrase "Ready means"');
+    expect(result.stderr).toContain('README.md: missing required phrase "`codex-claude doctor` 通过后，应满足"');
   });
 
   it("fails README advanced enabled_tools examples that omit default tools", async () => {
