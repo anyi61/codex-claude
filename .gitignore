@@ -13,6 +13,7 @@ debug/
 /AGENTS.md
 /CLAUDE.md
 /ISSUE_CONFIRMATION_CHECKLIST.md
+/KARPATHY_ALIGNMENT_ISSUE_LIST.md
 .worktrees/
 .codegraph/
 .cursor/
