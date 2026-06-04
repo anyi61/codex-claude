@@ -145,7 +145,7 @@ Read(./.pypirc), Read(./**/.pypirc), Read(./credentials*), Read(./**/credentials
 - 每次最多 10 条命令，每条最长 200 字符，每条默认 120 秒超时，stdout/stderr tail 截断到 4000 字符。
 - 允许范围限于测试、类型检查、lint 类命令族：`npm test`、`npm run <script>`、`npx vitest/jest/tsc/eslint ...`、`yarn test/run ...`、`pnpm test/run ...`、`pytest ...`、`go test ...`、`cargo test ...`、`tsc ...`、`eslint ...`。
 - `install`、`publish`、`deploy`、`start`、`serve`、删除、权限提升、网络拉取、容器/集群操作等命令会被拒绝或跳过。
-- 验证失败会让 implement 返回 `partial` 并保留 worktree 供预览/检查；不会自动 apply 或自动 cleanup。
+- 验证失败会让 implement 返回 `partial` 并保留 worktree 供预览/检查；**非预览 apply 会被阻止**，返回 `"Server-side verification failed"`。Preview 仍然允许，用于检查失败 worktree 的变更。不会自动 apply 或自动 cleanup。
 - **环境配置约束（Phase 2）**：`.codex-claude-delegate/environment.json` 中的 `verification.allowedScripts` 对 `npm run <script>` / `yarn run <script>` / `pnpm run <script>` 形式施加**额外限制**（白名单过滤），并在配置后把 `npm test` / `yarn test` / `pnpm test` 按脚本名 `test` 校验；未配置时这些 test shorthand 保持兼容可用。该配置不扩展命令范围。已有的硬编码禁止名称（install、deploy、publish、start 等）始终优先生效，不会因出现在 `allowedScripts` 中而被放行。`npx vitest`、`npx tsc`、`pytest`、`go test`、`cargo test` 等非 package-script 形式不受 `allowedScripts` 影响。
 - **超时约束**：`verification.timeoutSec` 可限制验证超时时间，上限 300 秒，默认 120 秒。该值仅在环境配置有效时生效。
 
@@ -217,6 +217,7 @@ yarn add/remove, pnpm add/remove
 - Worktree 超过了 implement 资源限制（回合/预算）
 - 未找到 worktree 的 implement 元数据
 - 工作区状态码异常
+- **`server_verified.status` 为 `failed`**（非预览模式拒绝；预览模式不受影响）
 
 #### Transactional apply 路径边界
 

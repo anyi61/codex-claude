@@ -107,6 +107,7 @@ export type ModeInferenceReason =
   | "constraints"
   | "query_prefix_override"
   | "mixed_intent_review_first"
+  | "ambiguous_intent_needs_user"
   | "write_hints"
   | "review_hints"
   | "read_hints"
@@ -1333,8 +1334,23 @@ export function toResultRecord<T>(value: T): Record<string, unknown> {
 
 // ---- Run log schemas ----
 
+const MinimalReportSchema = z.object({
+  status: z.unknown().optional(),
+  summary: z.unknown().optional(),
+}).passthrough();
+
+const MinimalExecutionSchema = z.object({
+  exit_code: z.unknown().optional(),
+  timed_out: z.unknown().optional(),
+  duration_ms: z.unknown().optional(),
+}).passthrough();
+
 export const ImplementRunLogSchema = z.object({
   type: z.unknown().optional(),
+  report: MinimalReportSchema.optional(),
+  error: z.unknown().optional(),
+  execution: MinimalExecutionSchema.optional(),
+  server_verified: z.unknown().optional(),
   downstream: z.object({
     current_lifecycle: z.unknown().optional(),
   }).optional(),

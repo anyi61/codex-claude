@@ -27,11 +27,33 @@ const validReadme = [
   "`claude_cleanup`",
   "`claude_job_wait` Advanced / Recovery",
   "See docs/advanced-tools.md.",
+  "For multi-step write tasks, write an execution plan first and pass it through instruction_files.",
+  "instruction_files provides context only; use allowed_files to constrain modification scope.",
   "",
 ].join("\n");
 
 const placeholderDocs: Record<string, string> = {
+  "CONTRIBUTING.md": [
+    "# Contributing",
+    "## Release Checklist",
+    "npm run release",
+    "git add package.json package-lock.json plugins/codex-claude-delegate/.codex-plugin/plugin.json plugins/codex-claude-delegate/.claude-plugin/plugin.json",
+    'VERSION=$(node -p "require(\'./package.json\').version")',
+    'git commit -m "chore: release v$VERSION"',
+    'git tag "v$VERSION"',
+    "npm run check:release:metadata",
+    "git push origin main --tags",
+    'git ls-remote --tags origin "v$VERSION"',
+    "",
+  ].join("\n"),
   "docs/uninstall-execution-checklist.md": "# Current docs\n",
+  "docs/workflows.md": [
+    "# Workflows",
+    "For multi-step write tasks, write an execution plan first and pass it through `instruction_files`.",
+    "`instruction_files` provides context only; use `allowed_files` to constrain modification scope.",
+    "",
+  ].join("\n"),
+  "docs/superpowers/execution-plan-guidelines.md": "# Execution Plan Guidelines\n",
   "docs/advanced-tools.md": [
     "# Advanced Tools",
     "`claude_setup`",
@@ -41,6 +63,13 @@ const placeholderDocs: Record<string, string> = {
     "`claude_cleanup`",
     "`claude_job_wait` Advanced / Recovery",
     "`claude_export`",
+    "",
+  ].join("\n"),
+  "plugins/codex-claude-delegate/skills/claude-delegate.md": [
+    "# Claude Delegate",
+    "## Default workflow",
+    "For multi-step write tasks, write an execution plan first and pass it through `instruction_files`.",
+    "`instruction_files` provides context only; use `allowed_files` to constrain modification scope.",
     "",
   ].join("\n"),
 };
@@ -88,7 +117,11 @@ const validSourceFiles: Record<string, string> = {
 };
 
 const validPackageFiles: Record<string, string> = {
-  "package.json": '{ "name": "test-pkg", "version": "1.0.0" }\n',
+  "package.json": JSON.stringify({
+    name: "test-pkg",
+    version: "1.0.0",
+    files: ["dist/", "README.md", "docs/superpowers/execution-plan-guidelines.md"],
+  }, null, 2) + "\n",
   "plugins/codex-claude-delegate/.codex-plugin/plugin.json": '{ "name": "test-plugin", "version": "1.0.0" }\n',
   "plugins/codex-claude-delegate/.claude-plugin/plugin.json": '{ "name": "test-claude-plugin", "version": "1.0.0" }\n',
 };
@@ -521,6 +554,235 @@ describe("audit-docs.mjs", () => {
   it("passes when source files are absent (skips manifest checks)", async () => {
     const repo = await writeFixtureRepo({
       ...placeholderDocs,
+      ...validPackageFiles,
+      "README.md": validReadme,
+      "docs/product/current.md": "# PRD\n",
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("doc audit ok");
+  });
+
+  it("fails when package files omit execution-plan guidelines", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "package.json": '{ "name": "test-pkg", "version": "1.0.0", "files": ["dist/", "README.md"] }\n',
+      "README.md": validReadme,
+      "docs/product/current.md": "# PRD\n",
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("package.json: files must include docs/superpowers/execution-plan-guidelines.md");
+  });
+
+  it("fails when packaged execution-plan guideline file is missing", async () => {
+    const {
+      "docs/superpowers/execution-plan-guidelines.md": _omitted,
+      ...docsWithoutGuideline
+    } = placeholderDocs;
+    const repo = await writeFixtureRepo({
+      ...docsWithoutGuideline,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme,
+      "docs/product/current.md": "# PRD\n",
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("docs/superpowers/execution-plan-guidelines.md: packaged execution-plan guideline file is missing");
+  });
+
+  it("fails when workflow docs omit execution-plan instruction_files guidance", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme,
+      "docs/workflows.md": "# Workflows\nFor multi-step write tasks, write an execution plan first.\n",
+      "docs/product/current.md": "# PRD\n",
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("docs/workflows.md: execution plan guidance must mention instruction_files");
+  });
+
+  it("fails when workflow docs omit execution-plan scope boundary", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme,
+      "docs/workflows.md": "# Workflows\nFor multi-step write tasks, write an execution plan first and pass it through `instruction_files`.\n",
+      "docs/product/current.md": "# PRD\n",
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("docs/workflows.md: execution plan guidance must state instruction_files are context and allowed_files controls scope");
+  });
+
+  it("fails when README omits multi-step execution-plan guidance", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme.replace("For multi-step write tasks, write an execution plan first and pass it through instruction_files.", ""),
+      "docs/product/current.md": "# PRD\n",
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("README.md: default workflow must mention execution plans for multi-step write tasks");
+  });
+
+  it("fails when README execution-plan guidance omits instruction_files", async () => {
+    const readmeWithoutInstructionFiles = validReadme
+      .replace("For multi-step write tasks, write an execution plan first and pass it through instruction_files.", "For multi-step write tasks, write an execution plan first.")
+      .replace("instruction_files provides context only; use allowed_files to constrain modification scope.", "")
+      .replace("instruction_files vs `files`", "context files vs `files`");
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": readmeWithoutInstructionFiles,
+      "docs/product/current.md": "# PRD\n",
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("README.md: execution plan guidance must mention instruction_files");
+  });
+
+  it("fails when plugin skill default workflow omits multi-step execution-plan guidance", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme,
+      "plugins/codex-claude-delegate/skills/claude-delegate.md": "# Claude Delegate\n## Default workflow\nStart with `claude_task mode=write`.\n",
+      "docs/product/current.md": "# PRD\n",
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("plugins/codex-claude-delegate/skills/claude-delegate.md: default workflow must mention execution plans for multi-step write tasks");
+  });
+
+  it("fails when plugin skill execution-plan guidance omits instruction_files", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme,
+      "plugins/codex-claude-delegate/skills/claude-delegate.md": "# Claude Delegate\n## Default workflow\nFor multi-step write tasks, write an execution plan first.\n",
+      "docs/product/current.md": "# PRD\n",
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("plugins/codex-claude-delegate/skills/claude-delegate.md: execution plan guidance must mention instruction_files");
+  });
+
+  it("passes with execution-plan package and docs contract present", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme,
+      "docs/product/current.md": "# PRD\n",
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("doc audit ok");
+  });
+
+  it("fails when release metadata check appears before git tag", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme,
+      "CONTRIBUTING.md": [
+        "# Contributing",
+        "## Release Checklist",
+        "npm run release",
+        "npm run check:release:metadata",
+        'git tag "v$VERSION"',
+        "git push origin main --tags",
+        'git ls-remote --tags origin "v$VERSION"',
+        "",
+      ].join("\n"),
+      "docs/product/current.md": "# PRD\n",
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("CONTRIBUTING.md: check:release:metadata must run after git tag");
+  });
+
+  it("fails when release checklist omits remote tag visibility check", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme,
+      "CONTRIBUTING.md": placeholderDocs["CONTRIBUTING.md"].replace('git ls-remote --tags origin "v$VERSION"', ""),
+      "docs/product/current.md": "# PRD\n",
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("CONTRIBUTING.md: release checklist must verify remote tag visibility after push");
+  });
+
+  it("fails when remote tag visibility check appears before release push", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
+      ...validPackageFiles,
+      "README.md": validReadme,
+      "CONTRIBUTING.md": [
+        "# Contributing",
+        "## Release Checklist",
+        "npm run release",
+        'git tag "v$VERSION"',
+        "npm run check:release:metadata",
+        'git ls-remote --tags origin "v$VERSION"',
+        "git push origin main --tags",
+        "",
+      ].join("\n"),
+      "docs/product/current.md": "# PRD\n",
+    });
+
+    const result = runAudit(repo);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("CONTRIBUTING.md: release checklist must verify remote tag visibility after push");
+  });
+
+  it("passes current release checklist ordering", async () => {
+    const repo = await writeFixtureRepo({
+      ...placeholderDocs,
+      ...validSourceFiles,
       ...validPackageFiles,
       "README.md": validReadme,
       "docs/product/current.md": "# PRD\n",

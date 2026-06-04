@@ -55,22 +55,23 @@ npm run release
 The release script bumps the version, syncs plugin metadata, runs
 `prepublishOnly`, and publishes to npm.
 
-Confirm registry and local metadata:
+Confirm registry and local package version:
 
 ```bash
 npm view @anyi61/codex-claude-delegate-mcp version dist-tags.latest
 node -p "require('./package.json').version"
-npm run check:release:metadata
 ```
 
-Commit and tag the release:
+Commit, tag, verify metadata, and push the release:
 
 ```bash
 git add package.json package-lock.json plugins/codex-claude-delegate/.codex-plugin/plugin.json plugins/codex-claude-delegate/.claude-plugin/plugin.json
 VERSION=$(node -p "require('./package.json').version")
 git commit -m "chore: release v$VERSION"
 git tag "v$VERSION"
+npm run check:release:metadata
 git push origin main --tags
+git ls-remote --tags origin "v$VERSION"
 ```
 
 `HANDOFF.md` is intentionally local-only and ignored in this repository.

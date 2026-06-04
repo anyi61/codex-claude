@@ -30,11 +30,13 @@ When a write task returns `status="partial"` or `status="failed"` with a `sessio
 
 ## Default workflow
 
-1. Start with `claude_task mode=write` and pass `task`, `cwd`, optional `instruction_files`, `constraints`, and `dirty_policy`.
-2. `claude_task` defaults to inline wait — it blocks until the job completes or the wait timeout is reached.
-3. If the returned `status="running"`, call `claude_task(job_id=...)` to continue waiting for the same job.
-4. When the job completes inline, the result is returned directly — no separate `claude_result` call is needed.
-5. Preview with `claude_apply preview=true` (no user approval needed for preview).
-6. Show or summarize the planned diff to the user and ask whether to apply it.
-7. Only after explicit user approval, apply with `claude_apply cleanup=true confirmed_by_user=true`.
-8. Use `claude_cleanup` for leftover delegated worktrees.
+1. For multi-step write tasks, write an execution plan first and pass it through `instruction_files`. `instruction_files` provides context only; use `allowed_files` to constrain modification scope.
+2. Start with `claude_task mode=write` and pass `task`, `cwd`, optional `instruction_files`, `constraints`, and `dirty_policy`.
+3. `claude_task` defaults to inline wait — it blocks until the job completes or the wait timeout is reached.
+4. If the returned `status="running"`, call `claude_task(job_id=...)` to continue waiting for the same job.
+5. When the job completes inline, the result is returned directly — no separate `claude_result` call is needed.
+6. Preview with `claude_apply preview=true` (no user approval needed for preview).
+7. Show or summarize the planned diff to the user and ask whether to apply it.
+8. Only after explicit user approval, apply with `claude_apply cleanup=true confirmed_by_user=true`.
+9. If the task used `verification_commands` and server verification failed, non-preview `claude_apply` will be blocked with `"Server-side verification failed"`. Use `preview=true` to inspect the worktree, then fix the issues or re-delegate the task. Preview remains available even when verification failed.
+10. Use `claude_cleanup` for leftover delegated worktrees.

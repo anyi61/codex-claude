@@ -16822,8 +16822,21 @@ var StructuredToolError = class extends Error {
 function toResultRecord(value) {
   return value;
 }
+var MinimalReportSchema = external_exports.object({
+  status: external_exports.unknown().optional(),
+  summary: external_exports.unknown().optional()
+}).passthrough();
+var MinimalExecutionSchema = external_exports.object({
+  exit_code: external_exports.unknown().optional(),
+  timed_out: external_exports.unknown().optional(),
+  duration_ms: external_exports.unknown().optional()
+}).passthrough();
 var ImplementRunLogSchema = external_exports.object({
   type: external_exports.unknown().optional(),
+  report: MinimalReportSchema.optional(),
+  error: external_exports.unknown().optional(),
+  execution: MinimalExecutionSchema.optional(),
+  server_verified: external_exports.unknown().optional(),
   downstream: external_exports.object({
     current_lifecycle: external_exports.unknown().optional()
   }).optional(),
@@ -18723,6 +18736,12 @@ async function computeApplyPreviewToken(changes, worktreeRoot, cwd) {
   }
   return hash2.digest("hex");
 }
+function hasFailedServerVerification(log3) {
+  const serverVerified = log3?.server_verified;
+  return Boolean(
+    serverVerified && typeof serverVerified === "object" && serverVerified.status === "failed"
+  );
+}
 async function runClaudeApply(input, runId) {
   const startTime = Date.now();
   const finish = async (result) => {
@@ -18883,6 +18902,17 @@ async function runClaudeApply(input, runId) {
         conflicts: [],
         error: `No implement metadata found for worktree "${wtName}". The implement run's base commit and changed files could not be resolved. Use claude_result or claude_run_inspect to find the implement session, then retry apply with the correct worktree_path.`,
         preview: input.preview === true,
+        planned_changes: []
+      });
+    }
+    if (input.preview !== true && hasFailedServerVerification(implementLog)) {
+      return finish({
+        applied_files: [],
+        diff_stat: "",
+        cleanup_performed: false,
+        conflicts: [],
+        error: "Server-side verification failed. Non-preview apply is blocked until verification passes. Use preview=true to inspect the worktree, then fix the issues or re-delegate the task.",
+        preview: false,
         planned_changes: []
       });
     }

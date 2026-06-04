@@ -213,6 +213,21 @@ const ZH_QUERY_PREFIX_RE = /^(解释|说明|为什么|怎么|如何|怎样|分�
 /** Chinese risk/safety/problem signals used for mixed-intent detection. */
 const ZH_RISK_SIGNAL_RE = /风险|安全|问题|漏洞|隐患|有没有问题|安不安全|有没有风险/;
 
+function getAmbiguousConsultingMatch(task: string): string | null {
+  const cases = [
+    "有什么建议",
+    "可以吗",
+    "怎么看",
+    "是否可行",
+    "可行吗",
+    "什么方案",
+    "方案是否",
+  ];
+  const directMatch = cases.find((item) => task.includes(item));
+  if (directMatch) return directMatch;
+  return task.match(/有什么.{0,8}建议/)?.[0] ?? null;
+}
+
 export function inferClaudeTaskMode(input: ClaudeTaskInput): { mode: Exclude<ClaudeTaskMode, "auto">; inference: ModeInference } {
   const requestedMode: ClaudeTaskMode = input.mode ?? "auto";
 
@@ -582,6 +597,46 @@ export async function runClaudeTask(input: ClaudeTaskInput, _runId: string): Pro
   // wait_strategy takes precedence over legacy background alias
   const effectiveWaitStrategy = input.wait_strategy ?? (input.background === true ? "background" : "block");
   const isBackground = effectiveWaitStrategy === "background";
+
+  const ambiguousConsultingMatch =
+    (input.mode === undefined || input.mode === "auto") && !input.diff && (input.constraints?.length ?? 0) === 0
+      ? getAmbiguousConsultingMatch(input.task ?? "")
+      : null;
+  const writeHint = input.task?.match(ZH_WRITE_RE)?.[0] ?? null;
+
+  if (delegatedMode === "write" && writeHint && ambiguousConsultingMatch) {
+    return {
+      delegated_mode: "write",
+      mode_inference: {
+        ...modeInference,
+        reason: "ambiguous_intent_needs_user",
+        confidence: "medium",
+        matched_hints: [writeHint, ambiguousConsultingMatch],
+      },
+      status: "needs_user",
+      summary: "This request mixes a write hint with a consulting question. Confirm whether to analyze first or delegate a write task.",
+      completed_inline: true,
+      wait: buildWaitMetadata({
+        timeoutSec: input.wait_timeout_sec ?? 540,
+        completedInline: true,
+        waiting: false,
+        doNotStartDuplicateJob: false,
+      }),
+      warnings,
+      next_actions: [
+        {
+          tool: "claude_task",
+          reason: "Analyze the request without modifying files.",
+          args: { cwd: input.cwd, mode: "read", task: input.task },
+        },
+        {
+          tool: "claude_task",
+          reason: "Delegate the write task explicitly after user confirmation.",
+          args: { cwd: input.cwd, mode: "write", task: input.task },
+        },
+      ],
+    };
+  }
 
   const INTERNAL_CLAUDE_TIMEOUT_SEC = 3600;
 
@@ -2306,6 +2361,15 @@ export async function computeApplyPreviewToken(
   return hash.digest("hex");
 }
 
+function hasFailedServerVerification(log: ImplementRunLog | null): boolean {
+  const serverVerified = log?.server_verified;
+  return Boolean(
+    serverVerified &&
+    typeof serverVerified === "object" &&
+    (serverVerified as { status?: unknown }).status === "failed"
+  );
+}
+
 export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Promise<ClaudeApplyResult> {
   const startTime = Date.now();
   const finish = async (result: ClaudeApplyResult): Promise<ClaudeApplyResult> => {
@@ -2440,6 +2504,18 @@ export async function runClaudeApply(input: ClaudeApplyInput, runId: string): Pr
       conflicts: [],
       error: `No implement metadata found for worktree "${wtName}". The implement run's base commit and changed files could not be resolved. Use claude_result or claude_run_inspect to find the implement session, then retry apply with the correct worktree_path.`,
       preview: input.preview === true,
+      planned_changes: [],
+    });
+  }
+
+  if (input.preview !== true && hasFailedServerVerification(implementLog)) {
+    return finish({
+      applied_files: [],
+      diff_stat: "",
+      cleanup_performed: false,
+      conflicts: [],
+      error: "Server-side verification failed. Non-preview apply is blocked until verification passes. Use preview=true to inspect the worktree, then fix the issues or re-delegate the task.",
+      preview: false,
       planned_changes: [],
     });
   }

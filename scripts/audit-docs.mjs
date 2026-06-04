@@ -130,6 +130,62 @@ function hasClaudeApplyContradiction(text) {
   return false;
 }
 
+function packageIncludesExecutionPlanGuideline(packageJsonText) {
+  try {
+    const parsed = JSON.parse(packageJsonText);
+    return Array.isArray(parsed.files) &&
+      parsed.files.includes("docs/superpowers/execution-plan-guidelines.md");
+  } catch {
+    return false;
+  }
+}
+
+function mentionsExecutionPlan(text) {
+  return /execution plan|执行计划/i.test(text);
+}
+
+function mentionsMultiStepWriteTask(text) {
+  return /multi-step write task|多步骤\s*write\s*task/i.test(text);
+}
+
+function hasExecutionPlanInstructionFilesGuidance(text) {
+  return /execution plan[\s\S]{0,240}instruction_files|instruction_files[\s\S]{0,240}execution plan/i.test(text);
+}
+
+function hasMultiStepExecutionPlanGuidance(text) {
+  return mentionsMultiStepWriteTask(text) && mentionsExecutionPlan(text);
+}
+
+function hasExecutionPlanBoundaryWording(text) {
+  return /instruction_files[\s\S]{0,220}(context only|只提供上下文)[\s\S]{0,220}allowed_files[\s\S]{0,220}(scope|范围|控制|constrain|modification|修改)/i.test(text);
+}
+
+function indexOfRequired(text, needle) {
+  const index = text.indexOf(needle);
+  return index >= 0 ? index : Number.POSITIVE_INFINITY;
+}
+
+function extractReleaseChecklist(text) {
+  const start = text.search(/^##\s+Release Checklist\b/im);
+  if (start < 0) return text;
+  const rest = text.slice(start);
+  const nextSection = rest.slice(1).search(/\n##\s+/);
+  return nextSection >= 0 ? rest.slice(0, nextSection + 1) : rest;
+}
+
+function hasReleaseMetadataOrderProblem(text) {
+  const releaseChecklist = extractReleaseChecklist(text);
+  return indexOfRequired(releaseChecklist, "npm run check:release:metadata") <
+    indexOfRequired(releaseChecklist, 'git tag "v$VERSION"');
+}
+
+function hasRemoteTagVisibilityCheck(text) {
+  const releaseChecklist = extractReleaseChecklist(text);
+  const pushIndex = indexOfRequired(releaseChecklist, "git push origin main --tags");
+  const remoteTagIndex = indexOfRequired(releaseChecklist, 'git ls-remote --tags origin "v$VERSION"');
+  return remoteTagIndex > pushIndex && remoteTagIndex !== Number.POSITIVE_INFINITY;
+}
+
 // ── Manifest extraction helpers ──
 
 function extractBaseToolNames(text) {
@@ -210,6 +266,54 @@ for (const file of files) {
 }
 
 const readme = await readFile(path.join(root, "README.md"), "utf8");
+const packageJsonText = await readFile(path.join(root, "package.json"), "utf8").catch(() => "{}");
+const workflowDocs = await readFile(path.join(root, "docs/workflows.md"), "utf8").catch(() => "");
+const pluginSkill = await readFile(path.join(root, "plugins/codex-claude-delegate/skills/claude-delegate.md"), "utf8").catch(() => "");
+const contributing = await readFile(path.join(root, "CONTRIBUTING.md"), "utf8").catch(() => "");
+
+if (!packageIncludesExecutionPlanGuideline(packageJsonText)) {
+  failures.push("package.json: files must include docs/superpowers/execution-plan-guidelines.md");
+}
+
+const executionPlanGuidelineInfo = await stat(path.join(root, "docs/superpowers/execution-plan-guidelines.md")).catch(() => null);
+if (!executionPlanGuidelineInfo?.isFile()) {
+  failures.push("docs/superpowers/execution-plan-guidelines.md: packaged execution-plan guideline file is missing");
+}
+
+if (!hasExecutionPlanInstructionFilesGuidance(workflowDocs)) {
+  failures.push("docs/workflows.md: execution plan guidance must mention instruction_files");
+}
+if (!hasExecutionPlanBoundaryWording(workflowDocs)) {
+  failures.push("docs/workflows.md: execution plan guidance must state instruction_files are context and allowed_files controls scope");
+}
+
+if (!hasMultiStepExecutionPlanGuidance(readme)) {
+  failures.push("README.md: default workflow must mention execution plans for multi-step write tasks");
+}
+if (!hasExecutionPlanInstructionFilesGuidance(readme)) {
+  failures.push("README.md: execution plan guidance must mention instruction_files");
+}
+if (!hasExecutionPlanBoundaryWording(readme)) {
+  failures.push("README.md: execution plan guidance must state instruction_files are context and allowed_files controls scope");
+}
+
+if (!hasMultiStepExecutionPlanGuidance(pluginSkill)) {
+  failures.push("plugins/codex-claude-delegate/skills/claude-delegate.md: default workflow must mention execution plans for multi-step write tasks");
+}
+if (!hasExecutionPlanInstructionFilesGuidance(pluginSkill)) {
+  failures.push("plugins/codex-claude-delegate/skills/claude-delegate.md: execution plan guidance must mention instruction_files");
+}
+if (!hasExecutionPlanBoundaryWording(pluginSkill)) {
+  failures.push("plugins/codex-claude-delegate/skills/claude-delegate.md: execution plan guidance must state instruction_files are context and allowed_files controls scope");
+}
+
+if (hasReleaseMetadataOrderProblem(contributing)) {
+  failures.push("CONTRIBUTING.md: check:release:metadata must run after git tag");
+}
+if (!hasRemoteTagVisibilityCheck(contributing)) {
+  failures.push("CONTRIBUTING.md: release checklist must verify remote tag visibility after push");
+}
+
 for (const phrase of requiredReadmePhrases) {
   if (!readme.includes(phrase)) {
     failures.push(`README.md: missing required phrase "${phrase}"`);

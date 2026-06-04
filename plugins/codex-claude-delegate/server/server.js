@@ -27006,8 +27006,21 @@ function withInteraction(result, interaction) {
 function toResultRecord(value) {
   return value;
 }
+var MinimalReportSchema = external_exports.object({
+  status: external_exports.unknown().optional(),
+  summary: external_exports.unknown().optional()
+}).passthrough();
+var MinimalExecutionSchema = external_exports.object({
+  exit_code: external_exports.unknown().optional(),
+  timed_out: external_exports.unknown().optional(),
+  duration_ms: external_exports.unknown().optional()
+}).passthrough();
 var ImplementRunLogSchema = external_exports.object({
   type: external_exports.unknown().optional(),
+  report: MinimalReportSchema.optional(),
+  error: external_exports.unknown().optional(),
+  execution: MinimalExecutionSchema.optional(),
+  server_verified: external_exports.unknown().optional(),
   downstream: external_exports.object({
     current_lifecycle: external_exports.unknown().optional()
   }).optional(),
@@ -28566,6 +28579,20 @@ var EN_READ_RE = /\b(explain|analyse|analyze|why|how|what|summarize|describe|rea
 var ZH_READ_RE = /解释|分析|总结|为什么|怎么|如何|说明|描述|理解/;
 var ZH_QUERY_PREFIX_RE = /^(解释|说明|为什么|怎么|如何|怎样|分析|总结|描述|理解|搞清楚)/;
 var ZH_RISK_SIGNAL_RE = /风险|安全|问题|漏洞|隐患|有没有问题|安不安全|有没有风险/;
+function getAmbiguousConsultingMatch(task) {
+  const cases = [
+    "\u6709\u4EC0\u4E48\u5EFA\u8BAE",
+    "\u53EF\u4EE5\u5417",
+    "\u600E\u4E48\u770B",
+    "\u662F\u5426\u53EF\u884C",
+    "\u53EF\u884C\u5417",
+    "\u4EC0\u4E48\u65B9\u6848",
+    "\u65B9\u6848\u662F\u5426"
+  ];
+  const directMatch = cases.find((item) => task.includes(item));
+  if (directMatch) return directMatch;
+  return task.match(/有什么.{0,8}建议/)?.[0] ?? null;
+}
 function inferClaudeTaskMode(input) {
   const requestedMode = input.mode ?? "auto";
   if (input.mode && input.mode !== "auto") {
@@ -28867,6 +28894,41 @@ async function runClaudeTask(input, _runId) {
   const { instructionFiles, warnings } = resolveTaskInstructionFiles(input);
   const effectiveWaitStrategy = input.wait_strategy ?? (input.background === true ? "background" : "block");
   const isBackground = effectiveWaitStrategy === "background";
+  const ambiguousConsultingMatch = (input.mode === void 0 || input.mode === "auto") && !input.diff && (input.constraints?.length ?? 0) === 0 ? getAmbiguousConsultingMatch(input.task ?? "") : null;
+  const writeHint = input.task?.match(ZH_WRITE_RE)?.[0] ?? null;
+  if (delegatedMode === "write" && writeHint && ambiguousConsultingMatch) {
+    return {
+      delegated_mode: "write",
+      mode_inference: {
+        ...modeInference,
+        reason: "ambiguous_intent_needs_user",
+        confidence: "medium",
+        matched_hints: [writeHint, ambiguousConsultingMatch]
+      },
+      status: "needs_user",
+      summary: "This request mixes a write hint with a consulting question. Confirm whether to analyze first or delegate a write task.",
+      completed_inline: true,
+      wait: buildWaitMetadata2({
+        timeoutSec: input.wait_timeout_sec ?? 540,
+        completedInline: true,
+        waiting: false,
+        doNotStartDuplicateJob: false
+      }),
+      warnings,
+      next_actions: [
+        {
+          tool: "claude_task",
+          reason: "Analyze the request without modifying files.",
+          args: { cwd: input.cwd, mode: "read", task: input.task }
+        },
+        {
+          tool: "claude_task",
+          reason: "Delegate the write task explicitly after user confirmation.",
+          args: { cwd: input.cwd, mode: "write", task: input.task }
+        }
+      ]
+    };
+  }
   const INTERNAL_CLAUDE_TIMEOUT_SEC = 3600;
   async function enqueueAndWait() {
     let queued;
@@ -29439,6 +29501,12 @@ async function computeApplyPreviewToken(changes, worktreeRoot, cwd) {
   }
   return hash2.digest("hex");
 }
+function hasFailedServerVerification(log2) {
+  const serverVerified = log2?.server_verified;
+  return Boolean(
+    serverVerified && typeof serverVerified === "object" && serverVerified.status === "failed"
+  );
+}
 async function runClaudeApply(input, runId) {
   const startTime = Date.now();
   const finish = async (result) => {
@@ -29599,6 +29667,17 @@ async function runClaudeApply(input, runId) {
         conflicts: [],
         error: `No implement metadata found for worktree "${wtName}". The implement run's base commit and changed files could not be resolved. Use claude_result or claude_run_inspect to find the implement session, then retry apply with the correct worktree_path.`,
         preview: input.preview === true,
+        planned_changes: []
+      });
+    }
+    if (input.preview !== true && hasFailedServerVerification(implementLog)) {
+      return finish({
+        applied_files: [],
+        diff_stat: "",
+        cleanup_performed: false,
+        conflicts: [],
+        error: "Server-side verification failed. Non-preview apply is blocked until verification passes. Use preview=true to inspect the worktree, then fix the issues or re-delegate the task.",
+        preview: false,
         planned_changes: []
       });
     }
