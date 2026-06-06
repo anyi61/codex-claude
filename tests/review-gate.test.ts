@@ -536,3 +536,90 @@ describe("review gate pending metadata", () => {
     expect(config.pending_fingerprint).toBe("fp-real");
   });
 });
+
+describe("runClaudeSetup", () => {
+  it("maps authenticated status and returns ready setup state", async () => {
+    const { repo } = await createFixtureRepo();
+    const { runClaudeSetup } = await import("../src/review-gate.js");
+
+    const result = await runClaudeSetup({ cwd: repo }, async () => ({
+      cwd_valid: true,
+      cwd_is_git_repo: true,
+      claude_available: true,
+      claude_version: "1.2.3",
+      auth_status: "authenticated",
+      git_available: true,
+      worktree_capable: true,
+      delegated_worktrees_count: 0,
+      delegated_worktrees: [],
+      stale_worktrees_count: 0,
+      errors: [],
+    }));
+
+    expect(result.workspace_root).toBe(repo);
+    expect(result.claude_available).toBe(true);
+    expect(result.claude_version).toBe("1.2.3");
+    expect(result.auth_status).toBe("ok");
+    expect(result.git_available).toBe(true);
+    expect(result.worktree_capable).toBe(true);
+    expect(result.cwd_valid).toBe(true);
+    expect(result.cwd_is_git_repo).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(result.review_gate.enabled).toBe(false);
+    expect(result.review_gate.pending_review).toBe(false);
+  });
+
+  it("maps missing auth and includes readiness next step when status is not ready", async () => {
+    const { repo } = await createFixtureRepo();
+    const { runClaudeSetup } = await import("../src/review-gate.js");
+
+    const result = await runClaudeSetup({ cwd: repo }, async () => ({
+      cwd_valid: false,
+      cwd_is_git_repo: false,
+      claude_available: false,
+      claude_version: null,
+      auth_status: "not authenticated",
+      git_available: false,
+      worktree_capable: false,
+      delegated_worktrees_count: 0,
+      delegated_worktrees: [],
+      stale_worktrees_count: 0,
+      errors: ["claude CLI not found in PATH"],
+    }));
+
+    expect(result.auth_status).toBe("missing");
+    expect(result.next_steps).toContain("Run claude_status and fix Claude CLI, git, or workspace readiness issues before using the review gate.");
+    expect(result.errors).toEqual(["claude CLI not found in PATH"]);
+  });
+
+  it("maps unknown auth status without losing review gate next steps", async () => {
+    const { repo } = await createFixtureRepo();
+    const reloaded = await import("../src/claude-cli.js");
+    await reloaded.manageClaudeReviewGate({ cwd: repo, action: "enable" });
+
+    const { markReviewGatePending, runClaudeSetup } = await import("../src/review-gate.js");
+    await markReviewGatePending(repo, {
+      activity: "write",
+      run_id: "run-pending",
+    });
+
+    const result = await runClaudeSetup({ cwd: repo }, async () => ({
+      cwd_valid: true,
+      cwd_is_git_repo: true,
+      claude_available: true,
+      claude_version: "1.2.3",
+      auth_status: "unknown",
+      git_available: true,
+      worktree_capable: true,
+      delegated_worktrees_count: 0,
+      delegated_worktrees: [],
+      stale_worktrees_count: 0,
+      errors: [],
+    }));
+
+    expect(result.auth_status).toBe("unknown");
+    expect(result.review_gate.enabled).toBe(true);
+    expect(result.review_gate.pending_review).toBe(true);
+    expect(result.next_steps.length).toBeGreaterThan(0);
+  });
+});

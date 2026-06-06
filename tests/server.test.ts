@@ -695,6 +695,96 @@ describe("server background job handlers", () => {
     expect(callArgs.verification_commands).toBeUndefined();
   });
 
+  it("rejects claude_implement when worktrees are unavailable", async () => {
+    supportsWorktreeMock.mockResolvedValueOnce(false);
+
+    const result = await handleToolCall("claude_implement", {
+      cwd: "/repo/input",
+      task: "implement this",
+    });
+    const payload = parsePayload(result);
+
+    expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
+    expect(supportsWorktreeMock).toHaveBeenCalledWith("/repo/resolved");
+    expect(startBackgroundImplementMock).not.toHaveBeenCalled();
+    expect(result.isError).toBe(true);
+    expect(String(payload.error)).toContain("worktree support");
+  });
+
+  it("routes background claude_apply requests through startBackgroundApply", async () => {
+    startBackgroundApplyMock.mockResolvedValue({
+      job: { job_id: "job-apply", type: "apply", status: "queued" },
+    });
+
+    const result = await handleToolCall("claude_apply", {
+      cwd: "/repo/input",
+      worktree_path: ".claude/worktrees/codex-delegated-abc",
+      background: true,
+      preview: true,
+      include_patch: true,
+      patch_max_bytes: 4096,
+    });
+    const payload = parsePayload(result);
+
+    expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
+    expect(startBackgroundApplyMock).toHaveBeenCalledWith({
+      cwd: "/repo/resolved",
+      worktree_path: ".claude/worktrees/codex-delegated-abc",
+      cleanup: undefined,
+      preview: true,
+      background: true,
+      confirmed_by_user: undefined,
+      include_patch: true,
+      patch_max_bytes: 4096,
+      preview_token: undefined,
+    });
+    expect((payload.job as Record<string, unknown>).job_id).toBe("job-apply");
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("routes background claude_cleanup requests through startBackgroundCleanup", async () => {
+    startBackgroundCleanupMock.mockResolvedValue({
+      job: { job_id: "job-cleanup", type: "cleanup", status: "queued" },
+    });
+
+    const result = await handleToolCall("claude_cleanup", {
+      cwd: "/repo/input",
+      older_than_hours: 24,
+      dry_run: false,
+      background: true,
+    });
+    const payload = parsePayload(result);
+
+    expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
+    expect(startBackgroundCleanupMock).toHaveBeenCalledWith({
+      cwd: "/repo/resolved",
+      older_than_hours: 24,
+      dry_run: false,
+      background: true,
+    });
+    expect((payload.job as Record<string, unknown>).job_id).toBe("job-cleanup");
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("returns StructuredToolError payloads from delegated handlers", async () => {
+    const { StructuredToolError } = await import("../src/schema.js");
+    getClaudeResultMock.mockRejectedValue(new StructuredToolError("structured failure", {
+      error: "structured failure at /Users/anyi/codex-claude/src/server.ts",
+      code: "structured_code",
+    }));
+
+    const result = await handleToolCall("claude_result", {
+      cwd: "/repo/input",
+      prefer: "latest-job",
+    });
+    const payload = parsePayload(result);
+
+    expect(result.isError).toBe(true);
+    expect(payload.code).toBe("structured_code");
+    expect(String(payload.error)).toContain("[path]");
+    expect(String(payload.error)).not.toContain("/Users/anyi");
+  });
+
   it("returns validation errors for claude_job_result with empty job_id", async () => {
     const result = await handleToolCall("claude_job_result", { cwd: "/repo/input", job_id: "" });
     const payload = parsePayload(result);
