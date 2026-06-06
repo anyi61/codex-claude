@@ -35,6 +35,12 @@ claude_task(mode="write", cwd="/path/to/repo", task="Implement feature X")
 `preview=true` does not modify the main workspace. The non-preview apply path
 requires explicit user confirmation and a matching `preview_token`.
 
+If the write task had `verification_commands` and server verification
+(`server_verified.status`) is `failed`, non-preview apply is blocked with
+`"Server-side verification failed"`. Preview stays available to inspect the
+worktree. Passed verification or legacy logs without `server_verified` are
+unaffected.
+
 Use `include_patch=true` on preview to generate a git diff patch. Large patches
 are written under `.claude/patches/` and returned with `patch_truncated=true`,
 `patch_path`, and `diff_sha256`.
@@ -88,6 +94,10 @@ For `claude_task`, use `instruction_files` for specs, plans, checklists, or
 other context files. The deprecated `files` field is treated as instruction
 context for compatibility and is not an apply scope limit.
 
+For multi-step write tasks, write an execution plan first and pass it through
+`instruction_files`. `instruction_files` provides context only; use
+`allowed_files` to constrain modification scope.
+
 Use `allowed_files` to define a hard write scope in `claude_task` write mode.
 Only listed files may be changed. Out-of-scope changes are rejected by the
 scope checker. Low-level `claude_implement.files` has the same strict scope
@@ -137,3 +147,10 @@ such as `npm test`, `npm run <script>`, `npx vitest`, `npx tsc`, `pytest`,
 Package-manager scripts such as `install`, `publish`, `deploy`, `start`, and
 `serve` are blocked. A verification failure downgrades the result to `partial`
 and keeps the worktree for inspection.
+
+**Apply safety boundary:** When `server_verified.status` is `failed`,
+non-preview `claude_apply` is blocked and returns `"Server-side verification
+failed"`. The worktree is preserved so you can inspect it with
+`preview=true`. Preview is still allowed when verification failed; this lets
+you examine the partial changes. Passed verification or legacy logs without
+`server_verified` are not affected and apply proceeds normally.

@@ -1,10 +1,18 @@
 import { describe, expect, it, afterEach } from "vitest";
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 
-import { applyDirtyEntries } from "../src/worktree-observer.js";
+import {
+  applyDirtyEntries,
+  findDirtyFiles,
+  getWorktreeStatus,
+} from "../src/worktree-observer.js";
+
+const execFileAsync = promisify(execFile);
 
 const cleanupPaths: string[] = [];
 
@@ -22,6 +30,26 @@ async function makeFixture(name: string) {
   await mkdir(cwd, { recursive: true });
   await mkdir(worktree, { recursive: true });
   return { cwd, worktree };
+}
+
+async function git(cwd: string, ...args: string[]) {
+  await execFileAsync("git", args, { cwd });
+}
+
+async function makeGitRepo(name: string) {
+  const root = await mkdtemp(path.join(os.tmpdir(), `codex-git-${name}-`));
+  cleanupPaths.push(root);
+  const cwd = path.join(root, "repo");
+  await mkdir(cwd, { recursive: true });
+  await git(cwd, "init");
+  await git(cwd, "config", "user.email", "codex@example.com");
+  await git(cwd, "config", "user.name", "Codex Test");
+  await writeFile(path.join(cwd, "tracked.txt"), "tracked\n");
+  await mkdir(path.join(cwd, "src"), { recursive: true });
+  await writeFile(path.join(cwd, "src", "app.ts"), "app\n");
+  await git(cwd, "add", ".");
+  await git(cwd, "commit", "-m", "initial");
+  return { cwd };
 }
 
 describe("applyDirtyEntries", () => {
@@ -101,5 +129,54 @@ describe("applyDirtyEntries", () => {
     ]);
 
     expect(copied).toEqual([]);
+  });
+});
+
+describe("findDirtyFiles", () => {
+  it("returns sorted dirty requested files from git status", async () => {
+    const { cwd } = await makeGitRepo("dirty-requested");
+    await writeFile(path.join(cwd, "tracked.txt"), "changed\n");
+    await writeFile(path.join(cwd, "new.txt"), "new\n");
+
+    const dirty = await findDirtyFiles(cwd, ["new.txt", "tracked.txt", "clean.txt"]);
+
+    expect(dirty).toEqual(["new.txt", "tracked.txt"]);
+  });
+
+  it("returns an empty list when requested files are empty", async () => {
+    const dirty = await findDirtyFiles("/does/not/matter", []);
+
+    expect(dirty).toEqual([]);
+  });
+
+  it("returns an empty list when git status fails", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-no-git-"));
+    cleanupPaths.push(root);
+
+    const dirty = await findDirtyFiles(root, ["tracked.txt"]);
+
+    expect(dirty).toEqual([]);
+  });
+});
+
+describe("getWorktreeStatus", () => {
+  it("returns short status for delegated worktree path", async () => {
+    const { cwd } = await makeGitRepo("worktree-status");
+    const worktree = path.join(cwd, ".claude", "worktrees", "snapshot");
+    await mkdir(path.dirname(worktree), { recursive: true });
+    await git(cwd, "worktree", "add", worktree, "HEAD");
+    await writeFile(path.join(worktree, "tracked.txt"), "changed in worktree\n");
+
+    const status = await getWorktreeStatus(cwd, "snapshot");
+
+    expect(status).toContain("M tracked.txt");
+  });
+
+  it("returns fallback text when worktree status cannot be read", async () => {
+    const { cwd } = await makeGitRepo("worktree-missing");
+
+    const status = await getWorktreeStatus(cwd, "missing");
+
+    expect(status).toBe("(unable to get worktree status)");
   });
 });

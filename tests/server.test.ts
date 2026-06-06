@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
 
 const {
   validateCwdMock,
@@ -103,7 +108,16 @@ vi.mock("../src/claude-cli.js", () => ({
   }),
 }));
 
-const { handleToolCall, registerToolDefinitions, TOOL_DEFINITIONS, buildTaskInteraction, recoverCrashedJobsOnStartup } = await import("../src/server.js");
+const {
+  buildTaskInteraction,
+  createServer,
+  handleToolCall,
+  recoverCrashedJobsOnStartup,
+  registerToolDefinitions,
+  registerToolHandlers,
+  startServer,
+  TOOL_DEFINITIONS,
+} = await import("../src/server.js");
 
 function parsePayload(result: Awaited<ReturnType<typeof handleToolCall>>) {
   expect(result.content[0]?.type).toBe("text");
@@ -154,6 +168,53 @@ describe("server background job handlers", () => {
       "claude_cleanup",
       "claude_export",
     ]);
+  });
+
+  it("registers MCP tool call handlers", async () => {
+    let toolHandler: ((request: { params: { name: string; arguments?: unknown } }) => Promise<unknown>) | undefined;
+    const fakeServer = {
+      setRequestHandler: vi.fn((_schema: unknown, handler: typeof toolHandler) => {
+        toolHandler = handler;
+      }),
+    };
+
+    getWorkspaceStatusMock.mockResolvedValue({ status: "ok" });
+    registerToolHandlers(fakeServer as never);
+    const result = await toolHandler!({
+      params: {
+        name: "claude_workspace_status",
+        arguments: { cwd: "/repo/input" },
+      },
+    });
+    const payload = parsePayload(result as Awaited<ReturnType<typeof handleToolCall>>);
+
+    expect(fakeServer.setRequestHandler).toHaveBeenCalledTimes(1);
+    expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
+    expect(payload.status).toBe("ok");
+  });
+
+  it("creates a server with tool definitions and handlers registered", async () => {
+    const setRequestHandlerSpy = vi.spyOn(Server.prototype, "setRequestHandler");
+
+    const server = await createServer();
+    const registeredSchemas = setRequestHandlerSpy.mock.calls.map(([schema]) => schema);
+
+    expect(server).toBeDefined();
+    expect(registeredSchemas).toContain(ListToolsRequestSchema);
+    expect(registeredSchemas).toContain(CallToolRequestSchema);
+  });
+
+  it("refuses to start the server when bridge recursion depth is too high", async () => {
+    checkRecursionMock.mockReturnValueOnce(2);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
+      throw new Error(`exit:${code}`);
+    }) as never);
+
+    await expect(startServer()).rejects.toThrow("exit:1");
+
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("BRIDGE_DEPTH=2"));
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
   it("runs crashed job recovery as best-effort startup work", async () => {
@@ -693,6 +754,96 @@ describe("server background job handlers", () => {
     expect(startBackgroundImplementMock).toHaveBeenCalledTimes(1);
     const callArgs = startBackgroundImplementMock.mock.calls[0][0] as Record<string, unknown>;
     expect(callArgs.verification_commands).toBeUndefined();
+  });
+
+  it("rejects claude_implement when worktrees are unavailable", async () => {
+    supportsWorktreeMock.mockResolvedValueOnce(false);
+
+    const result = await handleToolCall("claude_implement", {
+      cwd: "/repo/input",
+      task: "implement this",
+    });
+    const payload = parsePayload(result);
+
+    expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
+    expect(supportsWorktreeMock).toHaveBeenCalledWith("/repo/resolved");
+    expect(startBackgroundImplementMock).not.toHaveBeenCalled();
+    expect(result.isError).toBe(true);
+    expect(String(payload.error)).toContain("worktree support");
+  });
+
+  it("routes background claude_apply requests through startBackgroundApply", async () => {
+    startBackgroundApplyMock.mockResolvedValue({
+      job: { job_id: "job-apply", type: "apply", status: "queued" },
+    });
+
+    const result = await handleToolCall("claude_apply", {
+      cwd: "/repo/input",
+      worktree_path: ".claude/worktrees/codex-delegated-abc",
+      background: true,
+      preview: true,
+      include_patch: true,
+      patch_max_bytes: 4096,
+    });
+    const payload = parsePayload(result);
+
+    expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
+    expect(startBackgroundApplyMock).toHaveBeenCalledWith({
+      cwd: "/repo/resolved",
+      worktree_path: ".claude/worktrees/codex-delegated-abc",
+      cleanup: undefined,
+      preview: true,
+      background: true,
+      confirmed_by_user: undefined,
+      include_patch: true,
+      patch_max_bytes: 4096,
+      preview_token: undefined,
+    });
+    expect((payload.job as Record<string, unknown>).job_id).toBe("job-apply");
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("routes background claude_cleanup requests through startBackgroundCleanup", async () => {
+    startBackgroundCleanupMock.mockResolvedValue({
+      job: { job_id: "job-cleanup", type: "cleanup", status: "queued" },
+    });
+
+    const result = await handleToolCall("claude_cleanup", {
+      cwd: "/repo/input",
+      older_than_hours: 24,
+      dry_run: false,
+      background: true,
+    });
+    const payload = parsePayload(result);
+
+    expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
+    expect(startBackgroundCleanupMock).toHaveBeenCalledWith({
+      cwd: "/repo/resolved",
+      older_than_hours: 24,
+      dry_run: false,
+      background: true,
+    });
+    expect((payload.job as Record<string, unknown>).job_id).toBe("job-cleanup");
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("returns StructuredToolError payloads from delegated handlers", async () => {
+    const { StructuredToolError } = await import("../src/schema.js");
+    getClaudeResultMock.mockRejectedValue(new StructuredToolError("structured failure", {
+      error: "structured failure at /Users/anyi/codex-claude/src/server.ts",
+      code: "structured_code",
+    }));
+
+    const result = await handleToolCall("claude_result", {
+      cwd: "/repo/input",
+      prefer: "latest-job",
+    });
+    const payload = parsePayload(result);
+
+    expect(result.isError).toBe(true);
+    expect(payload.code).toBe("structured_code");
+    expect(String(payload.error)).toContain("[path]");
+    expect(String(payload.error)).not.toContain("/Users/anyi");
   });
 
   it("returns validation errors for claude_job_result with empty job_id", async () => {

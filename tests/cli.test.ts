@@ -2,7 +2,7 @@ import { chmodSync } from "node:fs";
 import { mkdtemp, readFile, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli.js";
 
 // Mock guard and codex-config so doctor tests can be isolated.
@@ -57,8 +57,14 @@ function mockMcpLaunchSmoke() {
 }
 
 const cleanupPaths: string[] = [];
+let originalCwd: string;
+
+beforeEach(() => {
+  originalCwd = process.cwd();
+});
 
 afterEach(async () => {
+  process.chdir(originalCwd);
   vi.clearAllMocks();
   vi.unstubAllEnvs();
   while (cleanupPaths.length > 0) {
@@ -141,6 +147,21 @@ describe("codex-claude CLI", () => {
 
     expect(exitCode).toBe(0);
     expect(runUninstall).toHaveBeenCalledWith(["--yes"]);
+  });
+
+  it("runs packaged uninstall flow in dry-run mode by default", async () => {
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "codex-cli-uninstall-"));
+    cleanupPaths.push(cwd);
+    process.chdir(cwd);
+    vi.stubEnv("HOME", cwd);
+    vi.stubEnv("CODEX_HOME", path.join(cwd, ".codex"));
+
+    const exitCode = await runCli(["node", "codex-claude", "uninstall", "--dry-run"], {
+      startMcp: vi.fn(),
+      runMcpLaunchSmoke: mockMcpLaunchSmoke(),
+    });
+
+    expect(exitCode).toBe(0);
   });
 
   it("prints npm global config", async () => {

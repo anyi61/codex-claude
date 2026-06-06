@@ -86,6 +86,27 @@ describe("background jobs module", () => {
     expect(result.job.error).toContain("exited during startup");
   });
 
+  it("marks a background job failed when the detached runner emits startup error", async () => {
+    const { repo } = await createJobFixture();
+    const spawned = createDetachedSpawnResult(8766);
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return {
+        ...actual,
+        spawn: vi.fn(() => {
+          // waitForJobRunnerStartup registers listeners synchronously before this fires.
+          setImmediate(() => spawned.emit("error", new Error("spawn denied")));
+          return spawned;
+        }),
+      };
+    });
+    const module = await import("../src/background-jobs.js");
+    const result = await module.enqueueBackgroundJob({ cwd: repo, type: "review", payload: { cwd: repo, task: "review this" } });
+    expect(result.job.status).toBe("failed");
+    expect(result.job.error).toContain("failed to start");
+    expect(result.job.error).toContain("spawn denied");
+  });
+
   it("returns a waiting status while a background job stays running", async () => {
     const { repo, store } = await createJobFixture();
     const now = new Date().toISOString();

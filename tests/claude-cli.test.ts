@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,8 +11,10 @@ import {
   buildQueryArgs,
   buildReviewArgs,
   buildSafeEnv,
+  checkClaudeStatus,
   inferClaudeTaskMode,
   parseStatusPorcelainZ,
+  runClaudeSetup,
   runClaudeTask,
   truncateTail,
 } from "../src/claude-cli.js";
@@ -116,7 +118,79 @@ async function createGitRepoFixture(prefix = "codex-impl-status-") {
   return { root, repo, stateDir, logDir };
 }
 
+async function installFakeClaudeBin(root: string, authOutput = "{\"loggedIn\":true}\n"): Promise<string> {
+  const binDir = path.join(root, "bin");
+  await mkdir(binDir, { recursive: true });
+  const claudePath = path.join(binDir, "claude");
+  await writeFile(claudePath, `#!/usr/bin/env node
+if (process.argv[2] === "--version") {
+  process.stdout.write("1.2.3\\n");
+  process.exit(0);
+}
+if (process.argv[2] === "auth" && process.argv[3] === "status") {
+  process.stdout.write(${JSON.stringify(authOutput)});
+  process.exit(0);
+}
+process.stderr.write("unexpected fake claude args: " + process.argv.slice(2).join(" ") + "\\n");
+process.exit(1);
+`);
+  await chmod(claudePath, 0o755);
+  return binDir;
+}
+
 describe("claude cli argument construction", () => {
+  it("checks Claude, git, auth, worktree capability, and delegated worktree counts", async () => {
+    const { root, repo } = await createGitRepoFixture("codex-status-ok-");
+    const binDir = await installFakeClaudeBin(root);
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+    const delegatedRoot = path.join(repo, ".claude", "worktrees");
+    await mkdir(path.join(delegatedRoot, "codex-delegated-fresh"), { recursive: true });
+    const stale = path.join(delegatedRoot, "codex-delegated-stale");
+    await mkdir(stale, { recursive: true });
+    const staleTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    await utimes(stale, staleTime, staleTime);
+
+    try {
+      const status = await checkClaudeStatus(repo);
+
+      expect(status).toMatchObject({
+        claude_available: true,
+        claude_version: "1.2.3",
+        auth_status: "authenticated",
+        git_available: true,
+        worktree_capable: true,
+        cwd_valid: true,
+        cwd_is_git_repo: true,
+        delegated_worktrees_count: 2,
+        stale_worktrees_count: 1,
+        errors: [],
+      });
+      expect(status.delegated_worktrees).toEqual(["codex-delegated-fresh", "codex-delegated-stale"]);
+    } finally {
+      process.env.PATH = oldPath;
+    }
+  });
+
+  it("routes claude setup through the real status checker", async () => {
+    const { root, repo } = await createGitRepoFixture("codex-setup-status-");
+    const binDir = await installFakeClaudeBin(root, "Logged in as test@example.com\n");
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+
+    try {
+      const result = await runClaudeSetup({ cwd: repo });
+
+      expect(result.auth_status).toBe("ok");
+      expect(result.claude_available).toBe(true);
+      expect(result.git_available).toBe(true);
+      expect(result.worktree_capable).toBe(true);
+      expect(result.cwd_is_git_repo).toBe(true);
+    } finally {
+      process.env.PATH = oldPath;
+    }
+  });
+
   it("builds spawn argument arrays for implement mode", () => {
     const args = buildImplementArgs({ cwd: "/repo/.claude/worktrees/codex-delegated-test", task: "change code" });
 
@@ -3407,6 +3481,104 @@ describe("claude cli argument construction", () => {
     expect(result.result?.status).toBe("needs_user");
   });
 
+  it("runClaudeTask returns needs_user before enqueueing ambiguous Chinese consulting write prompts", async () => {
+    const { repo } = await createGitRepoFixture("codex-ambiguous-consulting-");
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      mode: "auto",
+      task: "优化这个模块有什么建议",
+    }, "run-ambiguous-consulting");
+
+    expect(result.status).toBe("needs_user");
+    expect(result.delegated_mode).toBe("write");
+    expect(result.mode_inference?.reason).toBe("ambiguous_intent_needs_user");
+    expect(result.mode_inference?.matched_hints).toEqual(expect.arrayContaining(["优化", "有什么建议"]));
+    expect(result.job).toBeUndefined();
+    expect(existsSync(path.join(repo, ".claude", "worktrees"))).toBe(false);
+    expect(result.next_actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tool: "claude_task", args: expect.objectContaining({ mode: "read" }) }),
+      expect.objectContaining({ tool: "claude_task", args: expect.objectContaining({ mode: "write" }) }),
+    ]));
+  });
+
+  it("runClaudeTask treats separated Chinese suggestion phrasing as ambiguous consulting", async () => {
+    const { repo } = await createGitRepoFixture("codex-separated-consulting-");
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      mode: "auto",
+      task: "对这个模块有什么优化建议",
+    }, "run-separated-consulting");
+
+    expect(result.status).toBe("needs_user");
+    expect(result.mode_inference?.reason).toBe("ambiguous_intent_needs_user");
+    expect(result.mode_inference?.matched_hints).toEqual(expect.arrayContaining(["优化", "有什么优化建议"]));
+    expect(result.job).toBeUndefined();
+  });
+
+  it("runClaudeTask keeps explicit write override for ambiguous Chinese consulting prompt", async () => {
+    const { repo } = await createGitRepoFixture("codex-explicit-write-consulting-");
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      mode: "write",
+      task: "优化这个模块有什么建议",
+      wait_strategy: "background",
+      dirty_policy: "committed",
+    }, "run-explicit-write-consulting");
+
+    expect(result.status).toBe("running");
+    expect(result.delegated_mode).toBe("write");
+    expect(result.mode_inference?.reason).toBe("explicit");
+    expect(result.job?.type).toBe("implement");
+  });
+
+  it("runClaudeTask keeps constraints as write intent for ambiguous Chinese consulting prompt", async () => {
+    const { repo } = await createGitRepoFixture("codex-constraints-consulting-");
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      mode: "auto",
+      task: "优化这个模块有什么建议",
+      constraints: ["Only touch README.md"],
+      wait_strategy: "background",
+      dirty_policy: "committed",
+    }, "run-constraints-consulting");
+
+    expect(result.status).toBe("running");
+    expect(result.delegated_mode).toBe("write");
+    expect(result.mode_inference?.reason).toBe("constraints");
+    expect(result.job?.type).toBe("implement");
+  });
+
+  it("runClaudeTask routes ambiguous Chinese consulting prompt with diff to review", async () => {
+    const { repo } = await createWorkflowFixture();
+    const spawned = createDetachedSpawnResult(6007);
+
+    vi.doMock("node:child_process", async () => {
+      const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+      return { ...actual, spawn: vi.fn(() => spawned) };
+    });
+
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeTask({
+      cwd: repo,
+      task: "优化这个模块有什么建议",
+      mode: "auto",
+      wait_strategy: "background",
+      diff: "diff --git a/README.md b/README.md",
+    }, "run-ambiguous-consulting-diff");
+
+    expect(result.delegated_mode).toBe("review");
+    expect(result.mode_inference?.reason).toBe("diff");
+    expect(result.job?.type).toBe("review");
+  });
+
   it("routes claude_task auto mode to review when diff is provided", async () => {
     const { repo, jobStore } = await createWorkflowFixture();
     const spawned = createDetachedSpawnResult(6003);
@@ -5575,6 +5747,34 @@ describe("inferClaudeTaskMode — Chinese/mixed-language keyword routing", () =>
     expect(inference.reason).toBe("query_prefix_override");
   });
 
+  it("keeps pure Chinese write prompt as write", () => {
+    const { mode, inference } = inferClaudeTaskMode({ cwd: "/repo", task: "优化登录流程" });
+    expect(mode).toBe("write");
+    expect(inference.reason).toBe("write_hints");
+  });
+
+  it("keeps Chinese optimization risk question as review", () => {
+    const { mode, inference } = inferClaudeTaskMode({ cwd: "/repo", task: "优化一下这段逻辑有什么风险" });
+    expect(mode).toBe("review");
+    expect(inference.reason).toBe("mixed_intent_review_first");
+  });
+
+  it("keeps query-prefix repair question as read", () => {
+    const { mode, inference } = inferClaudeTaskMode({ cwd: "/repo", task: "解释如何修复 bug" });
+    expect(mode).toBe("read");
+    expect(inference.reason).toBe("query_prefix_override");
+  });
+
+  it("keeps constraints as explicit write intent for ambiguous Chinese consulting prompt", () => {
+    const { mode, inference } = inferClaudeTaskMode({
+      cwd: "/repo",
+      task: "优化这个模块有什么建议",
+      constraints: ["Only touch src/auth.ts"],
+    });
+    expect(mode).toBe("write");
+    expect(inference.reason).toBe("constraints");
+  });
+
   it("routes Chinese write followed by explanation to write", () => {
     const { mode, inference } = inferClaudeTaskMode({ cwd: "/repo", task: "修复这个 bug 然后解释一下" });
     expect(mode).toBe("write");
@@ -7649,5 +7849,261 @@ describe("runClaudeImplement — permission_denials warnings", () => {
       expect(args).toContain("Bash(rm *)");
       expect(args).toContain("Bash(sudo *)");
     });
+  });
+});
+
+describe("runClaudeApply — server verification gates", () => {
+  it("runClaudeApply allows preview when server verification failed", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-verify-preview-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-verify-preview";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+
+    const implementRunId = "implement-verify-preview";
+    await writeFile(path.join(logDir, `${implementRunId}.json`), JSON.stringify({
+      type: "implement",
+      server_verified: { status: "failed", commands: [{ command: "npm test", status: "failed", exit_code: 1 }] },
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["README.md"],
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "preview-verify-preview");
+
+    expect(preview.error).toBeUndefined();
+    expect(preview.preview).toBe(true);
+    expect(preview.preview_token).toMatch(/^[a-f0-9]{64}$/);
+    expect(preview.applied_files).toEqual([]);
+    expect(await readFile(path.join(repo, "README.md"), "utf8")).toBe("# main\n");
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("runClaudeApply blocks non-preview apply when server verification failed", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-verify-block-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-verify-block";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+
+    const implementRunId = "implement-verify-block";
+    await writeFile(path.join(logDir, `${implementRunId}.json`), JSON.stringify({
+      type: "implement",
+      server_verified: { status: "failed", commands: [{ command: "npm test", status: "failed", exit_code: 1 }] },
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["README.md"],
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, "preview-verify-block");
+    expect(preview.preview_token).toMatch(/^[a-f0-9]{64}$/);
+
+    const result = await reloaded.runClaudeApply({
+      cwd: repo,
+      worktree_path: worktreeRel,
+      confirmed_by_user: true,
+      preview_token: preview.preview_token,
+    }, "apply-verify-block");
+
+    expect(result.error).toContain("Server-side verification failed");
+    expect(result.applied_files).toEqual([]);
+    expect(await readFile(path.join(repo, "README.md"), "utf8")).toBe("# main\n");
+    const implementLog = JSON.parse(await readFile(path.join(logDir, `${implementRunId}.json`), "utf8"));
+    expect(implementLog.downstream?.current_lifecycle).toBe("apply_blocked");
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("runClaudeApply blocks failed server verification through job-based run log lookup", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-verify-job-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const stateDir = path.join(root, "state");
+    const logDir = path.join(root, "state", "runs");
+    const jobsDir = path.join(stateDir, "jobs");
+    await mkdir(jobsDir, { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-verify-job";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+
+    const runId = "implement-verify-job";
+    const jobId = "job-verify-job";
+    const now = new Date().toISOString();
+
+    // Job record for the implement references the run_id.
+    await writeFile(path.join(jobsDir, `${jobId}.json`), JSON.stringify({
+      job_id: jobId,
+      type: "implement",
+      status: "succeeded",
+      cwd: repo,
+      created_at: now,
+      updated_at: now,
+      worktree_name: "codex-delegated-verify-job",
+      run_id: runId,
+      payload: {},
+    }));
+
+    // Run log with failed server_verified
+    await writeFile(path.join(logDir, `${runId}.json`), JSON.stringify({
+      type: "implement",
+      server_verified: { status: "failed", commands: [{ command: "npm test", status: "failed", exit_code: 1 }] },
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["README.md"],
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR = stateDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const result = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, confirmed_by_user: true }, "apply-verify-job");
+
+    expect(result.error).toContain("Server-side verification failed");
+    expect(result.applied_files).toEqual([]);
+    expect(await readFile(path.join(repo, "README.md"), "utf8")).toBe("# main\n");
+    const implementLog = JSON.parse(await readFile(path.join(logDir, `${runId}.json`), "utf8"));
+    expect(implementLog.downstream?.current_lifecycle).toBe("apply_blocked");
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    delete process.env.CODEX_CLAUDE_BACKGROUND_STATE_DIR;
+    vi.resetModules();
+  });
+
+  it("runClaudeApply still applies when server verification passed", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-verify-passed-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-verify-passed";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+
+    const runId = "implement-verify-passed";
+    await writeFile(path.join(logDir, `${runId}.json`), JSON.stringify({
+      type: "implement",
+      server_verified: { status: "passed", commands: [{ command: "npm test", status: "passed", exit_code: 0 }] },
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["README.md"],
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, `${runId}-pre`);
+    expect(preview.preview).toBe(true);
+    expect(preview.preview_token).toMatch(/^[a-f0-9]{64}$/);
+
+    const result = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, confirmed_by_user: true, preview_token: preview.preview_token }, "apply-verify-passed");
+
+    expect(result.error).toBeUndefined();
+    expect(result.applied_files).toEqual(["README.md"]);
+    expect(await readFile(path.join(repo, "README.md"), "utf8")).toBe("# changed\n");
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
+  });
+
+  it("runClaudeApply keeps legacy no-server-verification apply behavior", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-apply-verify-legacy-"));
+    cleanupPaths.push(root);
+    const repo = path.join(root, "repo");
+    const logDir = path.join(root, "runs");
+    await mkdir(logDir, { recursive: true });
+    sh(root, "git", "init", repo);
+    sh(repo, "git", "config", "user.name", "Test User");
+    sh(repo, "git", "config", "user.email", "test@example.com");
+    await writeFile(path.join(repo, "README.md"), "# main\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-m", "init");
+
+    const worktreeRel = ".claude/worktrees/codex-delegated-verify-legacy";
+    sh(repo, "git", "worktree", "add", "--detach", worktreeRel, "HEAD");
+    const worktree = path.join(repo, worktreeRel);
+    const baseCommit = sh(worktree, "git", "rev-parse", "HEAD");
+    await writeFile(path.join(worktree, "README.md"), "# changed\n");
+
+    // Legacy log without server_verified must still allow apply.
+    const runId = "implement-verify-legacy";
+    await writeFile(path.join(logDir, `${runId}.json`), JSON.stringify({
+      type: "implement",
+      observed: {
+        worktree_path: worktreeRel,
+        base_commit: baseCommit,
+        changed_files: ["README.md"],
+      },
+    }));
+
+    process.env.CODEX_CLAUDE_RUN_LOG_DIR = logDir;
+    vi.resetModules();
+    const reloaded = await import("../src/claude-cli.js");
+    const preview = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, preview: true }, `${runId}-pre`);
+    expect(preview.preview).toBe(true);
+    expect(preview.preview_token).toMatch(/^[a-f0-9]{64}$/);
+
+    const result = await reloaded.runClaudeApply({ cwd: repo, worktree_path: worktreeRel, confirmed_by_user: true, preview_token: preview.preview_token }, "apply-verify-legacy");
+
+    expect(result.error).toBeUndefined();
+    expect(result.applied_files).toEqual(["README.md"]);
+    expect(await readFile(path.join(repo, "README.md"), "utf8")).toBe("# changed\n");
+    delete process.env.CODEX_CLAUDE_RUN_LOG_DIR;
+    vi.resetModules();
   });
 });

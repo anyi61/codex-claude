@@ -23,6 +23,17 @@ export function getRunLogDir(cwd?: string): string {
 
 export interface ImplementRunLog {
   type?: unknown;
+  report?: {
+    status?: unknown;
+    summary?: unknown;
+  };
+  error?: unknown;
+  execution?: {
+    exit_code?: unknown;
+    timed_out?: unknown;
+    duration_ms?: unknown;
+  };
+  server_verified?: unknown;
   downstream?: {
     current_lifecycle?: unknown;
   };

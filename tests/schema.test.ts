@@ -27,7 +27,9 @@ import {
   buildImplementPrompt,
   buildQueryPrompt,
   buildReviewPrompt,
+  ImplementRunLogSchema,
   errorResult,
+  formatDuration,
   jsonResult,
   safeErrorMessage,
   safeErrorPayload,
@@ -35,6 +37,11 @@ import {
 import { TOOL_DEFINITIONS } from "../src/server.js";
 
 describe("schema definitions", () => {
+  it("formats short and minute-scale durations", () => {
+    expect(formatDuration(1234)).toBe("1.2s");
+    expect(formatDuration(65_432)).toBe("1m 5s");
+  });
+
   it("returns MCP structuredContent alongside backwards-compatible text JSON", () => {
     const payload = { ok: true, nested: { value: 1 } };
     const result = jsonResult(payload);
@@ -113,6 +120,29 @@ describe("schema definitions", () => {
       "partial",
       "needs_user",
     ]);
+  });
+
+  it("ImplementRunLogSchema preserves apply safety metadata", () => {
+    const parsed = ImplementRunLogSchema.parse({
+      type: "implement",
+      report: { status: "partial", summary: "Verification failed." },
+      error: "optional implement error",
+      execution: { exit_code: 0, timed_out: false },
+      server_verified: {
+        status: "failed",
+        commands: [{ command: "npm test", status: "failed", exit_code: 1 }],
+      },
+      observed: {
+        worktree_path: ".claude/worktrees/codex-delegated-verify-fail",
+        base_commit: "abc123",
+        changed_files: ["README.md"],
+      },
+    });
+
+    expect(parsed.server_verified).toMatchObject({ status: "failed" });
+    expect(parsed.report).toMatchObject({ status: "partial" });
+    expect(parsed.error).toBe("optional implement error");
+    expect(parsed.execution).toMatchObject({ exit_code: 0 });
   });
 
   it("defines review output fields", () => {
@@ -754,6 +784,7 @@ describe("ModeInference type and mode_inference field", () => {
       "constraints",
       "query_prefix_override",
       "mixed_intent_review_first",
+      "ambiguous_intent_needs_user",
       "write_hints",
       "review_hints",
       "read_hints",

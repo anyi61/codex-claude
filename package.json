@@ -1,6 +1,6 @@
 {
   "name": "@anyi61/codex-claude-delegate-mcp",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "description": "MCP server that lets Codex CLI delegate tasks to Claude Code",
   "license": "MIT",
   "type": "module",
@@ -19,6 +19,7 @@
     "docs/advanced-tools.md",
     "docs/configuration-reference.md",
     "docs/workflows.md",
+    "docs/superpowers/execution-plan-guidelines.md",
     "README.md",
     "SECURITY.md",
     "CONTRIBUTING.md",
@@ -55,6 +56,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@vitest/coverage-v8": "^3.2.4",
     "esbuild": "^0.25.0",
     "tsx": "^4.0.0",
     "typescript": "^5.7.0",
