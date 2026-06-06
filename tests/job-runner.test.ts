@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { JobStore } from "../src/jobs.js";
 import {
   markCancelled,
+  main,
   registerTerminationHandler,
   runJobRunner,
 } from "../src/job-runner.js";
@@ -46,6 +47,39 @@ describe("job runner helpers", () => {
 
     expect(executeMock).toHaveBeenCalledWith("job-1");
     expect(setExitCode).toHaveBeenCalledWith(1);
+  });
+
+  it("sets process exitCode when background execution fails without injected setter", async () => {
+    const originalExitCode = process.exitCode;
+    process.exitCode = undefined;
+    const executeMock = vi.fn(async () => {
+      throw new Error("boom");
+    });
+
+    try {
+      await runJobRunner("job-1", {
+        executeBackgroundJob: executeMock,
+        onSignal: vi.fn(),
+      });
+
+      expect(executeMock).toHaveBeenCalledWith("job-1");
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = originalExitCode;
+    }
+  });
+
+  it("main trims argv[2] before executing the background job", async () => {
+    const executeMock = vi.fn(async () => {});
+    const onSignal = vi.fn();
+
+    await main(["node", "job-runner.js", "  job-42  "], {
+      executeBackgroundJob: executeMock,
+      onSignal,
+    });
+
+    expect(executeMock).toHaveBeenCalledWith("job-42");
+    expect(onSignal).toHaveBeenCalledWith("SIGTERM", expect.any(Function));
   });
 
   it("marks jobs cancelled through the exported helper", async () => {

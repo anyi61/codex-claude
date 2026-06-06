@@ -29,6 +29,7 @@ import {
   buildReviewPrompt,
   ImplementRunLogSchema,
   errorResult,
+  formatDuration,
   jsonResult,
   safeErrorMessage,
   safeErrorPayload,
@@ -36,6 +37,11 @@ import {
 import { TOOL_DEFINITIONS } from "../src/server.js";
 
 describe("schema definitions", () => {
+  it("formats short and minute-scale durations", () => {
+    expect(formatDuration(1234)).toBe("1.2s");
+    expect(formatDuration(65_432)).toBe("1m 5s");
+  });
+
   it("returns MCP structuredContent alongside backwards-compatible text JSON", () => {
     const payload = { ok: true, nested: { value: 1 } };
     const result = jsonResult(payload);

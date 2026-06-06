@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
 
 const {
   validateCwdMock,
@@ -103,7 +108,16 @@ vi.mock("../src/claude-cli.js", () => ({
   }),
 }));
 
-const { handleToolCall, registerToolDefinitions, TOOL_DEFINITIONS, buildTaskInteraction, recoverCrashedJobsOnStartup } = await import("../src/server.js");
+const {
+  buildTaskInteraction,
+  createServer,
+  handleToolCall,
+  recoverCrashedJobsOnStartup,
+  registerToolDefinitions,
+  registerToolHandlers,
+  startServer,
+  TOOL_DEFINITIONS,
+} = await import("../src/server.js");
 
 function parsePayload(result: Awaited<ReturnType<typeof handleToolCall>>) {
   expect(result.content[0]?.type).toBe("text");
@@ -154,6 +168,53 @@ describe("server background job handlers", () => {
       "claude_cleanup",
       "claude_export",
     ]);
+  });
+
+  it("registers MCP tool call handlers", async () => {
+    let toolHandler: ((request: { params: { name: string; arguments?: unknown } }) => Promise<unknown>) | undefined;
+    const fakeServer = {
+      setRequestHandler: vi.fn((_schema: unknown, handler: typeof toolHandler) => {
+        toolHandler = handler;
+      }),
+    };
+
+    getWorkspaceStatusMock.mockResolvedValue({ status: "ok" });
+    registerToolHandlers(fakeServer as never);
+    const result = await toolHandler!({
+      params: {
+        name: "claude_workspace_status",
+        arguments: { cwd: "/repo/input" },
+      },
+    });
+    const payload = parsePayload(result as Awaited<ReturnType<typeof handleToolCall>>);
+
+    expect(fakeServer.setRequestHandler).toHaveBeenCalledTimes(1);
+    expect(validateCwdMock).toHaveBeenCalledWith("/repo/input");
+    expect(payload.status).toBe("ok");
+  });
+
+  it("creates a server with tool definitions and handlers registered", async () => {
+    const setRequestHandlerSpy = vi.spyOn(Server.prototype, "setRequestHandler");
+
+    const server = await createServer();
+    const registeredSchemas = setRequestHandlerSpy.mock.calls.map(([schema]) => schema);
+
+    expect(server).toBeDefined();
+    expect(registeredSchemas).toContain(ListToolsRequestSchema);
+    expect(registeredSchemas).toContain(CallToolRequestSchema);
+  });
+
+  it("refuses to start the server when bridge recursion depth is too high", async () => {
+    checkRecursionMock.mockReturnValueOnce(2);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
+      throw new Error(`exit:${code}`);
+    }) as never);
+
+    await expect(startServer()).rejects.toThrow("exit:1");
+
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("BRIDGE_DEPTH=2"));
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
   it("runs crashed job recovery as best-effort startup work", async () => {

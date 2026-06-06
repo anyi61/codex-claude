@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,8 +11,10 @@ import {
   buildQueryArgs,
   buildReviewArgs,
   buildSafeEnv,
+  checkClaudeStatus,
   inferClaudeTaskMode,
   parseStatusPorcelainZ,
+  runClaudeSetup,
   runClaudeTask,
   truncateTail,
 } from "../src/claude-cli.js";
@@ -116,7 +118,79 @@ async function createGitRepoFixture(prefix = "codex-impl-status-") {
   return { root, repo, stateDir, logDir };
 }
 
+async function installFakeClaudeBin(root: string, authOutput = "{\"loggedIn\":true}\n"): Promise<string> {
+  const binDir = path.join(root, "bin");
+  await mkdir(binDir, { recursive: true });
+  const claudePath = path.join(binDir, "claude");
+  await writeFile(claudePath, `#!/usr/bin/env node
+if (process.argv[2] === "--version") {
+  process.stdout.write("1.2.3\\n");
+  process.exit(0);
+}
+if (process.argv[2] === "auth" && process.argv[3] === "status") {
+  process.stdout.write(${JSON.stringify(authOutput)});
+  process.exit(0);
+}
+process.stderr.write("unexpected fake claude args: " + process.argv.slice(2).join(" ") + "\\n");
+process.exit(1);
+`);
+  await chmod(claudePath, 0o755);
+  return binDir;
+}
+
 describe("claude cli argument construction", () => {
+  it("checks Claude, git, auth, worktree capability, and delegated worktree counts", async () => {
+    const { root, repo } = await createGitRepoFixture("codex-status-ok-");
+    const binDir = await installFakeClaudeBin(root);
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+    const delegatedRoot = path.join(repo, ".claude", "worktrees");
+    await mkdir(path.join(delegatedRoot, "codex-delegated-fresh"), { recursive: true });
+    const stale = path.join(delegatedRoot, "codex-delegated-stale");
+    await mkdir(stale, { recursive: true });
+    const staleTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    await utimes(stale, staleTime, staleTime);
+
+    try {
+      const status = await checkClaudeStatus(repo);
+
+      expect(status).toMatchObject({
+        claude_available: true,
+        claude_version: "1.2.3",
+        auth_status: "authenticated",
+        git_available: true,
+        worktree_capable: true,
+        cwd_valid: true,
+        cwd_is_git_repo: true,
+        delegated_worktrees_count: 2,
+        stale_worktrees_count: 1,
+        errors: [],
+      });
+      expect(status.delegated_worktrees).toEqual(["codex-delegated-fresh", "codex-delegated-stale"]);
+    } finally {
+      process.env.PATH = oldPath;
+    }
+  });
+
+  it("routes claude setup through the real status checker", async () => {
+    const { root, repo } = await createGitRepoFixture("codex-setup-status-");
+    const binDir = await installFakeClaudeBin(root, "Logged in as test@example.com\n");
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+
+    try {
+      const result = await runClaudeSetup({ cwd: repo });
+
+      expect(result.auth_status).toBe("ok");
+      expect(result.claude_available).toBe(true);
+      expect(result.git_available).toBe(true);
+      expect(result.worktree_capable).toBe(true);
+      expect(result.cwd_is_git_repo).toBe(true);
+    } finally {
+      process.env.PATH = oldPath;
+    }
+  });
+
   it("builds spawn argument arrays for implement mode", () => {
     const args = buildImplementArgs({ cwd: "/repo/.claude/worktrees/codex-delegated-test", task: "change code" });
 

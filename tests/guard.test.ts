@@ -1,17 +1,23 @@
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   assertCanDelegate,
   dangerousRoot,
   getEnvSanitizationDiagnostics,
+  isGitRepo,
   isDelegatedWorktreePath,
   sanitizeEnv,
+  supportsWorktree,
   validateCwd,
   validateContextRoots,
   validateFilesWithinCwd,
 } from "../src/guard.js";
+
+const execFileAsync = promisify(execFile);
 
 let root: string;
 let repo: string;
@@ -29,6 +35,10 @@ afterEach(async () => {
   process.env = oldEnv;
   await rm(root, { recursive: true, force: true });
 });
+
+async function git(cwd: string, ...args: string[]) {
+  await execFileAsync("git", args, { cwd });
+}
 
 describe("guard safety checks", () => {
   it("allows cwd inside allow roots and rejects outside roots", async () => {
@@ -222,6 +232,20 @@ describe("isDelegatedWorktreePath", () => {
 
   it("returns false when .claude and worktrees appear but codex-delegated-* is missing", () => {
     expect(isDelegatedWorktreePath("/repo/.claude/worktrees/other-branch")).toBe(false);
+  });
+});
+
+describe("git repository helpers", () => {
+  it("detects git repositories and worktree-capable repositories", async () => {
+    await git(repo, "init");
+
+    await expect(isGitRepo(repo)).resolves.toBe(true);
+    await expect(supportsWorktree(repo)).resolves.toBe(true);
+  });
+
+  it("returns false outside a git repository", async () => {
+    await expect(isGitRepo(repo)).resolves.toBe(false);
+    await expect(supportsWorktree(repo)).resolves.toBe(false);
   });
 });
 

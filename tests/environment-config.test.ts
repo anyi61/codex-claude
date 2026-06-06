@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readEnvironmentConfig } from "../src/environment-config.js";
+import { buildConfigSummaryFromFields, readEnvironmentConfig } from "../src/environment-config.js";
 
 const cleanupPaths: string[] = [];
 
@@ -27,6 +27,24 @@ async function writeConfig(dir: string, data: unknown): Promise<void> {
 }
 
 describe("readEnvironmentConfig", () => {
+  it("builds safe summary from validated field presence only", () => {
+    const summary = buildConfigSummaryFromFields(["install", "test", "verification", "environment"]);
+
+    expect(summary).toMatchObject({
+      exists: true,
+      path: "",
+      ok: true,
+      fields_present: ["install", "test", "verification", "environment"],
+      install: true,
+      test: true,
+      start: false,
+      symlink_directories_count: 0,
+      sparse_paths_count: 0,
+      errors: [],
+      warnings: [],
+    });
+  });
+
   it("returns null when file does not exist", async () => {
     const dir = await makeDir();
     cleanupPaths.push(dir);

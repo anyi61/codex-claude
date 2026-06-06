@@ -331,6 +331,29 @@ describe("applyChangesTransactional rollback", () => {
     expect(hasBackupFiles(backupParent)).toBe(false);
   });
 
+  it("formats non-Error backup failures without crashing", async () => {
+    const { cwd, worktree } = await makeFixture("backup-string-fails");
+
+    const failingOps: TransactionFSOps = {
+      ...defaultFSOps,
+      async readFile(filePath: string): Promise<Buffer> {
+        if (filePath.endsWith("modify.txt") && !filePath.includes("worktree")) {
+          throw "string backup failure";
+        }
+        return defaultFSOps.readFile(filePath);
+      },
+    };
+    __setTestFSOps(failingOps);
+
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "M", file: "modify.txt" },
+    ]);
+
+    expect(result.error).toContain("Backup failed for modify.txt");
+    expect(result.error).toContain("string backup failure");
+    expect(result.applied_files).toEqual([]);
+  });
+
   it("aborts without applying changes when backup write fails", async () => {
     const { cwd, worktree } = await makeFixture("backup-write-fails");
 
@@ -381,6 +404,30 @@ describe("applyChangesTransactional rollback", () => {
     expect(result.error).toContain("partial write failed");
     expect(result.applied_files).toEqual([]);
     expect(result.dirty_recovery_needed).toBeUndefined();
+    expect(await readFile(path.join(cwd, "modify.txt"), "utf8")).toBe("original\n");
+  });
+
+  it("formats non-Error apply failures without crashing", async () => {
+    const { cwd, worktree } = await makeFixture("apply-string-fails");
+
+    const failingOps: TransactionFSOps = {
+      ...defaultFSOps,
+      async writeFile(filePath: string, data: Buffer, options?: { flag?: string }): Promise<void> {
+        if (filePath.endsWith("modify.txt") && !filePath.includes(".codex-claude-delegate") && !filePath.includes("worktree")) {
+          throw "string apply failure";
+        }
+        return defaultFSOps.writeFile(filePath, data, options);
+      },
+    };
+    __setTestFSOps(failingOps);
+
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "M", file: "modify.txt" },
+    ]);
+
+    expect(result.error).toContain("Apply failed");
+    expect(result.error).toContain("string apply failure");
+    expect(result.applied_files).toEqual([]);
     expect(await readFile(path.join(cwd, "modify.txt"), "utf8")).toBe("original\n");
   });
 
@@ -613,6 +660,29 @@ describe("applyChangesTransactional rollback", () => {
 });
 
 describe("applyChangesTransactional path boundary validation", () => {
+  it("formats non-Error source validation failures without crashing", async () => {
+    const { cwd, worktree } = await makeFixture("source-string-fails");
+
+    const failingOps: TransactionFSOps = {
+      ...defaultFSOps,
+      async lstat(target: string) {
+        if (target.includes(`${path.sep}worktree${path.sep}`) && target.endsWith("add.txt")) {
+          throw "string lstat failure";
+        }
+        return defaultFSOps.lstat(target);
+      },
+    };
+    __setTestFSOps(failingOps);
+
+    const result = await applyChangesTransactional(cwd, worktree, [
+      { status: "A", file: "add.txt" },
+    ]);
+
+    expect(result.error).toContain("Invalid source path");
+    expect(result.error).toContain("string lstat failure");
+    expect(result.applied_files).toEqual([]);
+  });
+
   it("apply rejects file path escaping cwd", async () => {
     const { cwd, worktree } = await makeFixture("escape-file");
     const existingContent = await readFile(path.join(cwd, "existing.txt"), "utf8");
